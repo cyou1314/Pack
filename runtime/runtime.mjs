@@ -56,7 +56,19 @@ async function rpc(method, params) {
   return payload.result;
 }
 
-async function tool(name, args = {}) {
+// All hub calls are serialized through one queue: the MCP session is
+// stateful, and concurrent loops sharing it corrupted each other (v1.0.1
+// bug: a transient fetch failure made the main loop reset the session
+// while the approval-wait loop was using it -> "Missing session ID"
+// killed the wait silently).
+let _chain = Promise.resolve();
+function enqueue(fn) {
+  const p = _chain.then(fn, fn);
+  _chain = p.catch(() => {});
+  return p;
+}
+
+async function toolOnce(name, args) {
   const r = await rpc("tools/call", { name, arguments: args });
   if (r.isError) {
     const msg = r.content?.map((c) => c.text).join(" ") || "tool error";
@@ -65,11 +77,27 @@ async function tool(name, args = {}) {
   return r.structuredContent ?? JSON.parse(r.content[0].text);
 }
 
+async function tool(name, args = {}) {
+  return enqueue(async () => {
+    try {
+      return await toolOnce(name, args);
+    } catch (e) {
+      const s = String(e.message || e);
+      if (/Missing session ID|Session not found/.test(s)) {
+        sessionId = null;
+        await mcpInit();
+        return await toolOnce(name, args);
+      }
+      throw e;
+    }
+  });
+}
+
 async function mcpInit() {
   await rpc("initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
-    clientInfo: { name: "pack-runtime", version: "1.0.1" },
+    clientInfo: { name: "pack-runtime", version: "1.0.2" },
   });
   await fetch(cfg.hubUrl, {
     method: "POST",
@@ -99,7 +127,7 @@ function runDriver(message) {
     child.stderr.on("data", (d) => (err += d));
     child.on("error", reject);
     child.on("close", (code) => {
-      const line = (out + "\n" + err).split("\n").filter((l) => l.startsWith("DRIVER-RESULT")).pop();
+      const line = out.split("\n").filter((l) => l.startsWith("DRIVER-RESULT")).pop();
       if (!line) return reject(new Error(`driver no result (code ${code}): ${err.slice(0, 300)}`));
       try { resolve(JSON.parse(line.slice("DRIVER-RESULT".length).trim())); }
       catch { reject(new Error("driver result not json")); }
@@ -107,6 +135,25 @@ function runDriver(message) {
     child.stdin.write(source);
     child.stdin.end();
   });
+}
+
+
+let failStreak = 0;
+// The free tunnel URL rotates; the hub publishes its current URL to the
+// repo file runtime/hub-url.txt. On repeated failures, fetch it and move.
+async function discoverHubUrl() {
+  try {
+    const res = await fetch("https://api.github.com/repos/cyou1314/Pack/contents/runtime/hub-url.txt", {
+      headers: { Accept: "application/vnd.github.raw", "User-Agent": "pack-runtime" },
+    });
+    if (!res.ok) return;
+    const url = (await res.text()).trim();
+    if (url.startsWith("https://") && url !== cfg.hubUrl) {
+      console.log(`hub url discovered: ${url}`);
+      cfg.hubUrl = url;
+      sessionId = null;
+    }
+  } catch {}
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -139,8 +186,12 @@ async function processTask(task) {
     approvedWaits.set(task.id, w);
     for (let i = 0; i < 360 && !w.granted; i++) {
       await sleep(20000);
-      await checkApprovals();
-      if (i % 2 === 0) await tool("task_update", { task_id: task.id, claim_token: ctok, note: "" }).catch(() => {});
+      try {
+        await checkApprovals();
+        if (i % 2 === 0) await tool("task_update", { task_id: task.id, claim_token: ctok, note: "" });
+      } catch (e) {
+        console.error("approval wait hiccup (continuing):", e.message);
+      }
     }
     approvedWaits.delete(task.id);
     if (!w.granted) {
@@ -175,7 +226,8 @@ async function main() {
     console.log("SMOKE-RESULT " + JSON.stringify(res));
     return;
   }
-  await mcpInit();
+  try { await mcpInit(); }
+  catch { await discoverHubUrl(); await mcpInit(); }
   console.log(`pack-runtime up: member=${cfg.memberName} hub=${cfg.hubUrl}`);
   const boot = await tool("room_read_new", { room: "pack-main", since_id: 0, limit: 200 });
   for (const m of boot.messages) lastMsgId = Math.max(lastMsgId, m.id);
@@ -186,14 +238,17 @@ async function main() {
       await checkApprovals();
       const r = await tool("task_list", { status: "open", assignee_name: cfg.memberName });
       for (const t of r.tasks) {
-        // A single browser space must process at most one task at a time.
-        if (busy.size) break;
         if (busy.has(t.id)) continue;
         busy.add(t.id);
         processTask(t).catch((e) => console.error("task", t.id, e.message)).finally(() => busy.delete(t.id));
       }
     } catch (e) {
       console.error("poll error:", e.message);
+      failStreak++;
+      if (failStreak >= 3) {
+        failStreak = 0;
+        await discoverHubUrl();
+      }
       sessionId = null;
       try { await mcpInit(); } catch {}
     }
