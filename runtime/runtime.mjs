@@ -99,7 +99,7 @@ function runDriver(message) {
     child.stderr.on("data", (d) => (err += d));
     child.on("error", reject);
     child.on("close", (code) => {
-      const line = out.split("\n").filter((l) => l.startsWith("DRIVER-RESULT")).pop();
+      const line = (out + "\n" + err).split("\n").filter((l) => l.startsWith("DRIVER-RESULT")).pop();
       if (!line) return reject(new Error(`driver no result (code ${code}): ${err.slice(0, 300)}`));
       try { resolve(JSON.parse(line.slice("DRIVER-RESULT".length).trim())); }
       catch { reject(new Error("driver result not json")); }
@@ -186,6 +186,8 @@ async function main() {
       await checkApprovals();
       const r = await tool("task_list", { status: "open", assignee_name: cfg.memberName });
       for (const t of r.tasks) {
+        // A single browser space must process at most one task at a time.
+        if (busy.size) break;
         if (busy.has(t.id)) continue;
         busy.add(t.id);
         processTask(t).catch((e) => console.error("task", t.id, e.message)).finally(() => busy.delete(t.id));
