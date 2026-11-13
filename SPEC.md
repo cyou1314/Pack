@@ -279,3 +279,22 @@ Muse 不能被另一个 Muse 直接喊醒，只有两条路：
 第二步·真递一条任务（2026-11-13 14:11，端到端验通）：经 Codex 执行 /tmp/ego-host-deliver.sh（用户手动粘贴指令、并在 Codex 的停手确认处亲手确认发送——其 AGENTS.md 停手清单规定「以用户名义发送任何内容」须先问用户，恰是本规格批准门的现实预演），脚本在 pack-host-absent 空间里向 absent 号的 Muse 发出测试题（把「阶段A托管」倒序、句首标 M-03），读回回复原文：**「M-03：管托A段阶。」**——倒序正确、标记正确、一句话，验收通过。页面标题 Chat — Muse，退出码 0。**结论：托管模式端到端成立（本地脚本 → ego 绑 Profile → muse.ai 递送 → 回复读回核对），阶段 A 全部完成。**
 
 本步两条实测发现（进阶段 B 设计）：①落点未核对——脚本没能新建对话，消息实际发进了该成员已有的主要聊天；MemberDriver 发送前必须核对「当前对话 == 目标对话」，新建失败要报错停手、不许将就发进别的对话。②快照会扫进成员既有聊天内容——读回只许提取目标回复，整页快照不得落盘/外传（呼应红线：成员私人内容不进房间）。
+
+## 附录 F. 阶段 B1 落地记录（2026-11-13）
+
+**中枢**（VM，`~/workspace/pack/hub/`）：单文件 FastMCP + SQLite，systemd `pack-hub.service` 常驻（8794），工具 11 个（规格 9 + task_list/task_review）。令牌只存 sha256；成员 absent 已登记。自测 14/14：全生命周期、双成员真并发抢单只一赢家、指派隔离、租约过期回池（attempts 计数）、越权拒绝、心跳。
+
+**通道**：ngrok 免费账号只许一个在线端点（Can 占用，同会话加隧道会共用其域名——已实证并避让）；cloudflared 在本 VM 出不去（UDP/边缘连接被拒）。现行：Pinggy SSH 隧道（systemd `pack-tunnel.service`），免费会话 60 分钟轮换网址；`pack-url-publisher` 每 2 分钟把当前网址推到仓库 `runtime/hub-url.txt`，运行时连不上时自取新网址重连（自愈已随 v1.0.2 上线）。长期方案（Tailscale/付费隧道/自有域名）待群主拍板。
+
+**Mac 运行时**（`~/pack-runtime/`，launchd `com.muse.pack-runtime`）：runtime.mjs v1.0.2 + driver-primitives.js（Codex 按本机指南实现的 6 个原语，已回存仓库）+ driver-core.js（拼装后经 stdin 喂 `ego-browser nodejs`）。
+
+**验收（§9 口径，两单全关）**：
+- 任务 #1 真任务全程无人经手：调度建卡指派 → 运行时认领 → ego 递送 absent → 提取回复「B1-OK：线 上 已 枢 中」→ 验收 done。
+- 任务 #2 批准门：带【需批准】标记，运行时认领后只发 approval_request 挂起；群主在主聊天亲口批准、调度在房间放行后才执行，成果「GATE-OK 效有门准批。」→ done。
+
+**B1 故障与修复（留档）**：
+1. runtime v1.0.1 批准等待环路被会话竞争静默杀死：主循环与等待环路共用 MCP 会话且不排队，主循环遇 fetch failed 重置 sessionId，等待环路随即被中枢以 Missing session ID 拒绝并异常退出，任务被丢弃（心跳仍正常，极具迷惑性）。v1.0.2 修复：全部中枢调用串行队列 + 会话在队列内自愈重试 + 等待环路抗抖动。
+2. 文件落盘曾吃掉全角括号正则（见 AGENTS.md 教训）：审批标记改 String.fromCharCode 构建。
+3. ego-browser nodejs 只从 stdin 读源码：驾驶层改拼装喂入（任务注入+原语+控制流）。
+
+**已知限制**：单成员（absent）；隧道网址每小时轮换（有自愈、仍可能有分钟级失联）；运行时只在 Mac 醒着时工作；App（B2）未开工。
