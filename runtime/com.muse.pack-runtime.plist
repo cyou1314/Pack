@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.muse.pack-runtime</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/cyou/pack-runtime/runtime.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/cyou/pack-runtime</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/cyou/pack-runtime/runtime.log</string>
+  <key>StandardErrorPath</key><string>/Users/cyou/pack-runtime/runtime.log</string>
+</dict>
+</plist>
