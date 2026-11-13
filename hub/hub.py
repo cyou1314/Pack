@@ -68,6 +68,23 @@ def hash_token(tok):
     return hashlib.sha256(tok.encode()).hexdigest()
 
 
+
+AVATAR_PALETTE = [
+    ("#8B5CF6", "#6366F1"), ("#0EA5E9", "#22C55E"), ("#F59E0B", "#EF4444"),
+    ("#EC4899", "#8B5CF6"), ("#14B8A6", "#0EA5E9"), ("#F97316", "#F59E0B"),
+    ("#6366F1", "#0EA5E9"), ("#84CC16", "#14B8A6"),
+]
+
+def avatar_for(name: str) -> dict:
+    """Deterministic designed avatar for a member: identity gradient picked
+    by a stable hash of the name, plus a monogram glyph. Assigned once at
+    registration and backfilled for existing members, so every client
+    renders the same face for the same member (GrokBot-style auto avatar)."""
+    h = hashlib.md5(name.encode("utf-8")).digest()[0]
+    c1, c2 = AVATAR_PALETTE[h % len(AVATAR_PALETTE)]
+    glyph = name[0].upper() if name and name[0].isascii() else (name[0] if name else "?")
+    return {"glyph": glyph, "c1": c1, "c2": c2}
+
 def init():
     conn = db()
     conn.executescript(SCHEMA)
@@ -75,12 +92,18 @@ def init():
     row = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
     if not row:
         tok = "pk-disp-" + secrets.token_urlsafe(32)
-        conn.execute("INSERT INTO members(name,role,token_hash,created_at) VALUES('dispatcher','dispatcher',?,?)",
-                     (hash_token(tok), time.time()))
+        conn.execute("INSERT INTO members(name,role,token_hash,created_at,avatar) VALUES('dispatcher','dispatcher',?,?,?)",
+                     (hash_token(tok), time.time(), json.dumps(avatar_for("dispatcher"))))
         audit(conn, "system", "init", "dispatcher created")
         with open(os.path.join(BASE, ".dispatcher_token"), "w") as f:
             f.write(tok)
         os.chmod(os.path.join(BASE, ".dispatcher_token"), 0o600)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
+    if "avatar" not in cols:
+        conn.execute("ALTER TABLE members ADD COLUMN avatar TEXT")
+    for r in conn.execute("SELECT id, name FROM members WHERE avatar IS NULL").fetchall():
+        conn.execute("UPDATE members SET avatar=? WHERE id=?",
+                     (json.dumps(avatar_for(r["name"])), r["id"]))
     conn.commit()
     conn.close()
     print("init ok")
@@ -160,8 +183,8 @@ def build_server():
         conn = db()
         try:
             cur = conn.execute(
-                "INSERT INTO members(name,role,token_hash,profile,created_at) VALUES(?,'member',?,?,?)",
-                (name, hash_token(tok), profile or None, time.time()))
+                "INSERT INTO members(name,role,token_hash,profile,created_at,avatar) VALUES(?,'member',?,?,?,?)",
+                (name, hash_token(tok), profile or None, time.time(), json.dumps(avatar_for(name))))
             mid = cur.lastrowid
             audit(conn, me["name"], "member_register", name)
             conn.commit()
@@ -381,9 +404,17 @@ def build_server():
         require(me)
         conn = db()
         rows = conn.execute(
-            "SELECT name, role, profile, created_at, last_heartbeat FROM members ORDER BY id"
+            "SELECT name, role, profile, created_at, last_heartbeat, avatar FROM members ORDER BY id"
         ).fetchall()
-        return {"members": [dict(r) for r in rows]}
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["avatar"] = json.loads(d["avatar"]) if d.get("avatar") else avatar_for(d["name"])
+            except Exception:
+                d["avatar"] = avatar_for(d["name"])
+            out.append(d)
+        return {"members": out}
 
     @mcp.tool
     def task_list(status: str = "", assignee_name: str = "") -> dict:
