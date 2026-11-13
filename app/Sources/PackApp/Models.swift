@@ -17,6 +17,7 @@ struct PackTask: Identifiable {
     let assignee: String?
     let attempts: Int
     let result: String?
+    let leaseExpires: Double?
     let updatedAt: Double
 
     var statusLabel: String {
