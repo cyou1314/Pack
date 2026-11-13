@@ -354,6 +354,27 @@ def build_server():
         return {"task_id": task_id, "status": "done" if approve else "open"}
 
     @mcp.tool
+    def task_cancel(task_id: int) -> dict:
+        """dispatcher cancels an unfinished task: status=cancelled, claim freed."""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not t:
+            conn.close()
+            raise ValueError(f"no such task: {task_id}")
+        if t["status"] in ("done", "cancelled"):
+            conn.close()
+            return {"task_id": task_id, "status": t["status"]}
+        conn.execute(
+            "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
+            (time.time(), task_id))
+        audit(conn, me["name"], "task_cancel", f"task {task_id}")
+        conn.commit()
+        conn.close()
+        return {"task_id": task_id, "status": "cancelled"}
+
+    @mcp.tool
     def member_list() -> dict:
         """List room members with role/profile and last heartbeat (epoch seconds)."""
         me = authenticate()

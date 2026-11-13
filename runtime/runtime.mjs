@@ -37,6 +37,7 @@ async function rpc(method, params) {
   };
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
   const res = await fetch(cfg.hubUrl, {
+    signal: AbortSignal.timeout(15000),
     method: "POST",
     headers,
     body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
@@ -97,9 +98,10 @@ async function mcpInit() {
   await rpc("initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
-    clientInfo: { name: "pack-runtime", version: "1.0.2" },
+    clientInfo: { name: "pack-runtime", version: "1.0.3" },
   });
   await fetch(cfg.hubUrl, {
+    signal: AbortSignal.timeout(15000),
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -144,6 +146,7 @@ let failStreak = 0;
 async function discoverHubUrl() {
   try {
     const res = await fetch("https://api.github.com/repos/cyou1314/Pack/contents/runtime/hub-url.txt", {
+      signal: AbortSignal.timeout(15000),
       headers: { Accept: "application/vnd.github.raw", "User-Agent": "pack-runtime" },
     });
     if (!res.ok) return;
@@ -188,6 +191,14 @@ async function processTask(task) {
       await sleep(20000);
       try {
         await checkApprovals();
+        // Abort the wait if the dispatcher cancelled (or closed) the task.
+        const lt = await tool("task_list", {});
+        const cur = (lt.tasks || []).find((t) => t.id === task.id);
+        if (!cur || (cur.status !== "claimed" && cur.status !== "working")) {
+          console.log(`task ${task.id} left active state (${cur && cur.status}); approval wait aborted`);
+          approvedWaits.delete(task.id);
+          return;
+        }
         if (i % 2 === 0) await tool("task_update", { task_id: task.id, claim_token: ctok, note: "" });
       } catch (e) {
         console.error("approval wait hiccup (continuing):", e.message);
