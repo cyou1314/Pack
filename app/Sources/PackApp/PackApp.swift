@@ -7,6 +7,7 @@ final class AppState: ObservableObject {
     @Published var members: [MemberInfo] = []
     @Published var connectionNote: String = "未连接"
     @Published var connected: Bool = false
+    @Published var selection: String? = "room"
 
     private var client: HubClient?
     private var pollTask: Task<Void, Never>?
@@ -66,11 +67,10 @@ final class AppState: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var state = AppState()
-    @State private var selection: String? = "room"
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
+            List(selection: $state.selection) {
                 Label("群聊", systemImage: "text.bubble").tag("room")
                 Label("任务板", systemImage: "checklist").tag("tasks")
                 Label("成员", systemImage: "person.2").tag("members")
@@ -82,7 +82,7 @@ struct ContentView: View {
             }
             .padding(8)
         } detail: {
-            switch selection {
+            switch state.selection {
             case "tasks": TaskBoardView(tasks: state.tasks)
             case "members": MemberListView(members: state.members)
             default: RoomView(messages: state.messages)
