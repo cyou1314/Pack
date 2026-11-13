@@ -98,7 +98,7 @@ async function mcpInit() {
   await rpc("initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
-    clientInfo: { name: "pack-runtime", version: "1.0.3" },
+    clientInfo: { name: "pack-runtime", version: "1.0.4" },
   });
   await fetch(cfg.hubUrl, {
     signal: AbortSignal.timeout(15000),
@@ -237,8 +237,18 @@ async function main() {
     console.log("SMOKE-RESULT " + JSON.stringify(res));
     return;
   }
-  try { await mcpInit(); }
-  catch { await discoverHubUrl(); await mcpInit(); }
+  // Never die at boot: the tunnel URL may be dead on arrival (it rotates
+  // hourly and the VM reboots). Keep retrying with discovery each round
+  // instead of exiting and crash-looping under launchd (v1.0.3 behavior).
+  for (;;) {
+    try { await mcpInit(); break; }
+    catch (e) {
+      console.error("boot connect failed, retrying in 20s:", e.message);
+      sessionId = null;
+      await discoverHubUrl();
+      await sleep(20000);
+    }
+  }
   console.log(`pack-runtime up: member=${cfg.memberName} hub=${cfg.hubUrl}`);
   const boot = await tool("room_read_new", { room: "pack-main", since_id: 0, limit: 200 });
   for (const m of boot.messages) lastMsgId = Math.max(lastMsgId, m.id);
