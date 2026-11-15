@@ -17,6 +17,7 @@
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -56,12 +57,79 @@ CREATE TABLE IF NOT EXISTS tasks(
   result TEXT, review_note TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);
+CREATE TABLE IF NOT EXISTS approval_rules(
+  id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
+  effect TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(action, target));
 """
 
 
 def audit(conn, actor, action, detail=""):
     conn.execute("INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
                  (time.time(), actor, action, detail))
+
+
+# ---------------- 批准规则库（SPEC 附录 G.1 第 1 条） ----------------
+# 待批动作在现状里的标识：任务。运行时认领带【需批准】标记的任务后，
+# 经 room_post(kind='approval_request', body='任务#N「标题」需要群主批准…') 发起，
+# 调度员回 body 前缀「批准 任务#N」/「拒绝 任务#N」的消息决议（运行时与 App 的既有约定）。
+# 规则键 = 动作类型 + 目标：
+#   动作类型 = 任务标题里第一个半角方括号标记（[ENG]/[M4A]/[ENG-image] 是既有标记体系），无标记为 ''；
+#   目标     = 任务的被指派成员名，未指派为 ''。键里 '' 表示通配。
+
+TASK_REF_RE = re.compile(r"任务#(\d+)")
+ACTION_TAG_RE = re.compile(r"\[([A-Za-z0-9_-]+)\]")
+
+
+def action_tag(title):
+    m = ACTION_TAG_RE.search(title or "")
+    return f"[{m.group(1)}]" if m else ""
+
+
+def rule_eval(conn, action, target):
+    """按具体度查规则库：(action,target) > (action,'') > ('',target) > ('','')，命中返回 row。"""
+    for a, t in ((action, target), (action, ""), ("", target), ("", "")):
+        row = conn.execute(
+            "SELECT * FROM approval_rules WHERE action=? AND target=? AND enabled=1",
+            (a, t)).fetchone()
+        if row:
+            return row
+    return None
+
+
+def _approval_gate(conn, room_id, msg_id, body):
+    """approval_request 落库后的规则求值（room_post 调用，同一事务内）。
+    命中 allow/block：以调度员身份按既有决议格式留决议消息（运行时/App 立刻认），
+    另以 actor='rule-engine' 写审计区分真人决议；未命中：不做任何事，走原有弹问流程。
+    顺带把消息的 task_id 补上（原 room_post 不写，App 批准中心按 task_id 过滤待批项）。"""
+    m = TASK_REF_RE.search(body or "")
+    if not m:
+        return {}
+    tid = int(m.group(1))
+    conn.execute("UPDATE messages SET task_id=? WHERE id=?", (tid, msg_id))
+    t = conn.execute(
+        """SELECT t.title, mb.name AS assignee_name FROM tasks t
+           LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (tid,)).fetchone()
+    if not t:
+        return {}
+    action = action_tag(t["title"])
+    target = t["assignee_name"] or ""
+    rule = rule_eval(conn, action, target)
+    if not rule:
+        return {}
+    disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+    if not disp:
+        return {}
+    tag = f"{action or '无标记'}→{target or '任意成员'} {rule['effect']}，规则#{rule['id']}"
+    if rule["effect"] == "allow":
+        text, act = f"批准 任务#{tid}（规则库自动通过：{tag}）", "approval_auto_allow"
+    else:
+        text, act = f"拒绝 任务#{tid}（规则库自动拒绝：{tag}）", "approval_auto_block"
+    conn.execute(
+        "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'chat',?,?,?)",
+        (room_id, disp["id"], text, tid, time.time()))
+    audit(conn, "rule-engine", act, f"task {tid} rule#{rule['id']} {action}->{target}")
+    return {"auto_decision": rule["effect"], "rule_id": rule["id"], "task_id": tid}
 
 
 def hash_token(tok):
@@ -208,9 +276,14 @@ def build_server():
             "INSERT INTO messages(room_id,author_id,kind,body,created_at) VALUES(?,?,?,?,?)",
             (r["id"], me["id"], kind, body, time.time()))
         mid = cur.lastrowid
+        extra = {}
+        if kind == "approval_request":
+            extra = _approval_gate(conn, r["id"], mid, body)
         conn.commit()
         conn.close()
-        return {"message_id": mid}
+        out = {"message_id": mid}
+        out.update(extra)
+        return out
 
     @mcp.tool
     def room_read_new(room: str, since_id: int = 0, limit: int = 50) -> dict:
@@ -438,6 +511,57 @@ def build_server():
         return {"tasks": [dict(x) for x in rows]}
 
     @mcp.tool
+    def rule_list() -> dict:
+        """调度员查看批准规则库（附录 G.1）：全部规则，含已停用的。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        rows = conn.execute(
+            "SELECT id, action, target, effect, source, enabled, created_by, created_at "
+            "FROM approval_rules ORDER BY id").fetchall()
+        conn.close()
+        return {"rules": [dict(r) for r in rows]}
+
+    @mcp.tool
+    def rule_upsert(action: str, target: str, effect: str, source: str = "") -> dict:
+        """调度员新增/翻转一条批准规则。键=(action, target)：action 是任务标题的方括号
+        动作标记（如 [ENG-image]），'' 表示任意动作；target 是被指派成员名，'' 表示任意
+        成员。effect=allow|block。同键重复调用即更新该规则（翻转）。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if effect not in ("allow", "block"):
+            raise ValueError("effect must be 'allow' or 'block'")
+        action, target = action.strip(), target.strip()
+        conn = db()
+        conn.execute(
+            """INSERT INTO approval_rules(action,target,effect,source,enabled,created_by,created_at)
+               VALUES(?,?,?,?,1,?,?)
+               ON CONFLICT(action,target) DO UPDATE SET
+                 effect=excluded.effect, source=excluded.source, enabled=1""",
+            (action, target, effect, source, me["name"], time.time()))
+        row = conn.execute("SELECT id FROM approval_rules WHERE action=? AND target=?",
+                           (action, target)).fetchone()
+        audit(conn, me["name"], "rule_upsert", f"{action}->{target} = {effect}")
+        conn.commit()
+        conn.close()
+        return {"rule_id": row["id"], "action": action, "target": target, "effect": effect}
+
+    @mcp.tool
+    def rule_delete(rule_id: int) -> dict:
+        """调度员删除一条批准规则；删后同键动作恢复走原有弹问流程。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        cur = conn.execute("DELETE FROM approval_rules WHERE id=?", (rule_id,))
+        if cur.rowcount != 1:
+            conn.close()
+            raise ValueError(f"no such rule: {rule_id}")
+        audit(conn, me["name"], "rule_delete", f"rule#{rule_id}")
+        conn.commit()
+        conn.close()
+        return {"deleted": rule_id}
+
+    @mcp.tool
     def heartbeat() -> dict:
         """成员心跳：刷新在线时间（调度侧据此判断成员在不在）。"""
         me = authenticate()
@@ -455,7 +579,7 @@ def serve():
     init()
     threading.Thread(target=sweeper, daemon=True).start()
     mcp = build_server()
-    mcp.run(transport="http", host="127.0.0.1", port=PORT, path="/mcp")
+    mcp.run(transport="http", host=os.environ.get("PACK_HUB_HOST", "127.0.0.1"), port=PORT, path="/mcp")
 
 
 if __name__ == "__main__":
