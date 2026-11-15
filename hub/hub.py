@@ -10,7 +10,9 @@
         egress_rule_list / egress_rule_upsert / egress_rule_delete / egress_check
         （附录 G.1 第 3 条 数据出口管制·中枢判定：站点规则 + 群主点名 + 审计）/
         memory_read / memory_write / memory_versions / memory_rollback
-        （附录 G.1 第 5 条 记忆硬顶：分层限额 + 全量留版 + 来源标记，规格 SYNTHESIS §3）
+        （附录 G.1 第 5 条 记忆硬顶：分层限额 + 全量留版 + 来源标记，规格 SYNTHESIS §3）/
+        task_complete 可选结构化交活信封 envelope（学习轮合成清单第 2 项：
+        ChatDev 引用式交活 + CrewAI schema 校验；不过整笔打回、无信封走原路径）
   任务状态机: open -> claimed -> working -> review -> done
               旁路: blocked / released(回池) / cancelled
   认领原子性: 单条 UPDATE ... WHERE status='open' 决胜负，输家 rowcount=0。
@@ -62,7 +64,7 @@ CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
   created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
   claim_token TEXT, lease_expires REAL, attempts INTEGER NOT NULL DEFAULT 0,
-  result TEXT, review_note TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+  result TEXT, envelope TEXT, review_note TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);
 CREATE TABLE IF NOT EXISTS approval_rules(
@@ -533,6 +535,9 @@ def init():
     for r in conn.execute("SELECT id, name FROM members WHERE avatar IS NULL").fetchall():
         conn.execute("UPDATE members SET avatar=? WHERE id=?",
                      (json.dumps(avatar_for(r["name"])), r["id"]))
+    tcols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
+    if "envelope" not in tcols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN envelope TEXT")
     conn.commit()
     conn.close()
     print("init ok")
@@ -594,6 +599,126 @@ def sweeper():
         except Exception:
             pass
         time.sleep(60)
+
+
+# ---------------- 结构化交活信封（学习轮合成清单第 2 项） ----------------
+# ChatDev 的引用式交活（成果物按引用、哨兵分完成度、交活前自检）+ CrewAI 的
+# schema 校验合成：task_complete 可选带 envelope（JSON 对象），中枢按下面
+# schema 校验，过不了整笔打回（ValueError 带 JSON 载荷
+# {"error":"invalid_envelope","problems":[...]}，问题逐项列明），任务状态不变。
+# 没带 envelope 的老交活路径一字不改（向后兼容是硬要求）。
+# 信封只存引用不存正文：artifacts 键白名单 + 字段长度上限，塞正文必被拒。
+# verdict 是成员自评哨兵（done/partial/failed），不改变状态机：合法信封一律
+# 进 review，关单/打回仍由调度员 task_review 决定。
+
+ENVELOPE_VERDICTS = ("done", "partial", "failed")
+ENVELOPE_KEYS = ("verdict", "summary", "artifacts", "self_check",
+                 "known_issues", "followups")
+ARTIFACT_KEYS = ("kind", "path", "url", "sha256", "note", "change")
+ARTIFACT_CHANGES = ("created", "updated", "deleted")
+SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+ENVELOPE_MAX_CHARS = 16384
+SUMMARY_MAX = 500
+STRING_ITEM_MAX = 500
+
+
+def _validate_envelope(raw):
+    """校验交活信封，返回 (normalized, problems)；problems 非空时 normalized 为 None。"""
+    problems = []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None, ["envelope: not valid JSON"]
+    if not isinstance(raw, dict):
+        return None, ["envelope: must be a JSON object"]
+    if len(json.dumps(raw, ensure_ascii=False)) > ENVELOPE_MAX_CHARS:
+        problems.append(f"envelope: exceeds {ENVELOPE_MAX_CHARS} chars total")
+    for k in raw:
+        if k not in ENVELOPE_KEYS:
+            problems.append(f"envelope: unknown field '{k}'")
+    verdict = raw.get("verdict")
+    if verdict is None:
+        problems.append("verdict: required")
+    elif verdict not in ENVELOPE_VERDICTS:
+        problems.append(f"verdict: must be one of {list(ENVELOPE_VERDICTS)}")
+    summary = raw.get("summary")
+    if summary is None:
+        problems.append("summary: required")
+    elif not isinstance(summary, str) or not summary.strip():
+        problems.append("summary: must be a non-empty string")
+    elif len(summary) > SUMMARY_MAX:
+        problems.append(f"summary: exceeds {SUMMARY_MAX} chars")
+    artifacts = raw.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        problems.append("artifacts: must be an array")
+        artifacts = []
+    elif len(artifacts) > 32:
+        problems.append("artifacts: at most 32 items")
+    for i, a in enumerate(artifacts):
+        p = f"artifacts[{i}]"
+        if not isinstance(a, dict):
+            problems.append(f"{p}: must be an object")
+            continue
+        for k in a:
+            if k not in ARTIFACT_KEYS:
+                problems.append(f"{p}: unknown field '{k}' (references only, no body text)")
+        kind = a.get("kind")
+        if not isinstance(kind, str) or not kind.strip() or len(kind) > 32:
+            problems.append(f"{p}.kind: required, string up to 32 chars")
+        has_ref = False
+        for f in ("path", "url"):
+            v = a.get(f)
+            if v is not None:
+                if not isinstance(v, str) or not v.strip() or len(v) > 2048:
+                    problems.append(f"{p}.{f}: must be a string up to 2048 chars")
+                else:
+                    has_ref = True
+        if not has_ref:
+            problems.append(f"{p}: needs at least one of path/url (reference only)")
+        sha = a.get("sha256")
+        if sha is not None and (not isinstance(sha, str) or not SHA256_RE.match(sha)):
+            problems.append(f"{p}.sha256: must be 64 hex chars")
+        note = a.get("note")
+        if note is not None and (not isinstance(note, str) or len(note) > 300):
+            problems.append(f"{p}.note: string up to 300 chars (a note, not body text)")
+        ch = a.get("change")
+        if ch is not None and ch not in ARTIFACT_CHANGES:
+            problems.append(f"{p}.change: must be one of {list(ARTIFACT_CHANGES)}")
+    sc = raw.get("self_check")
+    if sc is not None:
+        if isinstance(sc, str):
+            if len(sc) > 1000:
+                problems.append("self_check: string up to 1000 chars")
+        elif isinstance(sc, dict):
+            for k in sc:
+                if k not in ("ran", "evidence"):
+                    problems.append(f"self_check: unknown field '{k}'")
+            if "ran" in sc and not isinstance(sc["ran"], bool):
+                problems.append("self_check.ran: must be boolean")
+            ev = sc.get("evidence")
+            if ev is not None and (not isinstance(ev, str) or len(ev) > 1000):
+                problems.append("self_check.evidence: string up to 1000 chars")
+        else:
+            problems.append("self_check: must be a string or {ran, evidence} object")
+    for field in ("known_issues", "followups"):
+        v = raw.get(field, [])
+        if not isinstance(v, list):
+            problems.append(f"{field}: must be an array of strings")
+        elif len(v) > 20:
+            problems.append(f"{field}: at most 20 items")
+        else:
+            for j, item in enumerate(v):
+                if not isinstance(item, str) or not item.strip() or len(item) > STRING_ITEM_MAX:
+                    problems.append(f"{field}[{j}]: non-empty string up to {STRING_ITEM_MAX} chars")
+    if problems:
+        return None, problems
+    env = {"verdict": verdict, "summary": summary.strip(), "artifacts": artifacts}
+    if sc is not None:
+        env["self_check"] = sc
+    env["known_issues"] = raw.get("known_issues", [])
+    env["followups"] = raw.get("followups", [])
+    return env, []
 
 
 # ---------------- MCP tools ----------------
@@ -750,25 +875,49 @@ def build_server():
         return {"task_id": task_id, "status": "working", "lease_expires": now + LEASE_SECONDS}
 
     @mcp.tool
-    def task_complete(task_id: int, claim_token: str, result: str) -> dict:
-        """持有人交活：状态转 review，等调度员验收关单。"""
+    def task_complete(task_id: int, claim_token: str, result: str,
+                      envelope: dict | None = None) -> dict:
+        """持有人交活：状态转 review，等调度员验收关单。
+        可选 envelope（结构化交活信封，合成清单第 2 项）：
+          {verdict: "done"|"partial"|"failed"（必填）, summary: 一句话（必填，
+           落 result 列与群消息正文）, artifacts: [{kind, path|url, sha256?,
+           note?, change?}]（只存引用不存正文）, self_check: 字符串或
+           {ran, evidence}, known_issues: [..], followups: [..]}。
+        带信封时先按 schema 校验，不过整笔打回（错误为 JSON 载荷
+        {"error":"invalid_envelope","problems":[...]}）、任务状态不变；
+        不带信封照旧交纯文本 result（老执行体不受影响）。"""
         me = authenticate()
         require(me)
         conn = db()
         _holder(conn, me, task_id, claim_token)
+        env = None
+        stored = result
+        if envelope is not None:
+            env, problems = _validate_envelope(envelope)
+            if problems:
+                conn.close()
+                raise ValueError(json.dumps(
+                    {"error": "invalid_envelope", "task_id": task_id,
+                     "problems": problems}, ensure_ascii=False))
+            stored = env["summary"]
         now = time.time()
         conn.execute(
-            "UPDATE tasks SET status='review', result=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
-            (result, now, task_id))
+            "UPDATE tasks SET status='review', result=?, envelope=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
+            (stored, json.dumps(env, ensure_ascii=False) if env else None, now, task_id))
         _close_run(conn, task_id, "completed", me["name"])
         t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
         conn.execute(
             "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
-            (t["room_id"], me["id"], f"交活 任务#{task_id}: {result}", task_id, now))
-        audit(conn, me["name"], "task_complete", f"task {task_id}")
+            (t["room_id"], me["id"], f"交活 任务#{task_id}: {stored}", task_id, now))
+        audit(conn, me["name"], "task_complete",
+              f"task {task_id}" + (f" verdict={env['verdict']}" if env else ""))
         conn.commit()
         conn.close()
-        return {"task_id": task_id, "status": "review"}
+        out = {"task_id": task_id, "status": "review"}
+        if env:
+            out["verdict"] = env["verdict"]
+            out["envelope"] = env
+        return out
 
     @mcp.tool
     def task_block(task_id: int, claim_token: str, reason: str) -> dict:
@@ -861,7 +1010,7 @@ def build_server():
         require(me)
         conn = db()
         q = """SELECT t.id, t.title, t.body, t.status, mb.name AS assignee, t.attempts,
-                      t.result, t.lease_expires, t.updated_at
+                      t.result, t.envelope, t.lease_expires, t.updated_at
                FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee WHERE 1=1"""
         args = []
         if status:
@@ -873,7 +1022,19 @@ def build_server():
         q += " ORDER BY t.id ASC LIMIT 100"
         rows = conn.execute(q, args).fetchall()
         conn.close()
-        return {"tasks": [dict(x) for x in rows]}
+        out = []
+        for x in rows:
+            d = dict(x)
+            raw_env = d.get("envelope")
+            if raw_env:
+                try:
+                    d["envelope"] = json.loads(raw_env)
+                except Exception:
+                    d["envelope"] = None
+            else:
+                d["envelope"] = None
+            out.append(d)
+        return {"tasks": out}
 
     @mcp.tool
     def run_start(task_id: int, claim_token: str) -> dict:
