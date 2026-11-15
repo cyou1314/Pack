@@ -32,7 +32,11 @@
         pending 过期未接受由 sweeper 标 expired 并把任务放回 open
         （audit transfer_expired），未过期 pending 不被 sweeper 回收。
         转交不改变任务的风险与批准状态：未决 approval 跟随任务，不失效、
-        不重发（权限按风险分级在本轮只落此条可执行口径）。共 33 工具。
+        不重发（权限按风险分级在本轮只落此条可执行口径）。
+        多房间（2026-11-15 群主问起 App 开新对话）：数据层本就按 rooms
+        分区，本轮补 room_create（仅调度员，名字非空/≤40/无空白与斜杠/
+        不重名）与 room_list（全部房间 + 每房最新消息 id），共 37 工具；
+        活群 watcher 同步改遍历全部房间。
   任务状态机: open -> claimed -> working -> review -> done
               旁路: blocked / released(回池) / cancelled
   认领原子性: 单条 UPDATE ... WHERE status='open' 决胜负，输家 rowcount=0。
@@ -875,6 +879,47 @@ def build_server():
         out = {"message_id": mid}
         out.update(extra)
         return out
+
+    @mcp.tool
+    def room_create(name: str) -> dict:
+        """调度员新建房间。name 校验：非空、长度 ≤40、不含空白与斜杠、
+        与现有房间不重名（重名拒绝）。房间只是消息/任务的分区，成员与
+        令牌全房通用。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if not name:
+            raise ValueError("room name must not be empty")
+        if len(name) > 40:
+            raise ValueError(f"room name too long: {len(name)} > 40")
+        if any(ch.isspace() for ch in name) or "/" in name or "\\" in name:
+            raise ValueError(f"room name must not contain whitespace or slashes: {name!r}")
+        conn = db()
+        try:
+            cur = conn.execute("INSERT INTO rooms(name,created_at) VALUES(?,?)",
+                               (name, time.time()))
+            rid = cur.lastrowid
+            audit(conn, me["name"], "room_create", f"room {rid}: {name}")
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            raise ValueError(f"room already exists: {name}")
+        conn.close()
+        return {"room_id": rid, "name": name}
+
+    @mcp.tool
+    def room_list() -> dict:
+        """列出全部房间（id、name、created_at）及每房最新消息 id
+        （无消息为 0），按房间 id 升序。任意成员可调。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        rows = conn.execute(
+            """SELECT r.id, r.name, r.created_at,
+                      COALESCE((SELECT MAX(m.id) FROM messages m
+                                WHERE m.room_id=r.id), 0) AS last_message_id
+               FROM rooms r ORDER BY r.id ASC""").fetchall()
+        conn.close()
+        return {"rooms": [dict(x) for x in rows]}
 
     @mcp.tool
     def room_read_new(room: str, since_id: int = 0, limit: int = 50) -> dict:
