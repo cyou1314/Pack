@@ -61,6 +61,9 @@ LEASE_SECONDS = int(os.environ.get("PACK_LEASE_SECONDS", "1800"))
 MAX_ATTEMPTS = 3
 TRANSFER_CAP = 3  # 规格 §4.8/§4.7：同一任务转交链（接力）上限，含转交在内
 TRANSFER_ACCEPT_TTL = 1800  # 转交待接受有效期（秒）：接收方须在此内 task_accept_transfer 领令牌，过期由 sweeper 回收
+# 消息软删占位文本（全角括号用转义构建，避开含全角符号源码落盘的编码坑）：
+# 渲染出来是「（已删除）」。删除即把 body 替换为它、原正文不留存。
+DELETED_PLACEHOLDER = "\uff08\u5df2\u5220\u9664\uff09"
 
 # ---------------- 失败分类与退避回池（学习轮合成清单第 3 项） ----------------
 # 抄 LangGraph 的「先分类、再决定重试」（RetryPolicy 形状 + default_retry_on
@@ -107,7 +110,8 @@ CREATE TABLE IF NOT EXISTS rooms(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, author_id INTEGER NOT NULL,
-  kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER, created_at REAL NOT NULL);
+  kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER, created_at REAL NOT NULL,
+  deleted_at REAL, edited_at REAL);
 CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
   created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
@@ -607,6 +611,11 @@ def init():
         conn.execute("ALTER TABLE task_transfers ADD COLUMN accepted_at REAL")
     if "expires_at" not in xcols:
         conn.execute("ALTER TABLE task_transfers ADD COLUMN expires_at REAL")
+    msgcols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    if "deleted_at" not in msgcols:
+        conn.execute("ALTER TABLE messages ADD COLUMN deleted_at REAL")
+    if "edited_at" not in msgcols:
+        conn.execute("ALTER TABLE messages ADD COLUMN edited_at REAL")
     conn.commit()
     conn.close()
     print("init ok")
@@ -878,12 +887,83 @@ def build_server():
             conn.close()
             raise ValueError(f"no such room: {room}")
         rows = conn.execute(
-            """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at
+            """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
+                      m.deleted_at, m.edited_at
                FROM messages m JOIN members mb ON mb.id=m.author_id
                WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?""",
             (r["id"], since_id, limit)).fetchall()
         conn.close()
-        return {"messages": [dict(x) for x in rows]}
+        out = []
+        for x in rows:
+            deleted = bool(x["deleted_at"])
+            out.append({
+                "id": x["id"], "author": x["author"], "kind": x["kind"],
+                # 已删消息只回占位文本（删除时 body 已替换，这里再兜底一层，
+                # 保证任何路径读到的都是占位、绝不漏原正文）
+                "body": DELETED_PLACEHOLDER if deleted else x["body"],
+                "task_id": x["task_id"], "created_at": x["created_at"],
+                "deleted": deleted, "edited": bool(x["edited_at"]),
+            })
+        return {"messages": out}
+
+    @mcp.tool
+    def message_delete(message_id: int) -> dict:
+        """删除自己发的一条消息（软删）：仅作者本人、仅 kind='chat'。
+        删除即把正文替换为占位文本并记 deleted_at，原正文不留存；审计只记
+        message_id、不记正文。task_card/report/approval_request/system 等
+        结构性消息不可删（它们是任务与批准的账面）。已删除的不可重复删。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        m = conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+        if not m:
+            conn.close()
+            raise ValueError(f"no such message: {message_id}")
+        if m["author_id"] != me["id"]:
+            conn.close()
+            raise ValueError("only the author can delete this message")
+        if m["kind"] != "chat":
+            conn.close()
+            raise ValueError(f"only chat messages can be deleted (kind={m['kind']})")
+        if m["deleted_at"]:
+            conn.close()
+            raise ValueError(f"message {message_id} already deleted")
+        conn.execute("UPDATE messages SET body=?, deleted_at=? WHERE id=?",
+                     (DELETED_PLACEHOLDER, time.time(), message_id))
+        audit(conn, me["name"], "message_delete", f"message {message_id}")
+        conn.commit()
+        conn.close()
+        return {"message_id": message_id, "deleted": True}
+
+    @mcp.tool
+    def message_edit(message_id: int, new_body: str) -> dict:
+        """编辑自己发的一条消息正文：仅作者本人、仅 kind='chat'、未删除、
+        new_body 不可为空。更新正文并记 edited_at；审计只记 message_id、
+        不记新旧正文（旧正文不留存）。"""
+        me = authenticate()
+        require(me)
+        if not new_body or not new_body.strip():
+            raise ValueError("new_body must not be empty")
+        conn = db()
+        m = conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+        if not m:
+            conn.close()
+            raise ValueError(f"no such message: {message_id}")
+        if m["author_id"] != me["id"]:
+            conn.close()
+            raise ValueError("only the author can edit this message")
+        if m["kind"] != "chat":
+            conn.close()
+            raise ValueError(f"only chat messages can be edited (kind={m['kind']})")
+        if m["deleted_at"]:
+            conn.close()
+            raise ValueError(f"message {message_id} already deleted")
+        conn.execute("UPDATE messages SET body=?, edited_at=? WHERE id=?",
+                     (new_body, time.time(), message_id))
+        audit(conn, me["name"], "message_edit", f"message {message_id}")
+        conn.commit()
+        conn.close()
+        return {"message_id": message_id, "edited": True}
 
     @mcp.tool
     def task_create(room: str, title: str, body: str, assignee_name: str = "") -> dict:
