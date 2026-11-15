@@ -19,7 +19,14 @@
         回池按类别×尝试次数算 next_claim_at 指数退避，task_claim 跳过未到期
         任务；task_clear_backoff 为调度员手动清退避；task_release 为调度员把
         blocked 任务放回池（顺带补齐既有缺口：此前 blocked 只有 cancel 一条
-        出路；放回按 fail_class 算退避，尝试上限烧满时拒绝放回）。共 30 工具。
+        出路；放回按 fail_class 算退避，尝试上限烧满时拒绝放回）。
+        留痕转交（2026-11-15 群主拍板：成员互派以留痕转交形态采纳）：
+        task_transfer 持有人（或调度员强制）把 claimed/working 任务转给另一
+        成员——归属换人、claim_token 轮换、租约重计时、attempts 不动、
+        running 的 run 以 outcome='transferred' 关闭；转交链落 task_transfers
+        表 + audit + 房间调度员消息三处留痕，task_transfers_list 查链。
+        转交不改变任务的风险与批准状态：未决 approval 跟随任务，不失效、
+        不重发（权限按风险分级在本轮只落此条可执行口径）。共 32 工具。
   任务状态机: open -> claimed -> working -> review -> done
               旁路: blocked / released(回池) / cancelled
   认领原子性: 单条 UPDATE ... WHERE status='open' 决胜负，输家 rowcount=0。
@@ -46,6 +53,7 @@ DB_PATH = os.path.join(BASE, "pack.db")
 PORT = int(os.environ.get("PACK_HUB_PORT", "8794"))
 LEASE_SECONDS = int(os.environ.get("PACK_LEASE_SECONDS", "1800"))
 MAX_ATTEMPTS = 3
+TRANSFER_CAP = 3  # 规格 §4.8/§4.7：同一任务转交链（接力）上限，含转交在内
 
 # ---------------- 失败分类与退避回池（学习轮合成清单第 3 项） ----------------
 # 抄 LangGraph 的「先分类、再决定重试」（RetryPolicy 形状 + default_retry_on
@@ -129,6 +137,10 @@ CREATE TABLE IF NOT EXISTS member_memory_versions(
   origin TEXT NOT NULL, source_refs TEXT NOT NULL DEFAULT '[]',
   size INTEGER NOT NULL, created_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_memver ON member_memory_versions(member, scope, key, id DESC);
+CREATE TABLE IF NOT EXISTS task_transfers(
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, from_member TEXT NOT NULL,
+  to_member TEXT NOT NULL, reason TEXT, actor TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_transfers_task ON task_transfers(task_id, id);
 """
 
 
@@ -1164,6 +1176,135 @@ def build_server():
         conn.commit()
         conn.close()
         return {"task_id": task_id, "status": "open", "fail_class": fc, "next_claim_at": nca}
+
+    @mcp.tool
+    def task_transfer(task_id: int, claim_token: str, to_member: str, reason: str = "") -> dict:
+        """留痕转交（2026-11-15 群主拍板）：当前持有人把 claimed/working 的
+        任务转交给另一名成员（成员互派只许走这一条有账的路，不许凭空造卡、
+        不许私下递活）。调用者须为当前持有人（claim_token 匹配）；调度员可
+        凭自身身份强制转交（claim_token 传空即可）。目标须是存在的
+        role=member 成员，不得是自己，不得是 owner/dispatcher；
+        review/done/blocked/cancelled 等非 claimed/working 状态一律拒绝。
+        语义：归属换人并生成新 claim_token（旧 token 立即失效，且旧持有人
+        因 assignee 已变、_holder 校验过不去，拿新 token 也用不了）；租约按
+        新持有人重新计时；attempts 不变（转交不消耗也不重置尝试次数）；
+        退避 next_claim_at 清除；若有 running 的 run，以 outcome='transferred'
+        关闭（新持有人接手后自行 run_start，fence 继续递增）。
+        接力上限（规格 §4.8 计入 §4.7）：同一任务转交链长度（task_transfers
+        行数）已达 TRANSFER_CAP（3）时再次转交整笔拒绝——先写
+        transfer_cap_reject 审计（actor=调用者）并在房间留一条调度员消息
+        提示已达上限、上报调度员处理，提交后才抛错，任务归属不变；
+        调度员强制转交同样受此上限约束。
+        留痕三处：task_transfers 落一行、audit 写 task_transfer、房间留一条
+        调度员消息「任务#N 已由 A 转交 B：<reason>」。
+        权限分级口径：转交不改变任务的风险与批准状态——带未决 approval 的
+        任务转交后批准请求跟随任务，不失效、不重发。
+        返回 new_claim_token 供转交方转达新持有人（执行体接入契约见 DEPLOY）。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            with _lock:
+                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if not t:
+                    raise ValueError(f"no such task: {task_id}")
+                if t["status"] not in ("claimed", "working"):
+                    raise ValueError(
+                        f"task {task_id} not transferable (status={t['status']}); "
+                        "only claimed/working tasks can be transferred")
+                forced = me["role"] == "dispatcher"
+                if not forced:
+                    _holder(conn, me, task_id, claim_token)
+                chain_len = conn.execute(
+                    "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=?",
+                    (task_id,)).fetchone()["n"]
+                if chain_len >= TRANSFER_CAP:
+                    holder_row = conn.execute(
+                        "SELECT name FROM members WHERE id=?",
+                        (t["assignee"],)).fetchone()
+                    holder_name = holder_row["name"] if holder_row else str(t["assignee"])
+                    disp0 = conn.execute(
+                        "SELECT id FROM members WHERE role='dispatcher'").fetchone()
+                    now0 = time.time()
+                    conn.execute(
+                        """INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)
+                           VALUES(?,?,'chat',?,?,?)""",
+                        (t["room_id"], disp0["id"] if disp0 else me["id"],
+                         f"任务#{task_id} 转交已达接力上限（{chain_len}/{TRANSFER_CAP}），"
+                         f"当前持有人 {holder_name}，已上报调度员处理",
+                         task_id, now0))
+                    audit(conn, me["name"], "transfer_cap_reject",
+                          f"task {task_id} chain={chain_len} cap={TRANSFER_CAP}"
+                          + (" (forced)" if forced else ""))
+                    conn.commit()
+                    raise ValueError(
+                        f"task {task_id} transfer relay cap reached "
+                        f"(chain {chain_len}/{TRANSFER_CAP}); "
+                        "reported to dispatcher")
+                target = conn.execute(
+                    "SELECT * FROM members WHERE name=?", (to_member,)).fetchone()
+                if not target:
+                    raise ValueError(f"no such member: {to_member}")
+                if target["role"] != "member":
+                    raise ValueError(
+                        f"transfer target must be a member (got {to_member} "
+                        f"with role={target['role']})")
+                if target["id"] == t["assignee"]:
+                    raise ValueError("cannot transfer to the current holder (self)")
+                from_row = conn.execute(
+                    "SELECT name FROM members WHERE id=?", (t["assignee"],)).fetchone()
+                from_name = from_row["name"] if from_row else str(t["assignee"])
+                _close_run(conn, task_id, "transferred", me["name"])
+                new_tok = secrets.token_urlsafe(24)
+                now = time.time()
+                conn.execute(
+                    """UPDATE tasks SET assignee=?, claim_token=?, lease_expires=?,
+                       next_claim_at=NULL, updated_at=? WHERE id=?""",
+                    (target["id"], new_tok, now + LEASE_SECONDS, now, task_id))
+                conn.execute(
+                    """INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (task_id, from_name, to_member, reason or None, me["name"], now))
+                disp = conn.execute(
+                    "SELECT id FROM members WHERE role='dispatcher'").fetchone()
+                body = f"任务#{task_id} 已由 {from_name} 转交 {to_member}"
+                if reason:
+                    body += f"：{reason}"
+                conn.execute(
+                    """INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)
+                       VALUES(?,?,'chat',?,?,?)""",
+                    (t["room_id"], disp["id"] if disp else me["id"], body, task_id, now))
+                audit(conn, me["name"], "task_transfer",
+                      f"task {task_id} {from_name}->{to_member}"
+                      + (" (forced)" if forced else "")
+                      + (f": {reason}" if reason else ""))
+                conn.commit()
+            return {"task_id": task_id, "status": t["status"],
+                    "from_member": from_name, "to_member": to_member,
+                    "new_claim_token": new_tok,
+                    "lease_expires": now + LEASE_SECONDS,
+                    "attempts": t["attempts"], "forced": forced}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def task_transfers_list(task_id: int) -> dict:
+        """调度员查某任务的转交链（留痕转交）：按发生顺序列出每次转交的
+        from_member / to_member / reason / actor / created_at，与 audit 的
+        task_transfer 记录互相印证。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        t = conn.execute("SELECT id FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not t:
+            conn.close()
+            raise ValueError(f"no such task: {task_id}")
+        rows = conn.execute(
+            """SELECT id, task_id, from_member, to_member, reason, actor, created_at
+               FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
+            (task_id,)).fetchall()
+        conn.close()
+        return {"task_id": task_id, "transfers": [dict(x) for x in rows]}
 
     @mcp.tool
     def run_start(task_id: int, claim_token: str) -> dict:
