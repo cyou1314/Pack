@@ -6,7 +6,9 @@
         task_update / task_complete / task_block / heartbeat / task_list / task_review /
         run_start / run_finish / run_list（附录 G.1 第 4 条 Run 层 fence）/
         rule_list / rule_upsert / rule_delete（附录 G.1 第 1 条 批准规则库）/
-        review_file（附录 G.1 第 2 条 独立审查者留痕）
+        review_file（附录 G.1 第 2 条 独立审查者留痕）/
+        egress_rule_list / egress_rule_upsert / egress_rule_delete / egress_check
+        （附录 G.1 第 3 条 数据出口管制·中枢判定：站点规则 + 群主点名 + 审计）
   任务状态机: open -> claimed -> working -> review -> done
               旁路: blocked / released(回池) / cancelled
   认领原子性: 单条 UPDATE ... WHERE status='open' 决胜负，输家 rowcount=0。
@@ -26,6 +28,7 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.parse
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE, "pack.db")
@@ -64,6 +67,10 @@ CREATE TABLE IF NOT EXISTS approval_rules(
   id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
   effect TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
   created_by TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(action, target));
+CREATE TABLE IF NOT EXISTS egress_rules(
+  id INTEGER PRIMARY KEY, pattern TEXT NOT NULL UNIQUE, effect TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS review_log(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, target_url TEXT NOT NULL,
   owner_quote TEXT NOT NULL, member_desc TEXT NOT NULL, verdict TEXT NOT NULL,
@@ -166,6 +173,120 @@ def _approval_gate(conn, room_id, msg_id, body):
         (room_id, disp["id"], text, tid, time.time()))
     audit(conn, "rule-engine", act, f"task {tid} rule#{rule['id']} {action}->{target}")
     return {"auto_decision": rule["effect"], "rule_id": rule["id"], "task_id": tid}
+
+
+# ---------------- 数据出口管制·中枢判定（SPEC 附录 G.1 第 3 条） ----------------
+# 防线不放在识别注入文本，放在管出口：成员抓任何 http(s) 前先经 egress_check
+# 判定。本轮中枢只落策略与判定，执行体按结论行事（ask 就走 approval_request
+# 等决议）是 Mac 侧接入的事，见 hub-staging4/DEPLOY.md。
+# 判定顺序（G.1 第 3 条四类免问站点在本轮的落地）：
+#   ① egress_rules 命中（host 相等或点边界后缀）→ 按规则 effect（allow/ask）；
+#   ② task_id 给出且群主（dispatcher/owner）创建的该任务 title/body 里
+#      出现过同站 host（相等或任一为另一的子域）→ allow（群主点名）；
+#   ③ 其余一律 ask，无例外通道。
+# 「本任务内已批准的」站点随批准决议落在具体任务上下文里，由执行体在
+# 放行后自行放行同站后续抓取，不在中枢另建表；「例程点名」与「已污染收紧」
+# （非群主发起的 run 写记忆先问）属执行体/记忆层，列入 DEPLOY 后续项。
+# 每次判定（含畸形 URL 拒绝）都写审计：actor='egress'，与真人/规则/审查区分。
+
+_HOST_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+_HOSTISH_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
+
+
+def _egress_host(raw):
+    """把 URL 规范化成可比对的 host：scheme 必须是 http/https（缺失/其他
+    直接拒绝）；urllib 的 hostname 自动剥 userinfo 与端口并转小写；
+    再剥尾点、非 ASCII 走 IDNA。畸形一律 ValueError 并说明原因。"""
+    u = (raw or "").strip()
+    if not u:
+        raise ValueError("malformed url: empty")
+    try:
+        parts = urllib.parse.urlsplit(u)
+    except ValueError as e:
+        raise ValueError(f"malformed url: {e}")
+    if parts.scheme.lower() not in ("http", "https"):
+        raise ValueError("malformed url: scheme must be http or https")
+    host = parts.hostname
+    if not host:
+        raise ValueError("malformed url: no host")
+    host = host.rstrip(".")
+    if not host or ".." in host or any(c in host for c in " \t/\\"):
+        raise ValueError(f"malformed host: {host!r}")
+    if not host.isascii():
+        try:
+            host = host.encode("idna").decode("ascii")
+        except (UnicodeError, ValueError):
+            raise ValueError(f"malformed host (idna): {host!r}")
+    return host
+
+
+def _egress_pattern(raw):
+    """规则 pattern 规范化：去空白/小写/剥 *. 前缀与尾点；必须是至少含一个点
+    的合法域名（单标签 pattern 太宽，不收；IP 字面量本轮不支持）。"""
+    p = (raw or "").strip().lower()
+    if p.startswith("*."):
+        p = p[2:]
+    p = p.rstrip(".")
+    labels = p.split(".") if p else []
+    if len(labels) < 2 or any(not _HOST_LABEL_RE.fullmatch(x) for x in labels):
+        raise ValueError(f"malformed egress pattern: {raw!r} (want a domain like example.com)")
+    return p
+
+
+def _host_covers(host, pattern):
+    """pattern 覆盖 host：相等，或 host 是 pattern 的子域（点边界后缀）。"""
+    return host == pattern or host.endswith("." + pattern)
+
+
+def _egress_rule_eval(conn, host):
+    """在启用的 egress_rules 里找覆盖 host 的最具体一条：
+    精确相等优先，其次 pattern 最长（最深的子域规则优先）。"""
+    rows = conn.execute("SELECT * FROM egress_rules WHERE enabled=1").fetchall()
+    hits = [r for r in rows if _host_covers(host, r["pattern"])]
+    if not hits:
+        return None
+    hits.sort(key=lambda r: (r["pattern"] != host, -len(r["pattern"])))
+    return hits[0]
+
+
+def _task_hosts(text):
+    """从任务 title/body 里抽出出现过的 host 候选（小写、剥尾点）。
+    正文由群主在建任务时写死、成员改不了，抽取宽松些无妨：
+    宁可多抽（文件名之类），判定还要与目标 host 同站才算命中。"""
+    out = set()
+    for m in _HOSTISH_RE.finditer((text or "").lower()):
+        out.add(m.group(0).rstrip("."))
+    return out
+
+
+def _task_mention(conn, task_id, host):
+    """群主点名判定：任务须存在且由群主侧（dispatcher 角色或 owner 名）
+    创建——成员自建任务里写 host 不算点名，防自授。其 title/body 出现过
+    与 host 同站的 host（相等、或任一是另一的子域）才算点名。"""
+    t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if not t:
+        raise ValueError(f"no such task: {task_id}")
+    creator = conn.execute("SELECT name, role FROM members WHERE id=?",
+                           (t["created_by"],)).fetchone()
+    if not creator or not (creator["role"] == "dispatcher" or creator["name"] == "owner"):
+        return None
+    for m in _task_hosts(f"{t['title']}\n{t['body']}"):
+        if host == m or host.endswith("." + m) or m.endswith("." + host):
+            return t
+    return None
+
+
+def _egress_decide(conn, url, task_id):
+    """纯判定（不写审计）：返回 (host, decision, source)；
+    畸形 URL / 不存在的 task_id 抛 ValueError。"""
+    host = _egress_host(url)
+    rule = _egress_rule_eval(conn, host)
+    if rule:
+        return host, rule["effect"], f"rule#{rule['id']}"
+    if task_id:
+        if _task_mention(conn, task_id, host):
+            return host, "allow", f"task#{task_id}-mention"
+    return host, "ask", "none"
 
 
 # ---------------- 独立审查者（SPEC 附录 G.1 第 2 条） ----------------
@@ -733,6 +854,85 @@ def build_server():
         conn.commit()
         conn.close()
         return {"deleted": rule_id}
+
+    @mcp.tool
+    def egress_rule_list() -> dict:
+        """调度员查看出口站点规则（附录 G.1 第 3 条）：全部规则，含已停用的。
+        与 rule_list（批准规则库）同构，那套管「动作批不批」，这套管「站点抓不抓」"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        rows = conn.execute(
+            "SELECT id, pattern, effect, source, enabled, created_by, created_at "
+            "FROM egress_rules ORDER BY id").fetchall()
+        conn.close()
+        return {"rules": [dict(r) for r in rows]}
+
+    @mcp.tool
+    def egress_rule_upsert(pattern: str, effect: str, source: str = "") -> dict:
+        """调度员新增/翻转一条出口站点规则。pattern 是域名（如 example.com），
+        覆盖其自身与全部子域（点边界后缀比对）；effect=allow（免问可抓）|
+        ask（明示每次要问，压过群主点名）。同 pattern 重复调用即更新（翻转）。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if effect not in ("allow", "ask"):
+            raise ValueError("effect must be 'allow' or 'ask'")
+        pattern = _egress_pattern(pattern)
+        conn = db()
+        conn.execute(
+            """INSERT INTO egress_rules(pattern,effect,source,enabled,created_by,created_at)
+               VALUES(?,?,?,1,?,?)
+               ON CONFLICT(pattern) DO UPDATE SET
+                 effect=excluded.effect, source=excluded.source, enabled=1""",
+            (pattern, effect, source, me["name"], time.time()))
+        row = conn.execute("SELECT id FROM egress_rules WHERE pattern=?",
+                           (pattern,)).fetchone()
+        audit(conn, me["name"], "egress_rule_upsert", f"{pattern} = {effect}")
+        conn.commit()
+        conn.close()
+        return {"rule_id": row["id"], "pattern": pattern, "effect": effect}
+
+    @mcp.tool
+    def egress_rule_delete(rule_id: int) -> dict:
+        """调度员删除一条出口站点规则；删后该站点恢复走点名/弹问判定。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        cur = conn.execute("DELETE FROM egress_rules WHERE id=?", (rule_id,))
+        if cur.rowcount != 1:
+            conn.close()
+            raise ValueError(f"no such egress rule: {rule_id}")
+        audit(conn, me["name"], "egress_rule_delete", f"egress_rule#{rule_id}")
+        conn.commit()
+        conn.close()
+        return {"deleted": rule_id}
+
+    @mcp.tool
+    def egress_check(url: str, task_id: int = 0) -> dict:
+        """成员抓取前判定（附录 G.1 第 3 条）：这个 URL 现在能不能直接抓。
+        顺序：①出口规则命中 → 按规则（allow/ask）；②task_id 给出且群主在
+        该任务正文里点名过同站 → allow；③其余 → ask（须走 approval_request
+        等决议，无例外通道）。畸形 URL 直接报错拒绝。每次判定写审计
+        （actor='egress'）。返回 decision / host / source（命中来源）。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            try:
+                host, decision, source = _egress_decide(conn, url, task_id)
+            except ValueError as e:
+                audit(conn, "egress", "egress_check",
+                      f"member={me['name']} decision=reject reason={e} url={(url or '')[:200]}")
+                conn.commit()
+                raise
+            audit(conn, "egress", "egress_check",
+                  f"member={me['name']} host={host} decision={decision} "
+                  f"source={source} url={(url or '')[:200]}")
+            conn.commit()
+            return {"decision": decision, "host": host, "source": source,
+                    "task_id": task_id}
+        finally:
+            conn.close()
 
     @mcp.tool
     def review_file(task_id: int, target_url: str, owner_quote: str,
