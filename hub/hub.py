@@ -4,7 +4,9 @@
 单文件 FastMCP 服务 + SQLite。实现 SPEC-v0 第 3/4 节协议：
   工具: member_register / room_read_new / room_post / task_create / task_claim /
         task_update / task_complete / task_block / heartbeat / task_list / task_review /
-        run_start / run_finish / run_list（附录 G.1 第 4 条 Run 层 fence）
+        run_start / run_finish / run_list（附录 G.1 第 4 条 Run 层 fence）/
+        rule_list / rule_upsert / rule_delete（附录 G.1 第 1 条 批准规则库）/
+        review_file（附录 G.1 第 2 条 独立审查者留痕）
   任务状态机: open -> claimed -> working -> review -> done
               旁路: blocked / released(回池) / cancelled
   认领原子性: 单条 UPDATE ... WHERE status='open' 决胜负，输家 rowcount=0。
@@ -62,6 +64,10 @@ CREATE TABLE IF NOT EXISTS approval_rules(
   id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
   effect TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
   created_by TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(action, target));
+CREATE TABLE IF NOT EXISTS review_log(
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, target_url TEXT NOT NULL,
+  owner_quote TEXT NOT NULL, member_desc TEXT NOT NULL, verdict TEXT NOT NULL,
+  reviewer TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, member_id INTEGER NOT NULL,
   fence INTEGER NOT NULL, claim_token TEXT, status TEXT NOT NULL DEFAULT 'running',
@@ -160,6 +166,54 @@ def _approval_gate(conn, room_id, msg_id, body):
         (room_id, disp["id"], text, tid, time.time()))
     audit(conn, "rule-engine", act, f"task {tid} rule#{rule['id']} {action}->{target}")
     return {"auto_decision": rule["effect"], "rule_id": rule["id"], "task_id": tid}
+
+
+# ---------------- 独立审查者（SPEC 附录 G.1 第 2 条） ----------------
+# Pack 的现实版：没有自动审查模型，审查者 = 调度员的一个受限审查动作。
+# 审查时只许看三样证据：目标 URL、群主原话、成员描述；永不看成员读过的
+# 页面/结果/入站消息（防审查者本身被注入）。限制是结构性的——review_file
+# 的入参只有这三项证据 + 结论，工具签名本身没有传页面内容的口子。
+# 本条落的是留痕与闸门：审查入 review_log、决议按既有格式回房间、
+# 审计 actor='reviewer' 与真人消息决议、规则自动决议区分。
+# 顺序：规则库在 room_post 落库时已同步求值，未命中才轮到审查/人工；
+# review_file 只受理「有 approval_request 且其后尚无决议」的待批任务，
+# 已决议（规则自动 / 人工消息 / 先前审查）一律拒绝重复 filing。
+# 注意：审查纪律是流程约束——工具保证的是留痕完整与字段受限；
+# 调度员在别处看过什么，工具管不住，也不假装管得住。
+
+def _approval_state(conn, task_id):
+    """定位某任务最近一轮待批状态：返回 (request_msg, decided_by)。
+    request_msg 为最近一条 approval_request 消息（task_id 已补写，或正文含「任务#N」），
+    没有返回 None；decided_by 为其后已出现的决议来源
+    （'message' = 调度员决议消息，含规则引擎代发；'review' = 先前审查留痕），未决议为 None。"""
+    req = None
+    rows = conn.execute(
+        "SELECT * FROM messages WHERE kind='approval_request' ORDER BY id DESC").fetchall()
+    for r in rows:
+        if r["task_id"] == task_id:
+            req = r
+            break
+        m = TASK_REF_RE.search(r["body"] or "")
+        if m and int(m.group(1)) == task_id:
+            req = r
+            break
+    if not req:
+        return None, None
+    disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+    if disp:
+        pat = re.compile(r"^(批准|拒绝)\s*任务#%d(?!\d)" % task_id)
+        after = conn.execute(
+            "SELECT body FROM messages WHERE id>? AND kind='chat' AND author_id=? ORDER BY id",
+            (req["id"], disp["id"])).fetchall()
+        for r in after:
+            if pat.match(r["body"] or ""):
+                return req, "message"
+    seen = conn.execute(
+        "SELECT id FROM review_log WHERE task_id=? AND created_at>=?",
+        (task_id, req["created_at"])).fetchone()
+    if seen:
+        return req, "review"
+    return req, None
 
 
 def hash_token(tok):
@@ -679,6 +733,63 @@ def build_server():
         conn.commit()
         conn.close()
         return {"deleted": rule_id}
+
+    @mcp.tool
+    def review_file(task_id: int, target_url: str, owner_quote: str,
+                    member_desc: str, verdict: str) -> dict:
+        """调度员以独立审查者身份对待批任务留痕决议（附录 G.1 第 2 条）。
+        入参只有三项审查证据——目标 URL、群主原话、成员描述——加结论
+        allow/deny；签名里刻意没有页面内容/成员结果/入站消息的位置：
+        审查者永不看成员读过的东西，防审查环节本身被注入。
+        顺序在规则库之后：规则已在 approval_request 落库时同步求值，
+        本工具只受理尚未被规则自动决议、人工也未决议的待批任务，
+        已决议的重复 filing 直接拒绝。三项证据缺一不可。
+        allow 在房间留「批准 任务#N（独立审查）」、deny 留「拒绝 任务#N（独立审查）」，
+        同时写 review_log 与审计（actor='reviewer'）。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if verdict not in ("allow", "deny"):
+            raise ValueError("verdict must be 'allow' or 'deny'")
+        target_url = target_url.strip()
+        owner_quote = owner_quote.strip()
+        member_desc = member_desc.strip()
+        for label, v in (("target_url", target_url), ("owner_quote", owner_quote),
+                         ("member_desc", member_desc)):
+            if not v:
+                raise ValueError(f"missing evidence field: {label}")
+        conn = db()
+        try:
+            t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if not t:
+                raise ValueError(f"no such task: {task_id}")
+            req, decided_by = _approval_state(conn, task_id)
+            if not req:
+                raise ValueError(
+                    f"task {task_id} has no approval request on file; nothing to review")
+            if decided_by:
+                raise ValueError(
+                    f"task {task_id} already decided (via {decided_by}); "
+                    "review_file only handles undecided approvals")
+            now = time.time()
+            cur = conn.execute(
+                """INSERT INTO review_log(task_id,target_url,owner_quote,member_desc,
+                   verdict,reviewer,created_at) VALUES(?,?,?,?,?,?,?)""",
+                (task_id, target_url, owner_quote, member_desc, verdict, me["name"], now))
+            log_id = cur.lastrowid
+            text = (f"批准 任务#{task_id}（独立审查）" if verdict == "allow"
+                    else f"拒绝 任务#{task_id}（独立审查）")
+            cur = conn.execute(
+                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
+                "VALUES(?,?,'chat',?,?,?)",
+                (t["room_id"], me["id"], text, task_id, now))
+            mid = cur.lastrowid
+            audit(conn, "reviewer", f"review_{verdict}",
+                  f"task {task_id} review#{log_id} url={target_url}")
+            conn.commit()
+            return {"task_id": task_id, "verdict": verdict,
+                    "review_id": log_id, "message_id": mid}
+        finally:
+            conn.close()
 
     @mcp.tool
     def heartbeat() -> dict:
