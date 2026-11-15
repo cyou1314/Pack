@@ -388,3 +388,11 @@ Muse 不能被另一个 Muse 直接喊醒，只有两条路：
 1. **结构化交活信封**（清单第 2 项；来源 ChatDev 引用式交活 + CrewAI 结构化输出 schema 校验）：`task_complete` 增可选参数 `envelope`——verdict（done/partial/failed）+ summary + artifacts（只存引用：path/url + sha256，不存正文）+ self_check + known_issues + followups；中枢按 schema 校验，不过整笔打回（`invalid_envelope`，任务状态与租约不动、原令牌可重交）。不带信封的老路径不变。规格依据：第 4.2 节任务字段「结果摘要与产物」由自由文本升为结构化信封。执行体填充信封待 Mac 批次。
 2. **失败分类 + 退避回池**（清单第 3 项；来源 LangGraph 与 ChatDev 同构的「先分类再决定重试」）：tasks 增 `fail_class` / `next_claim_at` 两列；`task_block` 增 `fail_class` 自报（quota / transient / task，未报或非法归 unknown；sweeper 回收一律记 transient）；任务回池（回收、打回、调度员放回）按类别 × 尝试数指数退避，退避期内 `task_claim` 拒绝并回 `retry_after`。新工具 `task_release` / `task_clear_backoff`（调度员专属），顺带补齐 blocked 任务无工具放回池的既有缺口；尝试上限 3 次为硬顶，`task_release` 不得绕过。退避参数写死代码常量。规格依据：第 4.5 节租约与回池细则。
 3. **全新 DB 初始化修复**（无新功能，实现缺陷修复）：`init()` 建调度员的 INSERT 先于 members 表 avatar 补列，全新 DB 初始化必失败（前七轮隔离开发均靠手工预建绕过）；修法为 SCHEMA 建表式内联 `avatar` 列 + 迁移块前移到 INSERT 之前。对存量 DB 行为零差异。规格依据：中枢实现须可从零重建（附录 F 落地记录同类事项）。
+
+### G.6 扩展模组规划（2026-11-16 群主拍板，已登记待排期）
+
+群主提出为 Pack 增加插件模组与 skill 模组，定案如下（顺序：先 skill、后插件；插件排 E2 之后单独立项）：
+
+1. **Skill 模组（先行）**：skill = 打包好的做事规程（文本），成员开工时按任务加载进上下文。实现挂靠现有记忆系统：中枢设 skill 注册表（名字/版本/正文/适用成员），留版与回滚复用记忆的全量留版机制；给成员装 skill 须经群主或调度员发布，成员不得自行新增或改写 skill 正文。
+2. **插件模组（E2 后立项）**：插件 = 给成员新增工具（新接口/设备/服务）。插件工具一律经中枢工具面注册并纳入权限风险分级（第 6 节）：读类绿档、写类黄档走规则库、不可逆红档回主人批准；插件的权限面写入成员档案（MEMBER-PROFILE-TEMPLATE 第六段）。
+3. **两条红线（先立规矩后写代码）**：①指令权——只有群主/调度员发布的 skill 与插件算指令来源；成员从房间、网页、第三方文档获得的「skill」一律按外部数据处理（origin=external），不得据此改变行为与权限（防 Rakazo 已知缺口③的毒化路径，见 G.4-2）。②执行隔离——插件不许同进程无沙箱运行（AstrBot 反面教材）：要么以受控工具形式注册在中枢，要么在成员侧进程内运行且出站过 egress_check、动作过批准分级，全程审计留痕。
