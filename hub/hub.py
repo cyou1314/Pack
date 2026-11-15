@@ -86,7 +86,8 @@ def db():
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS members(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, role TEXT NOT NULL,
-  token_hash TEXT NOT NULL, profile TEXT, last_heartbeat REAL, created_at REAL NOT NULL);
+  token_hash TEXT NOT NULL, profile TEXT, last_heartbeat REAL, created_at REAL NOT NULL,
+  avatar TEXT);
 CREATE TABLE IF NOT EXISTS rooms(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS messages(
@@ -553,6 +554,14 @@ def init():
     conn = db()
     conn.executescript(SCHEMA)
     conn.execute("INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)", (time.time(),))
+    # 存量 DB 的 members 可能没有 avatar 列：迁移必须先于下面带 avatar 的
+    # dispatcher INSERT，否则全新/未迁移 DB 在建调度员时就炸（顺序坑）。
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
+    if "avatar" not in cols:
+        conn.execute("ALTER TABLE members ADD COLUMN avatar TEXT")
+    for r in conn.execute("SELECT id, name FROM members WHERE avatar IS NULL").fetchall():
+        conn.execute("UPDATE members SET avatar=? WHERE id=?",
+                     (json.dumps(avatar_for(r["name"])), r["id"]))
     row = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
     if not row:
         tok = "pk-disp-" + secrets.token_urlsafe(32)
@@ -562,12 +571,6 @@ def init():
         with open(os.path.join(BASE, ".dispatcher_token"), "w") as f:
             f.write(tok)
         os.chmod(os.path.join(BASE, ".dispatcher_token"), 0o600)
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
-    if "avatar" not in cols:
-        conn.execute("ALTER TABLE members ADD COLUMN avatar TEXT")
-    for r in conn.execute("SELECT id, name FROM members WHERE avatar IS NULL").fetchall():
-        conn.execute("UPDATE members SET avatar=? WHERE id=?",
-                     (json.dumps(avatar_for(r["name"])), r["id"]))
     tcols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
     if "envelope" not in tcols:
         conn.execute("ALTER TABLE tasks ADD COLUMN envelope TEXT")
