@@ -242,7 +242,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("Pack")
+            .navigationTitle("♾️")
         } content: {
             switch state.selection {
             case "tasks": TaskListView(state: state)
@@ -254,7 +254,7 @@ struct ContentView: View {
             if state.selection == "tasks", let t = state.selectedTask {
                 TaskDetailView(state: state, task: t)
             } else {
-                Text("Pack 操作台").foregroundStyle(.secondary)
+                Text("♾️ 操作台").foregroundStyle(.secondary)
             }
         }
         .sheet(isPresented: $state.showCreateTask) { CreateTaskView(state: state) }
