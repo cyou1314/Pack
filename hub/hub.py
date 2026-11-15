@@ -13,6 +13,13 @@
         （附录 G.1 第 5 条 记忆硬顶：分层限额 + 全量留版 + 来源标记，规格 SYNTHESIS §3）/
         task_complete 可选结构化交活信封 envelope（学习轮合成清单第 2 项：
         ChatDev 引用式交活 + CrewAI schema 校验；不过整笔打回、无信封走原路径）
+        失败分类与退避回池（学习轮合成清单第 3 项：LangGraph 先分类再退避 +
+        ChatDev 复核环硬顶同构）：task_block 可选 fail_class 自报类别
+        （quota/transient/task/unknown），sweeper 回收一律记 transient；
+        回池按类别×尝试次数算 next_claim_at 指数退避，task_claim 跳过未到期
+        任务；task_clear_backoff 为调度员手动清退避；task_release 为调度员把
+        blocked 任务放回池（顺带补齐既有缺口：此前 blocked 只有 cancel 一条
+        出路；放回按 fail_class 算退避，尝试上限烧满时拒绝放回）。共 30 工具。
   任务状态机: open -> claimed -> working -> review -> done
               旁路: blocked / released(回池) / cancelled
   认领原子性: 单条 UPDATE ... WHERE status='open' 决胜负，输家 rowcount=0。
@@ -40,6 +47,31 @@ PORT = int(os.environ.get("PACK_HUB_PORT", "8794"))
 LEASE_SECONDS = int(os.environ.get("PACK_LEASE_SECONDS", "1800"))
 MAX_ATTEMPTS = 3
 
+# ---------------- 失败分类与退避回池（学习轮合成清单第 3 项） ----------------
+# 抄 LangGraph 的「先分类、再决定重试」（RetryPolicy 形状 + default_retry_on
+# 分类表）：失败先归类，回池时按类别与已尝试次数算下次可认领时间
+# next_claim_at（指数退避），认领跳过未到期任务——避免上游额度耗尽这类
+# 失败被立刻原样重试、烧满 3 次尝试而死（ChatDev 复核环硬顶的同构教训）。
+# 类别与基数（秒）：quota 长退避（额度/限流，恢复以小时计）、transient 短
+# 退避（网络/上游抖动/执行体失联）、task/unknown 中等（任务本身问题/未自报）。
+# 第 n 次尝试失败的退避 = 基数 * 2^(n-1)，n = attempts（认领时已自增，含本次）。
+# 尝试上限仍是 MAX_ATTEMPTS=3，不因退避改变；参数写死代码常量（与记忆限额
+# 同例：改参数 = 改中枢代码 + 群主批准，不给工具面）。
+FAIL_CLASSES = ("quota", "transient", "task", "unknown")
+BACKOFF_BASE_SECONDS = {"quota": 1800, "transient": 60, "task": 300, "unknown": 300}
+# 隔离测试可注入时钟偏移（秒），把本进程的「现在」整体平移以验退避到期，
+# 免真睡；线上不设此变量、恒为 0。只影响本增量的时间源 _now()。
+TIME_OFFSET = float(os.environ.get("PACK_HUB_TIME_OFFSET", "0"))
+
+
+def _now():
+    return time.time() + TIME_OFFSET
+
+
+def _backoff_seconds(fail_class, attempts):
+    base = BACKOFF_BASE_SECONDS.get(fail_class, BACKOFF_BASE_SECONDS["unknown"])
+    return base * (2 ** max(0, attempts - 1))
+
 _lock = threading.Lock()
 
 
@@ -64,7 +96,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
   created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
   claim_token TEXT, lease_expires REAL, attempts INTEGER NOT NULL DEFAULT 0,
-  result TEXT, envelope TEXT, review_note TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+  result TEXT, envelope TEXT, review_note TEXT, fail_class TEXT, next_claim_at REAL,
+  created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);
 CREATE TABLE IF NOT EXISTS approval_rules(
@@ -538,6 +571,10 @@ def init():
     tcols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
     if "envelope" not in tcols:
         conn.execute("ALTER TABLE tasks ADD COLUMN envelope TEXT")
+    if "fail_class" not in tcols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN fail_class TEXT")
+    if "next_claim_at" not in tcols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN next_claim_at REAL")
     conn.commit()
     conn.close()
     print("init ok")
@@ -572,21 +609,23 @@ def require(me, role=None):
 # ---------------- sweeper ----------------
 
 def sweep_once():
-    now = time.time()
+    now = _now()
     conn = db()
     rows = conn.execute(
         "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
         (now,)).fetchall()
     for t in rows:
         _close_run(conn, t["id"], "reaped", "sweeper")
+        # 租约超时 = 执行体失联，一律归 transient（合成清单第 3 项定死口径）。
         if t["attempts"] >= MAX_ATTEMPTS:
-            conn.execute("UPDATE tasks SET status='blocked', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
+            conn.execute("UPDATE tasks SET status='blocked', claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=NULL, updated_at=? WHERE id=?",
                          (now, t["id"]))
-            audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']}")
+            audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
         else:
-            conn.execute("UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
-                         (now, t["id"]))
-            audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']}")
+            nca = now + _backoff_seconds("transient", t["attempts"])
+            conn.execute("UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=?, updated_at=? WHERE id=?",
+                         (nca, now, t["id"]))
+            audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
     conn.commit()
     conn.close()
     return len(rows)
@@ -822,27 +861,34 @@ def build_server():
 
     @mcp.tool
     def task_claim(task_id: int) -> dict:
-        """认领任务（原子）：只有当前为 open 且（未指派或指派给我）时成功。返回 claim_token，后续更新凭它。"""
+        """认领任务（原子）：只有当前为 open、已过退避时间（next_claim_at）
+        且（未指派或指派给我）时成功。退避未到时报错含 backoff 与剩余秒数，
+        执行体据此跳过该任务。返回 claim_token，后续更新凭它。"""
         me = authenticate()
         require(me)
         conn = db()
         tok = secrets.token_urlsafe(24)
-        now = time.time()
+        now = _now()
         with _lock:
             cur = conn.execute(
                 """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
-                   lease_expires=?, attempts=attempts+1, updated_at=?
-                   WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)""",
-                (me["id"], tok, now + LEASE_SECONDS, now, task_id, me["id"]))
+                   lease_expires=?, attempts=attempts+1, next_claim_at=NULL, updated_at=?
+                   WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)
+                     AND (next_claim_at IS NULL OR next_claim_at<=?)""",
+                (me["id"], tok, now + LEASE_SECONDS, now, task_id, me["id"], now))
             won = cur.rowcount == 1
             if won:
                 audit(conn, me["name"], "task_claim", f"task {task_id}")
             conn.commit()
-        t = conn.execute("SELECT status, assignee FROM tasks WHERE id=?", (task_id,)).fetchone()
+        t = conn.execute("SELECT status, assignee, next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
         conn.close()
         if not t:
             raise ValueError(f"no such task: {task_id}")
         if not won:
+            if t["status"] == "open" and t["next_claim_at"] and t["next_claim_at"] > now:
+                raise ValueError(
+                    f"claim failed: task {task_id} in backoff until {t['next_claim_at']:.0f} "
+                    f"(retry_after={t['next_claim_at'] - now:.0f}s)")
             raise ValueError(f"claim failed: task {task_id} status={t['status']}")
         return {"task_id": task_id, "status": "claimed", "claim_token": tok,
                 "lease_expires": now + LEASE_SECONDS}
@@ -920,25 +966,36 @@ def build_server():
         return out
 
     @mcp.tool
-    def task_block(task_id: int, claim_token: str, reason: str) -> dict:
-        """持有人报卡住：状态转 blocked 并说明原因，等调度员处理。"""
+    def task_block(task_id: int, claim_token: str, reason: str, fail_class: str = "") -> dict:
+        """持有人报卡住：状态转 blocked 并说明原因，等调度员处理。
+        可选 fail_class 自报失败类别（合成清单第 3 项）：quota=额度/限流、
+        transient=网络/上游抖动、task=任务本身问题（如输入缺失）；
+        缺省或非法值一律记 unknown（不报错，老执行体不带此参不受影响）。
+        类别落库并按「类别×当前 attempts」预置 next_claim_at；blocked 本身
+        不自动回池，退避在调度员放回池（task_release，或 task_review 打回
+        review 中的任务）时按 fail_class 重算生效，task_list 可见、
+        task_clear_backoff 可清。"""
         me = authenticate()
         require(me)
+        fc = fail_class if fail_class in FAIL_CLASSES else "unknown"
         conn = db()
-        _holder(conn, me, task_id, claim_token)
-        now = time.time()
+        t = _holder(conn, me, task_id, claim_token)
+        now = _now()
+        nca = now + _backoff_seconds(fc, t["attempts"])
         conn.execute(
-            "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
-            (reason, now, task_id))
+            "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? WHERE id=?",
+            (reason, fc, nca, now, task_id))
         _close_run(conn, task_id, "blocked", me["name"])
-        audit(conn, me["name"], "task_block", f"task {task_id}: {reason}")
+        audit(conn, me["name"], "task_block", f"task {task_id}: {reason} fail_class={fc}")
         conn.commit()
         conn.close()
-        return {"task_id": task_id, "status": "blocked"}
+        return {"task_id": task_id, "status": "blocked", "fail_class": fc, "next_claim_at": nca}
 
     @mcp.tool
     def task_review(task_id: int, approve: bool, note: str = "") -> dict:
-        """调度员验收：approve=True 关单(done)；False 打回回池(open, attempts 保留)。"""
+        """调度员验收：approve=True 关单(done，清 fail_class/退避)；False 打回
+        回池(open, attempts 保留)，并按任务的 fail_class（无则 unknown）与
+        attempts 重算退避 next_claim_at（合成清单第 3 项），到期才可再认领。"""
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
@@ -949,14 +1006,17 @@ def build_server():
         if t["status"] != "review":
             conn.close()
             raise ValueError(f"task {task_id} not in review (status={t['status']})")
-        now = time.time()
+        now = _now()
         if approve:
-            conn.execute("UPDATE tasks SET status='done', review_note=?, updated_at=? WHERE id=?",
+            conn.execute("UPDATE tasks SET status='done', review_note=?, fail_class=NULL, next_claim_at=NULL, updated_at=? WHERE id=?",
                          (note, now, task_id))
         else:
+            fc = t["fail_class"] or "unknown"
+            nca = now + _backoff_seconds(fc, t["attempts"])
             conn.execute(
-                "UPDATE tasks SET status='open', assignee=NULL, review_note=?, updated_at=? WHERE id=?",
-                (note, now, task_id))
+                "UPDATE tasks SET status='open', assignee=NULL, review_note=?, next_claim_at=?, updated_at=? WHERE id=?",
+                (note, nca, now, task_id))
+            audit(conn, me["name"], "task_review_backoff", f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
         audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
         conn.commit()
         conn.close()
@@ -1005,12 +1065,16 @@ def build_server():
 
     @mcp.tool
     def task_list(status: str = "", assignee_name: str = "") -> dict:
-        """列任务（可按状态/被指派人过滤）。运行时靠它找指派给自己成员的活。"""
+        """列任务（可按状态/被指派人过滤）。运行时靠它找指派给自己成员的活。
+        每行带 fail_class（最近失败类别）、next_claim_at（下次可认领时间，
+        epoch 秒）与 backoff_remaining_sec（退避剩余秒数，0=可认领），
+        供看板展示与调度员人工干预（task_clear_backoff）。"""
         me = authenticate()
         require(me)
         conn = db()
         q = """SELECT t.id, t.title, t.body, t.status, mb.name AS assignee, t.attempts,
-                      t.result, t.envelope, t.lease_expires, t.updated_at
+                      t.result, t.envelope, t.lease_expires, t.updated_at,
+                      t.fail_class, t.next_claim_at
                FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee WHERE 1=1"""
         args = []
         if status:
@@ -1033,8 +1097,70 @@ def build_server():
                     d["envelope"] = None
             else:
                 d["envelope"] = None
+            nca = d.get("next_claim_at")
+            d["backoff_remaining_sec"] = int(nca - _now()) if nca and nca > _now() else 0
             out.append(d)
         return {"tasks": out}
+
+    @mcp.tool
+    def task_clear_backoff(task_id: int) -> dict:
+        """调度员手动清退避（合成清单第 3 项配套）：任务须为 open，清掉
+        next_claim_at 后立刻可被认领；fail_class 保留供复盘，不一并清。
+        blocked 等其他状态不受理：blocked 先经 task_release 放回池
+        （放回时按 fail_class 重算退避），之后再清。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not t:
+            conn.close()
+            raise ValueError(f"no such task: {task_id}")
+        if t["status"] != "open":
+            conn.close()
+            raise ValueError(f"task {task_id} not open (status={t['status']})")
+        conn.execute("UPDATE tasks SET next_claim_at=NULL, updated_at=? WHERE id=?",
+                     (_now(), task_id))
+        audit(conn, me["name"], "task_clear_backoff", f"task {task_id} fail_class={t['fail_class']}")
+        conn.commit()
+        conn.close()
+        return {"task_id": task_id, "status": "open", "next_claim_at": None,
+                "fail_class": t["fail_class"]}
+
+    @mcp.tool
+    def task_release(task_id: int, clear_backoff: bool = False) -> dict:
+        """调度员把 blocked 任务放回池（合成清单第 3 项配套；补齐既有缺口——
+        此前 blocked 任务没有任何工具能放回池，只有 task_cancel 一条出路）。
+        放回时按任务的 fail_class（无则 unknown）与 attempts 重算退避
+        next_claim_at；clear_backoff=True 则不设退避、立刻可认领（等价于
+        放回与清退避一步完成）。fail_class 保留供复盘。
+        尝试上限是硬顶：attempts 已达 MAX_ATTEMPTS 的任务拒绝放回，
+        须新建任务或 cancel，不许靠人工放回绕过 3 次上限。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not t:
+            conn.close()
+            raise ValueError(f"no such task: {task_id}")
+        if t["status"] != "blocked":
+            conn.close()
+            raise ValueError(f"task {task_id} not blocked (status={t['status']})")
+        if t["attempts"] >= MAX_ATTEMPTS:
+            conn.close()
+            raise ValueError(
+                f"task {task_id} attempts exhausted ({t['attempts']}>={MAX_ATTEMPTS}); "
+                "create a new task instead")
+        fc = t["fail_class"] or "unknown"
+        now = _now()
+        nca = None if clear_backoff else now + _backoff_seconds(fc, t["attempts"])
+        conn.execute(
+            "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, next_claim_at=?, updated_at=? WHERE id=?",
+            (nca, now, task_id))
+        audit(conn, me["name"], "task_release",
+              f"task {task_id} fail_class={fc} next_claim_at={nca if nca is None else round(nca)}")
+        conn.commit()
+        conn.close()
+        return {"task_id": task_id, "status": "open", "fail_class": fc, "next_claim_at": nca}
 
     @mcp.tool
     def run_start(task_id: int, claim_token: str) -> dict:
