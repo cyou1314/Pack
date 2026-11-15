@@ -3,7 +3,8 @@
 
 单文件 FastMCP 服务 + SQLite。实现 SPEC-v0 第 3/4 节协议：
   工具: member_register / room_read_new / room_post / task_create / task_claim /
-        task_update / task_complete / task_block / heartbeat / task_list / task_review
+        task_update / task_complete / task_block / heartbeat / task_list / task_review /
+        run_start / run_finish / run_list（附录 G.1 第 4 条 Run 层 fence）
   任务状态机: open -> claimed -> working -> review -> done
               旁路: blocked / released(回池) / cancelled
   认领原子性: 单条 UPDATE ... WHERE status='open' 决胜负，输家 rowcount=0。
@@ -61,12 +62,41 @@ CREATE TABLE IF NOT EXISTS approval_rules(
   id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
   effect TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
   created_by TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(action, target));
+CREATE TABLE IF NOT EXISTS runs(
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, member_id INTEGER NOT NULL,
+  fence INTEGER NOT NULL, claim_token TEXT, status TEXT NOT NULL DEFAULT 'running',
+  outcome TEXT, detail TEXT, started_at REAL NOT NULL, ended_at REAL,
+  UNIQUE(task_id, fence));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_one_running ON runs(task_id) WHERE status='running';
 """
 
 
 def audit(conn, actor, action, detail=""):
     conn.execute("INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
                  (time.time(), actor, action, detail))
+
+
+# ---------------- Run 层防重跑（SPEC 附录 G.1 第 4 条） ----------------
+# 任务层已有原子认领+租约；本层补的是「同一次执行只能跑一份」：
+# 执行体认领后、动手前 run_start 登记，拿到按任务单调递增的 fence 号；
+# 同一任务已有 running 记录时第二次登记被拒（run_fence_reject 审计留档）。
+# 执行记录由 run_finish / task_complete / task_block / task_cancel / 租约回收关闭，
+# outcome 分别为 completed/failed/aborted、completed、blocked、cancelled、reaped。
+# Attempt 台账 = runs 表本体，run_list 按 fence 逐次可查。与认领/租约互补，不替代。
+
+def _close_run(conn, task_id, outcome, actor, detail=""):
+    """关闭某任务当前 running 的 run 记录并写 run_close 审计。
+    没有 running 记录时返回 None（不报错，供任务生命周期钩子静默调用）。"""
+    row = conn.execute(
+        "SELECT * FROM runs WHERE task_id=? AND status='running'", (task_id,)).fetchone()
+    if not row:
+        return None
+    conn.execute("UPDATE runs SET status='closed', ended_at=?, outcome=? WHERE id=?",
+                 (time.time(), outcome, row["id"]))
+    audit(conn, actor, "run_close",
+          f"task {task_id} run {row['id']} fence={row['fence']} outcome={outcome}"
+          + (f" {detail}" if detail else ""))
+    return row
 
 
 # ---------------- 批准规则库（SPEC 附录 G.1 第 1 条） ----------------
@@ -212,6 +242,7 @@ def sweep_once():
         "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
         (now,)).fetchall()
     for t in rows:
+        _close_run(conn, t["id"], "reaped", "sweeper")
         if t["attempts"] >= MAX_ATTEMPTS:
             conn.execute("UPDATE tasks SET status='blocked', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
                          (now, t["id"]))
@@ -398,6 +429,7 @@ def build_server():
         conn.execute(
             "UPDATE tasks SET status='review', result=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
             (result, now, task_id))
+        _close_run(conn, task_id, "completed", me["name"])
         t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
         conn.execute(
             "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
@@ -418,6 +450,7 @@ def build_server():
         conn.execute(
             "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
             (reason, now, task_id))
+        _close_run(conn, task_id, "blocked", me["name"])
         audit(conn, me["name"], "task_block", f"task {task_id}: {reason}")
         conn.commit()
         conn.close()
@@ -465,6 +498,7 @@ def build_server():
         conn.execute(
             "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
             (time.time(), task_id))
+        _close_run(conn, task_id, "cancelled", me["name"])
         audit(conn, me["name"], "task_cancel", f"task {task_id}")
         conn.commit()
         conn.close()
@@ -509,6 +543,91 @@ def build_server():
         rows = conn.execute(q, args).fetchall()
         conn.close()
         return {"tasks": [dict(x) for x in rows]}
+
+    @mcp.tool
+    def run_start(task_id: int, claim_token: str) -> dict:
+        """持有人开工登记（附录 G.1 第 4 条）：认领成功后、真正动手前调用。
+        同一任务同时只许一份 running 执行——已有执行在跑时本次登记被拒，
+        并写 run_fence_reject 审计留档。返回 fence 号（按任务单调递增，Attempt 序号）。
+        与认领/租约互补：认领防抢单，本登记防同一认领被双进程重复执行。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            with _lock:
+                t = _holder(conn, me, task_id, claim_token)
+                if t["status"] not in ("claimed", "working"):
+                    raise ValueError(
+                        f"task {task_id} not in claimed/working (status={t['status']})")
+                open_run = conn.execute(
+                    "SELECT * FROM runs WHERE task_id=? AND status='running'",
+                    (task_id,)).fetchone()
+                if open_run:
+                    audit(conn, me["name"], "run_fence_reject",
+                          f"task {task_id} running run {open_run['id']} fence={open_run['fence']}")
+                    conn.commit()
+                    raise ValueError(
+                        f"run already running for task {task_id} "
+                        f"(run {open_run['id']}, fence {open_run['fence']})")
+                fence = conn.execute(
+                    "SELECT COALESCE(MAX(fence),0)+1 AS f FROM runs WHERE task_id=?",
+                    (task_id,)).fetchone()["f"]
+                now = time.time()
+                cur = conn.execute(
+                    """INSERT INTO runs(task_id,member_id,fence,claim_token,status,started_at)
+                       VALUES(?,?,?,?,'running',?)""",
+                    (task_id, me["id"], fence, claim_token, now))
+                rid = cur.lastrowid
+                audit(conn, me["name"], "run_start", f"task {task_id} run {rid} fence={fence}")
+                conn.commit()
+            return {"run_id": rid, "task_id": task_id, "fence": fence,
+                    "status": "running", "started_at": now}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def run_finish(task_id: int, claim_token: str, outcome: str = "completed",
+                   detail: str = "") -> dict:
+        """持有人结束本次执行：关闭 run 记录（outcome: completed/failed/aborted）。
+        只关 Run 层记录，任务状态仍须 task_complete / task_block 推进；
+        若先交活/报卡，run 记录会被自动以 completed/blocked 关闭，无须再调本工具。"""
+        me = authenticate()
+        require(me)
+        if outcome not in ("completed", "failed", "aborted"):
+            raise ValueError("outcome must be completed/failed/aborted")
+        conn = db()
+        try:
+            with _lock:
+                _holder(conn, me, task_id, claim_token)
+                row = _close_run(conn, task_id, outcome, me["name"], detail)
+                if not row:
+                    raise ValueError(f"no running run for task {task_id}")
+                conn.commit()
+            return {"run_id": row["id"], "task_id": task_id, "fence": row["fence"],
+                    "status": "closed", "outcome": outcome}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def run_list(task_id: int = 0, limit: int = 50) -> dict:
+        """调度员查 Run 层执行台账（附录 G.1 第 4 条）：每次执行按 fence 逐次留档，
+        含状态（running/closed）与 outcome（completed/failed/aborted/blocked/
+        cancelled/reaped）。task_id=0 查全部任务，倒序、默认最近 50 条。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        q = """SELECT r.id, r.task_id, mb.name AS member, r.fence, r.status, r.outcome,
+                      r.detail, r.started_at, r.ended_at
+               FROM runs r JOIN members mb ON mb.id=r.member_id WHERE 1=1"""
+        args = []
+        if task_id:
+            q += " AND r.task_id=?"
+            args.append(task_id)
+        q += " ORDER BY r.id DESC LIMIT ?"
+        args.append(limit)
+        rows = conn.execute(q, args).fetchall()
+        conn.close()
+        return {"runs": [dict(x) for x in rows]}
 
     @mcp.tool
     def rule_list() -> dict:
