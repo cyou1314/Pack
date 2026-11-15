@@ -35,11 +35,20 @@ struct PackTask: Identifiable {
     }
 }
 
+/// Hub-assigned designed avatar: monogram glyph over a two-stop gradient
+/// (hex strings like "#F97316"), picked server-side by a hash of the name.
+struct AvatarInfo {
+    let glyph: String
+    let c1: String
+    let c2: String
+}
+
 struct MemberInfo: Identifiable {
     var id: String { name }
     let name: String
     let role: String
     let profile: String?
+    let avatar: AvatarInfo?
     let lastHeartbeat: Double?
 
     var isOnline: Bool {
@@ -73,4 +82,12 @@ func optDoubleVal(_ v: Any?) -> Double? {
 func optStringVal(_ v: Any?) -> String? {
     if v == nil || v is NSNull { return nil }
     return v as? String
+}
+
+func avatarVal(_ v: Any?) -> AvatarInfo? {
+    guard let d = v as? [String: Any],
+          let glyph = d["glyph"] as? String,
+          let c1 = d["c1"] as? String,
+          let c2 = d["c2"] as? String else { return nil }
+    return AvatarInfo(glyph: glyph, c1: c1, c2: c2)
 }

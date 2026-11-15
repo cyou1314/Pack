@@ -10,6 +10,10 @@ final class AppState: ObservableObject {
     @Published var selection: String? = "room"
     @Published var selectedTaskId: Int?
     @Published var draftMessage: String = ""
+    /// Draft text at the moment the user dismissed the @-mention popup
+    /// (Esc / click elsewhere); the popup stays hidden while the draft
+    /// still equals this, and reappears as soon as the text changes.
+    @Published var mentionDismissedText: String?
     @Published var showCreateTask: Bool = false
     @Published var newTitle: String = ""
     @Published var newBody: String = ""
@@ -63,6 +67,7 @@ final class AppState: ObservableObject {
                 members = arr.map {
                     MemberInfo(name: ($0["name"] as? String) ?? "?", role: ($0["role"] as? String) ?? "",
                                profile: optStringVal($0["profile"]),
+                               avatar: avatarVal($0["avatar"]),
                                lastHeartbeat: optDoubleVal($0["last_heartbeat"]))
                 }
             }
@@ -77,6 +82,46 @@ final class AppState: ObservableObject {
     // MARK: - derived
 
     var selectedTask: PackTask? { tasks.first { $0.id == selectedTaskId } }
+
+    /// Range of the trailing token of the draft when it is an unfinished
+    /// mention: the token starts at the beginning of the text or right
+    /// after a space/newline and its first character is @ or ＠.
+    /// (v1 assumes the cursor is at the end of the text while typing.)
+    private var mentionTokenRange: Range<String.Index>? {
+        let text = draftMessage
+        guard !text.isEmpty else { return nil }
+        var start = text.startIndex
+        if let ws = text.lastIndex(where: { $0 == " " || $0 == "\n" }) {
+            start = text.index(after: ws)
+        }
+        guard start < text.endIndex else { return nil }
+        let first = text[start]
+        guard first == "@" || first == "＠" else { return nil }
+        return start..<text.endIndex
+    }
+
+    /// The text after the @ of the unfinished mention, nil when the draft
+    /// does not end in a mention token.
+    var mentionQuery: String? {
+        guard let r = mentionTokenRange else { return nil }
+        return String(draftMessage[r].dropFirst())
+    }
+
+    /// Members the popup offers: assignable members (same role filter as
+    /// the 派活 picker) minus the App's own chat identity "owner",
+    /// prefix-filtered by the query, case-insensitive.
+    var mentionCandidates: [MemberInfo] {
+        guard let q = mentionQuery?.lowercased() else { return [] }
+        return members.filter { m in
+            m.role == "member" && m.name != "owner" &&
+            (q.isEmpty || m.name.lowercased().hasPrefix(q))
+        }
+    }
+
+    var mentionPopupVisible: Bool {
+        mentionQuery != nil && !mentionCandidates.isEmpty &&
+        draftMessage != mentionDismissedText
+    }
 
     /// approval_request messages whose task is still waiting and has not
     /// been approved or rejected by the dispatcher afterwards.
@@ -113,6 +158,19 @@ final class AppState: ObservableObject {
         guard !body.isEmpty else { return }
         draftMessage = ""
         act("已发送") { try await $0.call(name: "room_post", args: ["room": "pack-main", "body": body, "kind": "chat"]) }
+    }
+
+    /// Replace the unfinished @… token with "@成员名 " — always the
+    /// half-width @ and the member's canonical hub name, because the
+    /// room watcher turns plain-text @全名 into task cards.
+    func completeMention(_ member: MemberInfo) {
+        guard let r = mentionTokenRange else { return }
+        draftMessage.replaceSubrange(r, with: "@\(member.name) ")
+        mentionDismissedText = nil
+    }
+
+    func dismissMentions() {
+        mentionDismissedText = draftMessage
     }
 
     func createTask() {
@@ -232,11 +290,17 @@ struct RoomView: View {
                 }
                 .buttonStyle(.plain)
             }
+            .simultaneousGesture(TapGesture().onEnded { state.dismissMentions() })
             Divider()
+            if state.mentionPopupVisible {
+                MentionCandidatesView(state: state)
+                Divider()
+            }
             HStack(spacing: 8) {
                 TextField("说点什么…", text: $state.draftMessage)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { state.sendDraft() }
+                    .onExitCommand { state.dismissMentions() }
                 Button("发送") { state.sendDraft() }
                     .buttonStyle(.borderedProminent)
             }
@@ -405,6 +469,71 @@ struct MemberListView: View {
             .padding(.vertical, 2)
         }
         .navigationTitle("成员")
+    }
+}
+
+extension Color {
+    /// "#RRGGBB" -> Color (bad input renders black; call sites pass
+    /// hub-issued hex or the brand fallbacks below).
+    init(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("#") { s.removeFirst() }
+        var v: UInt64 = 0
+        Scanner(string: s).scanHexInt64(&v)
+        self.init(red: Double((v >> 16) & 0xFF) / 255,
+                  green: Double((v >> 8) & 0xFF) / 255,
+                  blue: Double(v & 0xFF) / 255)
+    }
+}
+
+/// The member's hub-assigned avatar: monogram glyph over its gradient.
+/// Falls back to the name's first letter over the brand blue when the
+/// hub sent no avatar.
+struct MemberAvatarView: View {
+    let member: MemberInfo
+    var size: CGFloat = 22
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(LinearGradient(colors: [Color(hex: member.avatar?.c1 ?? "#1B7CF5"),
+                                              Color(hex: member.avatar?.c2 ?? "#6366F1")],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+            Text(member.avatar?.glyph ?? String(member.name.prefix(1)).uppercased())
+                .font(.system(size: size * 0.52, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// @-mention candidate popup shown above the composer (v1: click to
+/// pick; Esc or clicking elsewhere dismisses — see AppState).
+struct MentionCandidatesView: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(state.mentionCandidates) { m in
+                Button {
+                    state.completeMention(m)
+                } label: {
+                    HStack(spacing: 8) {
+                        MemberAvatarView(member: m)
+                        Text(m.name).font(.callout)
+                        if let p = m.profile {
+                            Text(p).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 }
 
