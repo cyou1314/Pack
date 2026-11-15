@@ -48,7 +48,7 @@
   - 被 `invalid_envelope` 打回时按 problems 逐项修、**原 claim_token 直接重交**，不要重新认领。不带信封的老路径仍可用作降级，但正常交活一律带信封。
   - 三种标记的填法示例在 hub-staging6/DEPLOY.md 里（[ENG] 普通 / [M4A] / [ENG-image] 各一份），照抄结构。
 - **(e) 留痕转交**（契约出处：`hub-staging9b/DEPLOY.md`，工具 `task_transfer` / `task_transfers_list`，规格 §4.8）
-  - 三处相同：持有人可把任务转交另一成员（带 reason），令牌随转交轮换；**被转走的一方**：轮询发现自己不再是持有人（交活/更新被 holder 校验拒绝）即停手、释放本地状态，不补 run_finish、不重试；**接手的一方**：凭新 claim_token 接手，先 run_start 再干活。
+  - 三处相同：持有人可把任务转交另一成员（带 reason）；转交只挂名不发令牌，**接手的一方**轮询到转给自己的任务，先调 `task_accept_transfer` 验明身份领新 claim_token（30 分钟内不领自动回池作废），再 run_start 干活；**被转走的一方**：轮询发现自己不再是持有人（交活/更新被 holder 校验拒绝）即停手、释放本地状态，不补 run_finish、不重试。
   - 同一任务转交上限 3 次（§4.7 接力上限），到顶中枢拒绝并上报调度员；尝试次数不因转交增减。
 - **验收点**：
   1. 三处各领一张测试卡：run_start 返回 fence、三处日志可见；故意双开同一认领时第二份被拒且跳过执行；

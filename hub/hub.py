@@ -22,11 +22,17 @@
         出路；放回按 fail_class 算退避，尝试上限烧满时拒绝放回）。
         留痕转交（2026-11-15 群主拍板：成员互派以留痕转交形态采纳）：
         task_transfer 持有人（或调度员强制）把 claimed/working 任务转给另一
-        成员——归属换人、claim_token 轮换、租约重计时、attempts 不动、
-        running 的 run 以 outcome='transferred' 关闭；转交链落 task_transfers
-        表 + audit + 房间调度员消息三处留痕，task_transfers_list 查链。
+        成员——归属换人、attempts 不动、running 的 run 以
+        outcome='transferred' 关闭；转交链落 task_transfers 表 + audit +
+        房间调度员消息三处留痕，task_transfers_list 查链。
+        接收方领令牌（补转交的接手一半）：转交只把任务挂到接收方名下，
+        claim_token/租约一律置空，转交行记 status='pending' 与 expires_at
+        （now+TRANSFER_ACCEPT_TTL）；接收方本人调 task_accept_transfer 才
+        生成新 claim_token 并按现行租约时长续租、转交行转 accepted；
+        pending 过期未接受由 sweeper 标 expired 并把任务放回 open
+        （audit transfer_expired），未过期 pending 不被 sweeper 回收。
         转交不改变任务的风险与批准状态：未决 approval 跟随任务，不失效、
-        不重发（权限按风险分级在本轮只落此条可执行口径）。共 32 工具。
+        不重发（权限按风险分级在本轮只落此条可执行口径）。共 33 工具。
   任务状态机: open -> claimed -> working -> review -> done
               旁路: blocked / released(回池) / cancelled
   认领原子性: 单条 UPDATE ... WHERE status='open' 决胜负，输家 rowcount=0。
@@ -54,6 +60,7 @@ PORT = int(os.environ.get("PACK_HUB_PORT", "8794"))
 LEASE_SECONDS = int(os.environ.get("PACK_LEASE_SECONDS", "1800"))
 MAX_ATTEMPTS = 3
 TRANSFER_CAP = 3  # 规格 §4.8/§4.7：同一任务转交链（接力）上限，含转交在内
+TRANSFER_ACCEPT_TTL = 1800  # 转交待接受有效期（秒）：接收方须在此内 task_accept_transfer 领令牌，过期由 sweeper 回收
 
 # ---------------- 失败分类与退避回池（学习轮合成清单第 3 项） ----------------
 # 抄 LangGraph 的「先分类、再决定重试」（RetryPolicy 形状 + default_retry_on
@@ -139,7 +146,8 @@ CREATE TABLE IF NOT EXISTS member_memory_versions(
 CREATE INDEX IF NOT EXISTS idx_memver ON member_memory_versions(member, scope, key, id DESC);
 CREATE TABLE IF NOT EXISTS task_transfers(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, from_member TEXT NOT NULL,
-  to_member TEXT NOT NULL, reason TEXT, actor TEXT NOT NULL, created_at REAL NOT NULL);
+  to_member TEXT NOT NULL, reason TEXT, actor TEXT NOT NULL, created_at REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', accepted_at REAL, expires_at REAL);
 CREATE INDEX IF NOT EXISTS idx_transfers_task ON task_transfers(task_id, id);
 """
 
@@ -590,6 +598,15 @@ def init():
         conn.execute("ALTER TABLE tasks ADD COLUMN fail_class TEXT")
     if "next_claim_at" not in tcols:
         conn.execute("ALTER TABLE tasks ADD COLUMN next_claim_at REAL")
+    xcols = [r[1] for r in conn.execute("PRAGMA table_info(task_transfers)").fetchall()]
+    if "status" not in xcols:
+        conn.execute("ALTER TABLE task_transfers ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+        # 存量转交行是旧语义（转交即生效、无待接受阶段），一律回填 accepted
+        conn.execute("UPDATE task_transfers SET status='accepted'")
+    if "accepted_at" not in xcols:
+        conn.execute("ALTER TABLE task_transfers ADD COLUMN accepted_at REAL")
+    if "expires_at" not in xcols:
+        conn.execute("ALTER TABLE task_transfers ADD COLUMN expires_at REAL")
     conn.commit()
     conn.close()
     print("init ok")
@@ -626,6 +643,30 @@ def require(me, role=None):
 def sweep_once():
     now = _now()
     conn = db()
+    # 待接受转交过期回收（与租约回收同节律、同在 sweep_once 内，不另起定时器）：
+    # pending 转交超过 expires_at 仍未被接收方 task_accept_transfer 接受 →
+    # 转交行标 expired；任务若仍挂在接收方名下（claimed/working 且令牌为空，
+    # 即没人真接手）则放回 open。pending 未过期时任务 lease_expires 为 NULL，
+    # 下面的租约回收天然跳过，不会误回收等人接受的任务。
+    expired = conn.execute(
+        "SELECT * FROM task_transfers WHERE status='pending' AND expires_at IS NOT NULL AND expires_at<?",
+        (now,)).fetchall()
+    n_expired = 0
+    for x in expired:
+        conn.execute("UPDATE task_transfers SET status='expired' WHERE id=?", (x["id"],))
+        t = conn.execute("SELECT * FROM tasks WHERE id=?", (x["task_id"],)).fetchone()
+        requeued = False
+        if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
+            recv = conn.execute("SELECT id FROM members WHERE name=?",
+                                (x["to_member"],)).fetchone()
+            if recv and t["assignee"] == recv["id"]:
+                conn.execute(
+                    "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
+                    (now, t["id"]))
+                requeued = True
+        audit(conn, "sweeper", "transfer_expired",
+              f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
+        n_expired += 1
     rows = conn.execute(
         "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
         (now,)).fetchall()
@@ -643,7 +684,7 @@ def sweep_once():
             audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
     conn.commit()
     conn.close()
-    return len(rows)
+    return len(rows) + n_expired
 
 
 def sweeper():
@@ -1185,11 +1226,16 @@ def build_server():
         凭自身身份强制转交（claim_token 传空即可）。目标须是存在的
         role=member 成员，不得是自己，不得是 owner/dispatcher；
         review/done/blocked/cancelled 等非 claimed/working 状态一律拒绝。
-        语义：归属换人并生成新 claim_token（旧 token 立即失效，且旧持有人
-        因 assignee 已变、_holder 校验过不去，拿新 token 也用不了）；租约按
-        新持有人重新计时；attempts 不变（转交不消耗也不重置尝试次数）；
-        退避 next_claim_at 清除；若有 running 的 run，以 outcome='transferred'
-        关闭（新持有人接手后自行 run_start，fence 继续递增）。
+        语义：归属换人挂到接收方名下，但 claim_token 与租约一律置空——
+        转交不直接发令牌（旧 token 随之失效，旧持有人也因 assignee 已变
+        过不了 _holder 校验）；任务状态保持 claimed/working 不变；
+        attempts 不变（转交不消耗也不重置尝试次数）；退避 next_claim_at
+        清除；若有 running 的 run，以 outcome='transferred' 关闭（接收方
+        接受后自行 run_start，fence 继续递增）。转交行记
+        status='pending'、expires_at=now+TRANSFER_ACCEPT_TTL，接收方本人
+        调 task_accept_transfer 领新 claim_token 后才算接手；同一任务已有
+        pending 转交时再次转交拒绝（先接受或等过期回收）。pending 过期
+        未接受由 sweeper 标 expired 并把任务放回 open。
         接力上限（规格 §4.8 计入 §4.7）：同一任务转交链长度（task_transfers
         行数）已达 TRANSFER_CAP（3）时再次转交整笔拒绝——先写
         transfer_cap_reject 审计（actor=调用者）并在房间留一条调度员消息
@@ -1199,7 +1245,8 @@ def build_server():
         调度员消息「任务#N 已由 A 转交 B：<reason>」。
         权限分级口径：转交不改变任务的风险与批准状态——带未决 approval 的
         任务转交后批准请求跟随任务，不失效、不重发。
-        返回 new_claim_token 供转交方转达新持有人（执行体接入契约见 DEPLOY）。"""
+        返回 transfer_id 与 pending 状态，不含任何令牌（执行体接入契约见
+        DEPLOY）。"""
         me = authenticate()
         require(me)
         conn = db()
@@ -1251,20 +1298,28 @@ def build_server():
                         f"with role={target['role']})")
                 if target["id"] == t["assignee"]:
                     raise ValueError("cannot transfer to the current holder (self)")
+                pending = conn.execute(
+                    "SELECT id FROM task_transfers WHERE task_id=? AND status='pending'",
+                    (task_id,)).fetchone()
+                if pending:
+                    raise ValueError(
+                        f"task {task_id} already has a pending transfer "
+                        f"(id={pending['id']}); receiver must accept it or it must expire first")
                 from_row = conn.execute(
                     "SELECT name FROM members WHERE id=?", (t["assignee"],)).fetchone()
                 from_name = from_row["name"] if from_row else str(t["assignee"])
                 _close_run(conn, task_id, "transferred", me["name"])
-                new_tok = secrets.token_urlsafe(24)
                 now = time.time()
+                expires_at = now + TRANSFER_ACCEPT_TTL
                 conn.execute(
-                    """UPDATE tasks SET assignee=?, claim_token=?, lease_expires=?,
+                    """UPDATE tasks SET assignee=?, claim_token=NULL, lease_expires=NULL,
                        next_claim_at=NULL, updated_at=? WHERE id=?""",
-                    (target["id"], new_tok, now + LEASE_SECONDS, now, task_id))
-                conn.execute(
-                    """INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at)
-                       VALUES(?,?,?,?,?,?)""",
-                    (task_id, from_name, to_member, reason or None, me["name"], now))
+                    (target["id"], now, task_id))
+                cur = conn.execute(
+                    """INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,accepted_at,expires_at)
+                       VALUES(?,?,?,?,?,?,'pending',NULL,?)""",
+                    (task_id, from_name, to_member, reason or None, me["name"], now, expires_at))
+                transfer_id = cur.lastrowid
                 disp = conn.execute(
                     "SELECT id FROM members WHERE role='dispatcher'").fetchone()
                 body = f"任务#{task_id} 已由 {from_name} 转交 {to_member}"
@@ -1280,17 +1335,78 @@ def build_server():
                       + (f": {reason}" if reason else ""))
                 conn.commit()
             return {"task_id": task_id, "status": t["status"],
+                    "transfer_id": transfer_id, "transfer_status": "pending",
                     "from_member": from_name, "to_member": to_member,
-                    "new_claim_token": new_tok,
-                    "lease_expires": now + LEASE_SECONDS,
+                    "expires_at": expires_at,
                     "attempts": t["attempts"], "forced": forced}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def task_accept_transfer(task_id: int) -> dict:
+        """接收方领令牌（留痕转交的接手一半）：转交只把任务挂到接收方
+        名下，令牌由接收方本人在此领取——调用者须为该任务最新一条转交
+        的接收方本人，且该转交仍为 pending、未过期。成功：生成新
+        claim_token、按现行租约时长（LEASE_SECONDS）设 lease_expires、
+        转交行标 accepted 并记 accepted_at，返回 claim_token 与租约。
+        拒绝并说明：无转交记录 / 最新转交不是给调用者的 / 已 accepted /
+        已 expired / pending 已过期（等 sweeper 回收回池）/ 任务状态或
+        归属已变。接受不改变 attempts 与任务状态。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            with _lock:
+                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if not t:
+                    raise ValueError(f"no such task: {task_id}")
+                x = conn.execute(
+                    "SELECT * FROM task_transfers WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                    (task_id,)).fetchone()
+                if not x:
+                    raise ValueError(f"task {task_id} has no transfer to accept")
+                if x["to_member"] != me["name"]:
+                    raise ValueError(
+                        f"task {task_id} latest transfer is addressed to "
+                        f"{x['to_member']}, not to {me['name']}")
+                if x["status"] == "accepted":
+                    raise ValueError(
+                        f"transfer {x['id']} for task {task_id} already accepted")
+                if x["status"] == "expired":
+                    raise ValueError(
+                        f"transfer {x['id']} for task {task_id} already expired")
+                now = time.time()
+                if x["expires_at"] is not None and x["expires_at"] <= now:
+                    raise ValueError(
+                        f"transfer {x['id']} for task {task_id} expired at "
+                        f"{x['expires_at']:.0f}; sweeper will requeue the task")
+                if t["status"] not in ("claimed", "working"):
+                    raise ValueError(
+                        f"task {task_id} not acceptable (status={t['status']})")
+                if t["assignee"] != me["id"]:
+                    raise ValueError(
+                        f"task {task_id} is not assigned to {me['name']}")
+                new_tok = secrets.token_urlsafe(24)
+                conn.execute(
+                    "UPDATE tasks SET claim_token=?, lease_expires=?, updated_at=? WHERE id=?",
+                    (new_tok, now + LEASE_SECONDS, now, task_id))
+                conn.execute(
+                    "UPDATE task_transfers SET status='accepted', accepted_at=? WHERE id=?",
+                    (now, x["id"]))
+                audit(conn, me["name"], "task_accept_transfer",
+                      f"task {task_id} transfer {x['id']} {x['from_member']}->{x['to_member']}")
+                conn.commit()
+            return {"task_id": task_id, "transfer_id": x["id"],
+                    "status": t["status"], "claim_token": new_tok,
+                    "lease_expires": now + LEASE_SECONDS}
         finally:
             conn.close()
 
     @mcp.tool
     def task_transfers_list(task_id: int) -> dict:
         """调度员查某任务的转交链（留痕转交）：按发生顺序列出每次转交的
-        from_member / to_member / reason / actor / created_at，与 audit 的
+        from_member / to_member / reason / actor / created_at / status
+        （pending/accepted/expired）/ expires_at / accepted_at，与 audit 的
         task_transfer 记录互相印证。"""
         me = authenticate()
         require(me, "dispatcher")
@@ -1300,7 +1416,8 @@ def build_server():
             conn.close()
             raise ValueError(f"no such task: {task_id}")
         rows = conn.execute(
-            """SELECT id, task_id, from_member, to_member, reason, actor, created_at
+            """SELECT id, task_id, from_member, to_member, reason, actor, created_at,
+                      status, accepted_at, expires_at
                FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
             (task_id,)).fetchall()
         conn.close()
