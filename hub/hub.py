@@ -611,6 +611,42 @@ def avatar_for(name: str) -> dict:
     glyph = name[0].upper() if name and name[0].isascii() else (name[0] if name else "?")
     return {"glyph": glyph, "c1": c1, "c2": c2}
 
+
+# 参数化头像组合（UI 定稿 §12.6）：动物 × 配色 × 配饰 × 底色，入群分配、
+# 中枢登记占用避撞。组合键 species|palette|accessory|bg 全员唯一。
+AVATAR_SPECIES = ["fox", "owl", "wolf", "cat", "panda", "marten",
+                  "bear", "rabbit", "deer", "raccoon", "tiger", "penguin"]
+AVATAR_PALETTES = ["orange", "violet", "ocean", "forest", "rose",
+                   "amber", "teal", "indigo", "crimson", "slate"]
+AVATAR_ACCESSORIES = ["none", "star-clip", "glasses", "headset", "scarf", "cap"]
+AVATAR_BGS = ["cream", "mint", "sky", "peach", "lavender", "sand"]
+
+
+def _avatar_combo(name: str, used: set) -> dict:
+    """按名字哈希生成候选组合序列，取第一个未被占用的（used 为已占用组合键集合）。"""
+    for k in range(10000):
+        d = hashlib.md5(f"{name}#{k}".encode("utf-8")).digest()
+        sp = AVATAR_SPECIES[d[0] % len(AVATAR_SPECIES)]
+        pa = AVATAR_PALETTES[d[1] % len(AVATAR_PALETTES)]
+        ac = AVATAR_ACCESSORIES[d[2] % len(AVATAR_ACCESSORIES)]
+        bg = AVATAR_BGS[d[3] % len(AVATAR_BGS)]
+        combo = f"{sp}|{pa}|{ac}|{bg}"
+        if combo not in used:
+            return {"species": sp, "palette": pa, "accessory": ac, "bg": bg, "combo": combo}
+    raise RuntimeError("avatar combo space exhausted")
+
+
+def _used_combos(conn) -> set:
+    used = set()
+    for r in conn.execute("SELECT avatar FROM members").fetchall():
+        try:
+            a = json.loads(r["avatar"]) if r["avatar"] else {}
+        except Exception:
+            a = {}
+        if a.get("combo"):
+            used.add(a["combo"])
+    return used
+
 def init():
     conn = db()
     conn.executescript(SCHEMA)
@@ -653,6 +689,29 @@ def init():
         conn.execute("ALTER TABLE messages ADD COLUMN deleted_at REAL")
     if "edited_at" not in msgcols:
         conn.execute("ALTER TABLE messages ADD COLUMN edited_at REAL")
+    # H1 额度字段（UI 定稿 §4/§12.1 的数据源）：周已用%、重置时刻、
+    # 附加 token 剩余、数据更新时间。v1 由调度员经 member_quota_set 维护。
+    mcols2 = [r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
+    for col, ddl in (("quota_week_used_pct", "REAL"), ("quota_week_reset_at", "REAL"),
+                     ("quota_extra_left", "INTEGER"), ("quota_updated_at", "REAL")):
+        if col not in mcols2:
+            conn.execute(f"ALTER TABLE members ADD COLUMN {col} {ddl}")
+    # H2 房间归档标记。
+    rcols = [r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
+    if "archived_at" not in rcols:
+        conn.execute("ALTER TABLE rooms ADD COLUMN archived_at REAL")
+    # H3 头像组合回填：avatar 缺 combo 的成员按 id 顺序分配（避撞）。
+    used = _used_combos(conn)
+    for r in conn.execute("SELECT id, name, avatar FROM members ORDER BY id").fetchall():
+        try:
+            a = json.loads(r["avatar"]) if r["avatar"] else {}
+        except Exception:
+            a = {}
+        if not a.get("combo"):
+            a.update(_avatar_combo(r["name"], used))
+            used.add(a["combo"])
+            conn.execute("UPDATE members SET avatar=? WHERE id=?",
+                         (json.dumps(a), r["id"]))
     conn.commit()
     conn.close()
     print("init ok")
@@ -892,19 +951,66 @@ def build_server():
         me = authenticate()
         require(me, "dispatcher")
         tok = "pk-mem-" + secrets.token_urlsafe(32)
+        # 头像组合分配（查占用→选组合→插入）必须原子，否则并发注册会撞组合；
+        # 按 task_claim 范式走全局 _lock（S1 复检教训）。
+        with _lock:
+            conn = db()
+            try:
+                av = avatar_for(name)
+                av.update(_avatar_combo(name, _used_combos(conn)))
+                cur = conn.execute(
+                    "INSERT INTO members(name,role,token_hash,profile,created_at,avatar) VALUES(?,'member',?,?,?,?)",
+                    (name, hash_token(tok), profile or None, time.time(), json.dumps(av)))
+                mid = cur.lastrowid
+                audit(conn, me["name"], "member_register", name)
+                conn.commit()
+            except sqlite3.IntegrityError:
+                raise ValueError(f"member name already exists: {name}")
+            finally:
+                conn.close()
+        return {"member_id": mid, "name": name, "token": tok}
+
+    @mcp.tool
+    def member_quota_set(member_name: str, week_used_pct: float = None,
+                         week_reset_at: float = None, extra_tokens_left: int = None) -> dict:
+        """调度员维护成员额度数据（UI 用量卡/成员详情的数据源，v1 人工维护）。
+        只更新给了的字段；week_used_pct 须 0–100，week_reset_at 为 epoch 秒，
+        extra_tokens_left 为剩余 token 数（>=0）。每次更新刷新 quota_updated_at 并写审计。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if week_used_pct is None and week_reset_at is None and extra_tokens_left is None:
+            raise ValueError("nothing to update: give at least one quota field")
+        if week_used_pct is not None and not (0 <= week_used_pct <= 100):
+            raise ValueError(f"week_used_pct out of range 0-100: {week_used_pct}")
+        if week_reset_at is not None and not (week_reset_at > 0):
+            raise ValueError(f"week_reset_at must be epoch seconds > 0: {week_reset_at}")
+        if extra_tokens_left is not None and extra_tokens_left < 0:
+            raise ValueError(f"extra_tokens_left must be >= 0: {extra_tokens_left}")
         conn = db()
         try:
-            cur = conn.execute(
-                "INSERT INTO members(name,role,token_hash,profile,created_at,avatar) VALUES(?,'member',?,?,?,?)",
-                (name, hash_token(tok), profile or None, time.time(), json.dumps(avatar_for(name))))
-            mid = cur.lastrowid
-            audit(conn, me["name"], "member_register", name)
+            row = conn.execute("SELECT id FROM members WHERE name=?", (member_name,)).fetchone()
+            if not row:
+                raise ValueError(f"no such member: {member_name}")
+            sets, args = [], []
+            if week_used_pct is not None:
+                sets.append("quota_week_used_pct=?"); args.append(float(week_used_pct))
+            if week_reset_at is not None:
+                sets.append("quota_week_reset_at=?"); args.append(float(week_reset_at))
+            if extra_tokens_left is not None:
+                sets.append("quota_extra_left=?"); args.append(int(extra_tokens_left))
+            sets.append("quota_updated_at=?"); args.append(_now())
+            args.append(row["id"])
+            conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE id=?", args)
+            audit(conn, me["name"], "member_quota_set",
+                  f"{member_name}: " + ", ".join(s.split("=")[0] for s in sets))
             conn.commit()
-        except sqlite3.IntegrityError:
+            out = dict(conn.execute(
+                "SELECT name, quota_week_used_pct, quota_week_reset_at,"
+                " quota_extra_left, quota_updated_at FROM members WHERE id=?",
+                (row["id"],)).fetchone())
+        finally:
             conn.close()
-            raise ValueError(f"member name already exists: {name}")
-        conn.close()
-        return {"member_id": mid, "name": name, "token": tok}
+        return out
 
     @mcp.tool
     def room_post(room: str, body: str, kind: str = "chat") -> dict:
@@ -956,19 +1062,79 @@ def build_server():
         return {"room_id": rid, "name": name}
 
     @mcp.tool
-    def room_list() -> dict:
-        """列出全部房间（id、name、created_at）及每房最新消息 id
-        （无消息为 0），按房间 id 升序。任意成员可调。"""
+    def room_rename(room: str, new_name: str) -> dict:
+        """调度员给房间改名。new_name 校验与 room_create 同口径（非空、≤40、
+        不含空白与斜杠、不重名）。主房间 pack-main 不可改名（App 与转换器以此为锚）。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if room == "pack-main":
+            raise ValueError("the main room cannot be renamed")
+        if not new_name:
+            raise ValueError("room name must not be empty")
+        if len(new_name) > 40:
+            raise ValueError(f"room name too long: {len(new_name)} > 40")
+        if any(ch.isspace() for ch in new_name) or "/" in new_name or "\\" in new_name:
+            raise ValueError(f"room name must not contain whitespace or slashes: {new_name!r}")
+        conn = db()
+        try:
+            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+            if not r:
+                raise ValueError(f"no such room: {room}")
+            try:
+                conn.execute("UPDATE rooms SET name=? WHERE id=?", (new_name, r["id"]))
+            except sqlite3.IntegrityError:
+                raise ValueError(f"room already exists: {new_name}")
+            audit(conn, me["name"], "room_rename", f"room {r['id']}: {room} -> {new_name}")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"room_id": r["id"], "name": new_name}
+
+    @mcp.tool
+    def room_archive(room: str, archived: bool = True) -> dict:
+        """调度员归档/恢复房间。归档只是列表可见性状态：room_list 默认不返回
+        已归档房间（活群转换器随之跳过），消息与任务仍可读、历史不丢。
+        主房间 pack-main 不可归档。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if room == "pack-main":
+            raise ValueError("the main room cannot be archived")
+        conn = db()
+        try:
+            r = conn.execute("SELECT id, archived_at FROM rooms WHERE name=?", (room,)).fetchone()
+            if not r:
+                raise ValueError(f"no such room: {room}")
+            conn.execute("UPDATE rooms SET archived_at=? WHERE id=?",
+                         (_now() if archived else None, r["id"]))
+            audit(conn, me["name"], "room_archive" if archived else "room_unarchive",
+                  f"room {r['id']}: {room}")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"room_id": r["id"], "name": room, "archived": bool(archived)}
+
+    @mcp.tool
+    def room_list(include_archived: bool = False) -> dict:
+        """列出房间（id、name、created_at、archived）及每房最新消息 id
+        （无消息为 0），按房间 id 升序。默认不含已归档房间，
+        include_archived=True 才全列。任意成员可调。"""
         me = authenticate()
         require(me)
         conn = db()
         rows = conn.execute(
-            """SELECT r.id, r.name, r.created_at,
+            """SELECT r.id, r.name, r.created_at, r.archived_at,
                       COALESCE((SELECT MAX(m.id) FROM messages m
                                 WHERE m.room_id=r.id), 0) AS last_message_id
-               FROM rooms r ORDER BY r.id ASC""").fetchall()
+               FROM rooms r
+               WHERE (? OR r.archived_at IS NULL)
+               ORDER BY r.id ASC""", (1 if include_archived else 0,)).fetchall()
         conn.close()
-        return {"rooms": [dict(x) for x in rows]}
+        out = []
+        for x in rows:
+            d = dict(x)
+            d["archived"] = bool(d.pop("archived_at"))
+            out.append(d)
+        return {"rooms": out}
 
     @mcp.tool
     def room_read_new(room: str, since_id: int = 0, limit: int = 50) -> dict:
@@ -1315,7 +1481,9 @@ def build_server():
         require(me)
         conn = db()
         rows = conn.execute(
-            "SELECT name, role, profile, created_at, last_heartbeat, avatar FROM members ORDER BY id"
+            "SELECT name, role, profile, created_at, last_heartbeat, avatar,"
+            " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at"
+            " FROM members ORDER BY id"
         ).fetchall()
         out = []
         for r in rows:
