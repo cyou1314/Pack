@@ -2036,6 +2036,9 @@ def build_server():
     # ---------------- Skill 模组 S1（MODULES-DESIGN 第一节） ----------------
 
     def _get_skill(conn, name):
+        # 与 skill_publish 的 name 归一口径一致（publish 建名时 strip，
+        # 读/指派/回滚都经此单点，同样 strip，避免带空白查不到）。
+        name = (name or "").strip()
         s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
         if not s:
             raise ValueError(f"no such skill: {name}")
@@ -2071,27 +2074,31 @@ def build_server():
                  "hint": "description 是一句话简介，压到 200 字内"}, ensure_ascii=False))
         conn = db()
         try:
-            now = time.time()
-            s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
-            if not s:
-                cur = conn.execute(
-                    "INSERT INTO skills(name,description,current_version,updated_at) "
-                    "VALUES(?,?,1,?)", (name, description or "", now))
-                sid, nv = cur.lastrowid, 1
-            else:
-                sid = s["id"]
-                nv = s["current_version"] + 1
+            # 版本号分配是读-改-写，须与 task_claim / run_start 同纪律走
+            # 全局 _lock 串行化，否则并发 publish 撞 UNIQUE(skill_id,version)
+            # 只有一条成功、其余抛原始 sqlite 错（复检 B1/B2 实证）。
+            with _lock:
+                now = time.time()
+                s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
+                if not s:
+                    cur = conn.execute(
+                        "INSERT INTO skills(name,description,current_version,updated_at) "
+                        "VALUES(?,?,1,?)", (name, description or "", now))
+                    sid, nv = cur.lastrowid, 1
+                else:
+                    sid = s["id"]
+                    nv = s["current_version"] + 1
+                    conn.execute(
+                        "UPDATE skills SET current_version=?, updated_at=?, description=? "
+                        "WHERE id=?",
+                        (nv, now, description if description else s["description"], sid))
                 conn.execute(
-                    "UPDATE skills SET current_version=?, updated_at=?, description=? "
-                    "WHERE id=?",
-                    (nv, now, description if description else s["description"], sid))
-            conn.execute(
-                "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
-                "VALUES(?,?,?,?,?)", (sid, nv, body, me["name"], now))
-            audit(conn, me["name"], "skill_publish",
-                  json.dumps({"skill": name, "version": nv}, ensure_ascii=False))
-            conn.commit()
-            return {"skill_id": sid, "name": name, "version": nv}
+                    "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
+                    "VALUES(?,?,?,?,?)", (sid, nv, body, me["name"], now))
+                audit(conn, me["name"], "skill_publish",
+                      json.dumps({"skill": name, "version": nv}, ensure_ascii=False))
+                conn.commit()
+                return {"skill_id": sid, "name": name, "version": nv}
         finally:
             conn.close()
 
@@ -2122,22 +2129,33 @@ def build_server():
     @mcp.tool
     def skill_read(name: str) -> dict:
         """读 skill 当前版本正文：调度员可读全部；成员只能读指派给自己且
-        enabled 的，未指派/已收回一律拒绝。返回 name/version/description/body。"""
+        enabled 的，未指派/已收回一律拒绝。返回 name/version/description/body。
+        成员侧「不存在」与「未指派」统一报同一句 forbidden，不让成员据
+        错误差异枚举注册表（存在性侧信道）；调度员保持精确报错。"""
         me = authenticate()
         require(me)
         conn = db()
         try:
-            s = _get_skill(conn, name)
-            if me["role"] != "dispatcher":
-                row = conn.execute(
-                    "SELECT enabled FROM member_skills WHERE member_id=? AND skill_id=?",
-                    (me["id"], s["id"])).fetchone()
-                if not row or not row["enabled"]:
+            if me["role"] == "dispatcher":
+                s = _get_skill(conn, name)
+            else:
+                s = conn.execute("SELECT * FROM skills WHERE name=?",
+                                 ((name or "").strip(),)).fetchone()
+                row = None
+                if s:
+                    row = conn.execute(
+                        "SELECT enabled FROM member_skills WHERE member_id=? AND skill_id=?",
+                        (me["id"], s["id"])).fetchone()
+                if not s or not row or not row["enabled"]:
                     raise ValueError(
                         f"forbidden: skill '{name}' is not assigned to {me['name']}")
             v = conn.execute(
                 "SELECT body FROM skill_versions WHERE skill_id=? AND version=?",
                 (s["id"], s["current_version"])).fetchone()
+            if not v:
+                raise ValueError(
+                    f"skill data inconsistent: skill '{s['name']}' "
+                    f"version {s['current_version']} body missing")
             return {"name": s["name"], "version": s["current_version"],
                     "description": s["description"], "body": v["body"]}
         finally:
@@ -2153,15 +2171,23 @@ def build_server():
                              (member_name,)).fetchone()
             if not m:
                 raise ValueError(f"no such member: {member_name}")
+            existing = conn.execute(
+                "SELECT enabled FROM member_skills WHERE member_id=? AND skill_id=?",
+                (m["id"], s["id"])).fetchone()
+            if not enabled and existing is None:
+                # 从未指派过又来收回：无行可置 0、无事发生——不凭空造
+                # enabled=0 的墓碑行，也不写一条没发生过的 unassign 审计
+                # （复检 D5 实证）。幂等返回即可。
+                return {"name": s["name"], "member": member_name, "enabled": False}
             conn.execute(
                 "INSERT INTO member_skills(member_id,skill_id,enabled) VALUES(?,?,?) "
                 "ON CONFLICT(member_id,skill_id) DO UPDATE SET enabled=excluded.enabled",
                 (m["id"], s["id"], 1 if enabled else 0))
             audit(conn, me["name"], action,
-                  json.dumps({"skill": name, "version": s["current_version"],
+                  json.dumps({"skill": s["name"], "version": s["current_version"],
                               "member": member_name}, ensure_ascii=False))
             conn.commit()
-            return {"name": name, "member": member_name, "enabled": bool(enabled)}
+            return {"name": s["name"], "member": member_name, "enabled": bool(enabled)}
         finally:
             conn.close()
 
@@ -2186,27 +2212,29 @@ def build_server():
         require(me, "dispatcher")
         conn = db()
         try:
-            s = _get_skill(conn, name)
-            v = conn.execute(
-                "SELECT body FROM skill_versions WHERE skill_id=? AND version=?",
-                (s["id"], version)).fetchone()
-            if not v:
-                raise ValueError(
-                    f"no such version: skill '{name}' version {version} "
-                    f"(current_version={s['current_version']})")
-            nv = s["current_version"] + 1
-            now = time.time()
-            conn.execute(
-                "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
-                "VALUES(?,?,?,?,?)", (s["id"], nv, v["body"], me["name"], now))
-            conn.execute(
-                "UPDATE skills SET current_version=?, updated_at=? WHERE id=?",
-                (nv, now, s["id"]))
-            audit(conn, me["name"], "skill_rollback",
-                  json.dumps({"skill": name, "restored_from": version,
-                              "new_version": nv}, ensure_ascii=False))
-            conn.commit()
-            return {"name": name, "version": nv, "restored_from": version}
+            # 同 skill_publish：版本号读-改-写走 _lock 串行化（复检 B3）。
+            with _lock:
+                s = _get_skill(conn, name)
+                v = conn.execute(
+                    "SELECT body FROM skill_versions WHERE skill_id=? AND version=?",
+                    (s["id"], version)).fetchone()
+                if not v:
+                    raise ValueError(
+                        f"no such version: skill '{s['name']}' version {version} "
+                        f"(current_version={s['current_version']})")
+                nv = s["current_version"] + 1
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
+                    "VALUES(?,?,?,?,?)", (s["id"], nv, v["body"], me["name"], now))
+                conn.execute(
+                    "UPDATE skills SET current_version=?, updated_at=? WHERE id=?",
+                    (nv, now, s["id"]))
+                audit(conn, me["name"], "skill_rollback",
+                      json.dumps({"skill": s["name"], "restored_from": version,
+                                  "new_version": nv}, ensure_ascii=False))
+                conn.commit()
+                return {"name": s["name"], "version": nv, "restored_from": version}
         finally:
             conn.close()
 
