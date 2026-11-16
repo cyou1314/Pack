@@ -51,7 +51,8 @@ final class AppState: ObservableObject {
                 messages = arr.map {
                     RoomMessage(id: intVal($0["id"]), author: ($0["author"] as? String) ?? "?",
                                 kind: ($0["kind"] as? String) ?? "chat", body: ($0["body"] as? String) ?? "",
-                                taskId: optIntVal($0["task_id"]), createdAt: doubleVal($0["created_at"]))
+                                taskId: optIntVal($0["task_id"]), createdAt: doubleVal($0["created_at"]),
+                                deleted: boolVal($0["deleted"]), edited: boolVal($0["edited"]))
                 }
             }
             if let arr = taskRes["tasks"] as? [[String: Any]] {
@@ -60,7 +61,11 @@ final class AppState: ObservableObject {
                              body: ($0["body"] as? String) ?? "", status: ($0["status"] as? String) ?? "",
                              assignee: optStringVal($0["assignee"]), attempts: intVal($0["attempts"]),
                              result: optStringVal($0["result"]), leaseExpires: optDoubleVal($0["lease_expires"]),
-                             updatedAt: doubleVal($0["updated_at"]))
+                             updatedAt: doubleVal($0["updated_at"]),
+                             envelope: envelopeVal($0["envelope"]),
+                             failClass: optStringVal($0["fail_class"]),
+                             nextClaimAt: optDoubleVal($0["next_claim_at"]),
+                             schedAt: optDoubleVal($0["sched_at"]))
                 }
             }
             if let arr = memRes["members"] as? [[String: Any]] {
@@ -68,7 +73,11 @@ final class AppState: ObservableObject {
                     MemberInfo(name: ($0["name"] as? String) ?? "?", role: ($0["role"] as? String) ?? "",
                                profile: optStringVal($0["profile"]),
                                avatar: avatarVal($0["avatar"]),
-                               lastHeartbeat: optDoubleVal($0["last_heartbeat"]))
+                               lastHeartbeat: optDoubleVal($0["last_heartbeat"]),
+                               quotaWeekUsedPct: optDoubleVal($0["quota_week_used_pct"]),
+                               quotaWeekResetAt: optDoubleVal($0["quota_week_reset_at"]),
+                               quotaExtraLeft: optIntVal($0["quota_extra_left"]),
+                               quotaUpdatedAt: optDoubleVal($0["quota_updated_at"]))
                 }
             }
             connected = true
