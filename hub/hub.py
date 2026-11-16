@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS tasks(
   created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
   id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);
+CREATE TABLE IF NOT EXISTS room_summaries(
+  room_id INTEGER PRIMARY KEY, data TEXT NOT NULL,
+  updated_at REAL NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS approval_rules(
   id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
   effect TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
@@ -636,6 +639,45 @@ def _avatar_combo(name: str, used: set) -> dict:
     raise RuntimeError("avatar combo space exhausted")
 
 
+# 房间摘要卡（UI 定稿 §14.1）：三组——已定 / 进行中 / 待拍板。调度员维护，
+# 它是「房间 = 会话」的记忆锚点：新会话先读摘要不断片。
+SUMMARY_SECTIONS = ("decided", "in_progress", "pending")
+SUMMARY_MAX_ITEMS = 20
+SUMMARY_ITEM_MAX = 200
+SUMMARY_TOTAL_MAX = 6000
+
+
+def _validate_summary(raw) -> dict:
+    """summary 入参（JSON 字符串）→ 规范化 dict；不合法整笔拒绝（ValueError）。"""
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            raise ValueError("summary: not valid JSON")
+    else:
+        data = raw
+    if not isinstance(data, dict):
+        raise ValueError("summary: must be a JSON object")
+    unknown = set(data) - set(SUMMARY_SECTIONS)
+    if unknown:
+        raise ValueError(f"summary: unknown section(s): {sorted(unknown)}")
+    out, total = {}, 0
+    for k in SUMMARY_SECTIONS:
+        v = data.get(k, [])
+        if not isinstance(v, list) or any(not isinstance(x, str) for x in v):
+            raise ValueError(f"summary: section '{k}' must be a list of strings")
+        if len(v) > SUMMARY_MAX_ITEMS:
+            raise ValueError(f"summary: section '{k}' exceeds {SUMMARY_MAX_ITEMS} items")
+        for x in v:
+            if len(x) > SUMMARY_ITEM_MAX:
+                raise ValueError(f"summary: item in '{k}' exceeds {SUMMARY_ITEM_MAX} chars")
+            total += len(x)
+        out[k] = v
+    if total > SUMMARY_TOTAL_MAX:
+        raise ValueError(f"summary: exceeds {SUMMARY_TOTAL_MAX} chars total")
+    return out
+
+
 def _used_combos(conn) -> set:
     used = set()
     for r in conn.execute("SELECT avatar FROM members").fetchall():
@@ -1135,6 +1177,56 @@ def build_server():
             d["archived"] = bool(d.pop("archived_at"))
             out.append(d)
         return {"rooms": out}
+
+    @mcp.tool
+    def room_summary_get(room: str) -> dict:
+        """读房间摘要卡（定稿 §14.1）。任意成员可调；没设过返回三组空列表、
+        updated_at 为 null。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+            if not r:
+                raise ValueError(f"no such room: {room}")
+            row = conn.execute(
+                "SELECT data, updated_at, updated_by FROM room_summaries WHERE room_id=?",
+                (r["id"],)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return {"room": room, "summary": {k: [] for k in SUMMARY_SECTIONS},
+                    "updated_at": None, "updated_by": None}
+        return {"room": room, "summary": json.loads(row["data"]),
+                "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
+
+    @mcp.tool
+    def room_summary_set(room: str, summary: str) -> dict:
+        """调度员写房间摘要卡。summary 为 JSON 字符串，结构
+        {"decided": [...], "in_progress": [...], "pending": [...]}（可缺组，
+        缺组按空列表）；每组 ≤20 条、每条 ≤200 字、总长 ≤6000 字，
+        不合法整笔拒绝、原摘要不变。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        data = _validate_summary(summary)
+        conn = db()
+        try:
+            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+            if not r:
+                raise ValueError(f"no such room: {room}")
+            now = _now()
+            conn.execute(
+                "INSERT INTO room_summaries(room_id,data,updated_at,updated_by) VALUES(?,?,?,?)"
+                " ON CONFLICT(room_id) DO UPDATE SET data=excluded.data,"
+                " updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (r["id"], json.dumps(data, ensure_ascii=False), now, me["name"]))
+            audit(conn, me["name"], "room_summary_set",
+                  f"room {r['id']}: {room} decided={len(data['decided'])}"
+                  f" in_progress={len(data['in_progress'])} pending={len(data['pending'])}")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"room": room, "summary": data, "updated_at": now, "updated_by": me["name"]}
 
     @mcp.tool
     def room_read_new(room: str, since_id: int = 0, limit: int = 50) -> dict:
