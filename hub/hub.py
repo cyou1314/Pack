@@ -1137,9 +1137,16 @@ def build_server():
 
     @mcp.tool
     def room_post(room: str, body: str, kind: str = "chat") -> dict:
-        """在房间发一条消息。kind: chat/system/report/approval_request。"""
+        """在房间发一条消息。kind: chat/system/report/approval_request。
+        完整性守卫：task_card 只能由 task_create 内部落库、decision 只能由
+        规则引擎/审查内部落库或调度员客户端代发——成员经 room_post 伪造
+        这两类消息一律拒绝（staging21 对抗复检实证的缺口）。"""
         me = authenticate()
         require(me)
+        if kind == "task_card":
+            raise ValueError("kind task_card is hub-internal")
+        if kind == "decision" and me["role"] != "dispatcher":
+            raise ValueError("kind decision is dispatcher-only")
         conn = db()
         r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
         if not r:
