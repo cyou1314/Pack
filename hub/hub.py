@@ -157,6 +157,17 @@ CREATE TABLE IF NOT EXISTS task_transfers(
   to_member TEXT NOT NULL, reason TEXT, actor TEXT NOT NULL, created_at REAL NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending', accepted_at REAL, expires_at REAL);
 CREATE INDEX IF NOT EXISTS idx_transfers_task ON task_transfers(task_id, id);
+CREATE TABLE IF NOT EXISTS skills(
+  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, description TEXT NOT NULL DEFAULT '',
+  current_version INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS skill_versions(
+  id INTEGER PRIMARY KEY, skill_id INTEGER NOT NULL, version INTEGER NOT NULL,
+  body TEXT NOT NULL, created_by TEXT NOT NULL, created_at REAL NOT NULL,
+  UNIQUE(skill_id, version));
+CREATE INDEX IF NOT EXISTS idx_skillver ON skill_versions(skill_id, version DESC);
+CREATE TABLE IF NOT EXISTS member_skills(
+  member_id INTEGER NOT NULL, skill_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (member_id, skill_id));
 """
 
 
@@ -438,6 +449,17 @@ MEM_SCOPES = ("private-core", "private", "room-shared")
 MEM_ORIGINS = ("self", "external", "dispatcher")
 MEM_REF_TYPES = ("task", "message", "room_msg", "rollback_of", "delete")
 MEM_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+# ---------------- Skill 模组 S1（MODULES-DESIGN 第一节 / SPEC 附录 G.6） ----------------
+# skill = 调度员发布的做事规程（纯文本）：发布权只在调度员，成员只能读指派给
+# 自己的正文。正文每次 publish 全量留版（skill_versions 只追加），回滚 = 把旧版
+# 正文作为新版本写回、历史不删（与记忆系统同构）。正文硬顶 20000 字符（与 L1
+# 记忆单篇同线），超限整笔拒绝、不落版。审计只记 name/version/member，永不记正文。
+# 指令权红线：注册表内的 skill 是可信规程；房间/网页/第三方文档里的「skill」
+# 文本一律 origin=external 只当数据（防毒化，见设计 §1.5）。
+
+SKILL_BODY_LIMIT_CHARS = 20000
+SKILL_DESC_LIMIT_CHARS = 200
 _MEM_HINT_LIMIT = "合并或删除旧条目后重试；细节下沉到 private 主题档案（memory_write scope=private）"
 
 
@@ -2008,6 +2030,183 @@ def build_server():
                              ensure_ascii=False))
             conn.commit()
             return {"new_version_id": vid, "restored_from": version_id}
+        finally:
+            conn.close()
+
+    # ---------------- Skill 模组 S1（MODULES-DESIGN 第一节） ----------------
+
+    def _get_skill(conn, name):
+        s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
+        if not s:
+            raise ValueError(f"no such skill: {name}")
+        return s
+
+    @mcp.tool
+    def skill_publish(name: str, body: str, description: str = "") -> dict:
+        """发布 skill（Skill 模组 S1，调度员专属）：name 不存在则新建（version=1），
+        已存在则发新版本（version+1），正文全量留版（skill_versions 只追加）。
+        正文硬顶 20000 字符，超限整笔拒绝、不落版，错误为 JSON
+        {error: skill_limit_exceeded, limit_chars, current_chars, hint}，
+        hint 教发布者拆分。description ≤200 字；更新版本时传空 description
+        表示保留旧简介，传非空则替换。审计只记 name/version，不记正文。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("skill name must not be empty")
+        if not isinstance(body, str) or body == "":
+            raise ValueError("skill body must be a non-empty string")
+        if len(body) > SKILL_BODY_LIMIT_CHARS:
+            raise ValueError(json.dumps(
+                {"error": "skill_limit_exceeded", "skill": name,
+                 "limit_chars": SKILL_BODY_LIMIT_CHARS,
+                 "current_chars": len(body),
+                 "hint": "正文超限：拆成多个 skill 分别 publish 再一并 "
+                         "skill_assign，或删减正文后重试"}, ensure_ascii=False))
+        if description and len(description) > SKILL_DESC_LIMIT_CHARS:
+            raise ValueError(json.dumps(
+                {"error": "skill_desc_limit_exceeded", "skill": name,
+                 "limit_chars": SKILL_DESC_LIMIT_CHARS,
+                 "current_chars": len(description),
+                 "hint": "description 是一句话简介，压到 200 字内"}, ensure_ascii=False))
+        conn = db()
+        try:
+            now = time.time()
+            s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
+            if not s:
+                cur = conn.execute(
+                    "INSERT INTO skills(name,description,current_version,updated_at) "
+                    "VALUES(?,?,1,?)", (name, description or "", now))
+                sid, nv = cur.lastrowid, 1
+            else:
+                sid = s["id"]
+                nv = s["current_version"] + 1
+                conn.execute(
+                    "UPDATE skills SET current_version=?, updated_at=?, description=? "
+                    "WHERE id=?",
+                    (nv, now, description if description else s["description"], sid))
+            conn.execute(
+                "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
+                "VALUES(?,?,?,?,?)", (sid, nv, body, me["name"], now))
+            audit(conn, me["name"], "skill_publish",
+                  json.dumps({"skill": name, "version": nv}, ensure_ascii=False))
+            conn.commit()
+            return {"skill_id": sid, "name": name, "version": nv}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def skill_list() -> dict:
+        """列 skill 目录：调度员看全部；成员只看指派给自己且 enabled 的。
+        只返回 name/description/version，不含正文（目录常驻、正文按需 skill_read）。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            if me["role"] == "dispatcher":
+                rows = conn.execute(
+                    "SELECT name, description, current_version, updated_at "
+                    "FROM skills ORDER BY name").fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT s.name, s.description, s.current_version, s.updated_at "
+                    "FROM skills s JOIN member_skills ms ON ms.skill_id=s.id "
+                    "WHERE ms.member_id=? AND ms.enabled=1 ORDER BY s.name",
+                    (me["id"],)).fetchall()
+            return {"skills": [{"name": r["name"], "description": r["description"],
+                                "version": r["current_version"],
+                                "updated_at": r["updated_at"]} for r in rows]}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def skill_read(name: str) -> dict:
+        """读 skill 当前版本正文：调度员可读全部；成员只能读指派给自己且
+        enabled 的，未指派/已收回一律拒绝。返回 name/version/description/body。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            s = _get_skill(conn, name)
+            if me["role"] != "dispatcher":
+                row = conn.execute(
+                    "SELECT enabled FROM member_skills WHERE member_id=? AND skill_id=?",
+                    (me["id"], s["id"])).fetchone()
+                if not row or not row["enabled"]:
+                    raise ValueError(
+                        f"forbidden: skill '{name}' is not assigned to {me['name']}")
+            v = conn.execute(
+                "SELECT body FROM skill_versions WHERE skill_id=? AND version=?",
+                (s["id"], s["current_version"])).fetchone()
+            return {"name": s["name"], "version": s["current_version"],
+                    "description": s["description"], "body": v["body"]}
+        finally:
+            conn.close()
+
+    def _skill_assign_set(name, member_name, enabled, action):
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        try:
+            s = _get_skill(conn, name)
+            m = conn.execute("SELECT * FROM members WHERE name=?",
+                             (member_name,)).fetchone()
+            if not m:
+                raise ValueError(f"no such member: {member_name}")
+            conn.execute(
+                "INSERT INTO member_skills(member_id,skill_id,enabled) VALUES(?,?,?) "
+                "ON CONFLICT(member_id,skill_id) DO UPDATE SET enabled=excluded.enabled",
+                (m["id"], s["id"], 1 if enabled else 0))
+            audit(conn, me["name"], action,
+                  json.dumps({"skill": name, "version": s["current_version"],
+                              "member": member_name}, ensure_ascii=False))
+            conn.commit()
+            return {"name": name, "member": member_name, "enabled": bool(enabled)}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def skill_assign(name: str, member_name: str) -> dict:
+        """把 skill 指派给成员（调度员专属）：skill 与目标成员都须存在。
+        指派后该成员 skill_list / skill_read 才可见可读。审计只记元数据。"""
+        return _skill_assign_set(name, member_name, True, "skill_assign")
+
+    @mcp.tool
+    def skill_unassign(name: str, member_name: str) -> dict:
+        """收回 skill 指派（调度员专属）：置 enabled=0，指派行保留可查；
+        收回后成员立即读不到。审计只记元数据。"""
+        return _skill_assign_set(name, member_name, False, "skill_unassign")
+
+    @mcp.tool
+    def skill_rollback(name: str, version: int) -> dict:
+        """回滚 skill（调度员专属）：把指定旧版本正文作为新版本写回
+        （version = current_version+1），历史一行不删。目标版本不存在 → 拒绝。
+        审计只记 name 与版本号。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        try:
+            s = _get_skill(conn, name)
+            v = conn.execute(
+                "SELECT body FROM skill_versions WHERE skill_id=? AND version=?",
+                (s["id"], version)).fetchone()
+            if not v:
+                raise ValueError(
+                    f"no such version: skill '{name}' version {version} "
+                    f"(current_version={s['current_version']})")
+            nv = s["current_version"] + 1
+            now = time.time()
+            conn.execute(
+                "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
+                "VALUES(?,?,?,?,?)", (s["id"], nv, v["body"], me["name"], now))
+            conn.execute(
+                "UPDATE skills SET current_version=?, updated_at=? WHERE id=?",
+                (nv, now, s["id"]))
+            audit(conn, me["name"], "skill_rollback",
+                  json.dumps({"skill": name, "restored_from": version,
+                              "new_version": nv}, ensure_ascii=False))
+            conn.commit()
+            return {"name": name, "version": nv, "restored_from": version}
         finally:
             conn.close()
 
