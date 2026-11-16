@@ -2321,6 +2321,48 @@ def build_server():
         return {"task_id": task_id, "transfers": [dict(x) for x in rows]}
 
     @mcp.tool
+    def task_audit(task_id: int) -> dict:
+        """调度员查某任务的完整轨迹（定稿 §11.1 任务详情的审计入口）：任务基本
+        信息 + audit 事件流中属于该任务的全部事件（detail 以 "task <id>" 开头
+        做归属匹配，分隔符精确匹配，防 task 1 误配 task 12）+ runs 执行台账
+        + task_transfers 转交链，一次返回供 App 渲染时间线。事件流上限 200 条，
+        超出时 truncated=true。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        t = conn.execute(
+            """SELECT t.id, t.title, t.status, t.attempts, t.created_at, t.updated_at,
+                      cb.name AS created_by, ab.name AS assignee, t.review_note
+               FROM tasks t JOIN members cb ON cb.id=t.created_by
+               LEFT JOIN members ab ON ab.id=t.assignee WHERE t.id=?""",
+            (task_id,)).fetchone()
+        if not t:
+            conn.close()
+            raise ValueError(f"no such task: {task_id}")
+        pre = f"task {task_id}"
+        arows = conn.execute(
+            """SELECT ts, actor, action, detail FROM audit
+               WHERE detail=? OR detail LIKE ? OR detail LIKE ?
+               ORDER BY id ASC LIMIT 201""",
+            (pre, pre + ":%", pre + " %")).fetchall()
+        rrows = conn.execute(
+            """SELECT r.fence, mb.name AS member, r.status, r.outcome, r.detail,
+                      r.started_at, r.ended_at
+               FROM runs r JOIN members mb ON mb.id=r.member_id
+               WHERE r.task_id=? ORDER BY r.fence ASC""", (task_id,)).fetchall()
+        xrows = conn.execute(
+            """SELECT from_member, to_member, reason, actor, created_at, status,
+                      accepted_at, expires_at
+               FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
+            (task_id,)).fetchall()
+        conn.close()
+        events = [dict(r) for r in arows[:200]]
+        return {"task": dict(t), "events": events,
+                "events_truncated": len(arows) > 200,
+                "runs": [dict(r) for r in rrows],
+                "transfers": [dict(r) for r in xrows]}
+
+    @mcp.tool
     def run_start(task_id: int, claim_token: str) -> dict:
         """持有人开工登记（附录 G.1 第 4 条）：认领成功后、真正动手前调用。
         同一任务同时只许一份 running 执行——已有执行在跑时本次登记被拒，
