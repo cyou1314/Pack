@@ -261,8 +261,11 @@ def _approval_gate(conn, room_id, msg_id, body, poster=None):
         text, act = f"批准 任务#{tid}（规则库自动通过：{tag}）", "approval_auto_allow"
     else:
         text, act = f"拒绝 任务#{tid}（规则库自动拒绝：{tag}）", "approval_auto_block"
+    # 决议消息以 kind='decision' 落库（不是 chat）：message_delete/edit 只认
+    # kind='chat'，决议因此不可被作者软删/编辑抹除——否则 _approval_state 会
+    # 误判未决议、可重新 filing（staging15 批准链完整性修复）。
     conn.execute(
-        "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'chat',?,?,?)",
+        "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'decision',?,?,?)",
         (room_id, disp["id"], text, tid, time.time()))
     audit(conn, "rule-engine", act, f"task {tid} rule#{rule['id']} {action}->{target}")
     return {"auto_decision": rule["effect"], "rule_id": rule["id"], "task_id": tid}
@@ -399,7 +402,8 @@ def _approval_state(conn, task_id):
     """定位某任务最近一轮待批状态：返回 (request_msg, decided_by)。
     request_msg 为最近一条 approval_request 消息（task_id 已补写，或正文含「任务#N」），
     没有返回 None；decided_by 为其后已出现的决议来源
-    （'message' = 调度员决议消息，含规则引擎代发；'review' = 先前审查留痕），未决议为 None。"""
+    （'message' = 调度员决议消息，kind='decision'（规则引擎/独立审查）或历史
+    kind='chat' 决议均认；'review' = 先前审查留痕），未决议为 None。"""
     req = None
     rows = conn.execute(
         "SELECT * FROM messages WHERE kind='approval_request' ORDER BY id DESC").fetchall()
@@ -417,7 +421,8 @@ def _approval_state(conn, task_id):
     if disp:
         pat = re.compile(r"^(批准|拒绝)\s*任务#%d(?!\d)" % task_id)
         after = conn.execute(
-            "SELECT body FROM messages WHERE id>? AND kind='chat' AND author_id=? ORDER BY id",
+            "SELECT body FROM messages WHERE id>? AND kind IN ('chat','decision') "
+            "AND author_id=? ORDER BY id",
             (req["id"], disp["id"])).fetchall()
         for r in after:
             if pat.match(r["body"] or ""):
@@ -1901,7 +1906,7 @@ def build_server():
                         else f"拒绝 任务#{task_id}（独立审查）")
                 cur = conn.execute(
                     "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
-                    "VALUES(?,?,'chat',?,?,?)",
+                    "VALUES(?,?,'decision',?,?,?)",
                     (t["room_id"], me["id"], text, task_id, now))
                 mid = cur.lastrowid
                 audit(conn, "reviewer", f"review_{verdict}",
