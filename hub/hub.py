@@ -227,7 +227,7 @@ def rule_eval(conn, action, target):
     return None
 
 
-def _approval_gate(conn, room_id, msg_id, body):
+def _approval_gate(conn, room_id, msg_id, body, poster=None):
     """approval_request 落库后的规则求值（room_post 调用，同一事务内）。
     命中 allow/block：以调度员身份按既有决议格式留决议消息（运行时/App 立刻认），
     另以 actor='rule-engine' 写审计区分真人决议；未命中：不做任何事，走原有弹问流程。
@@ -238,9 +238,15 @@ def _approval_gate(conn, room_id, msg_id, body):
     tid = int(m.group(1))
     conn.execute("UPDATE messages SET task_id=? WHERE id=?", (tid, msg_id))
     t = conn.execute(
-        """SELECT t.title, mb.name AS assignee_name FROM tasks t
+        """SELECT t.title, t.assignee, mb.name AS assignee_name FROM tasks t
            LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (tid,)).fetchone()
     if not t:
+        return {}
+    # 批准门只认持有人本人（或调度员代发）的请求：非持有人冒发
+    # approval_request 不得触发规则自动决议（staging14 复检 C7 实证）。
+    # 消息本身照常落库，只是不求值——决议权不能被房间里的第三方行使。
+    if poster is not None and poster["role"] != "dispatcher" \
+            and poster["id"] != t["assignee"]:
         return {}
     action = action_tag(t["title"])
     target = t["assignee_name"] or ""
@@ -688,17 +694,24 @@ def sweep_once():
         (now,)).fetchall()
     n_expired = 0
     for x in expired:
-        conn.execute("UPDATE task_transfers SET status='expired' WHERE id=?", (x["id"],))
+        # 守卫：标 expired 只对仍为 pending 的行生效——SELECT 之后接收方可能
+        # 已 task_accept_transfer 成功（其持 _lock，但 sweeper 不持），无守卫
+        # UPDATE 会把 accepted 改标 expired、账面自相矛盾（staging14 复检 SW1）。
+        cur = conn.execute(
+            "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
+            (x["id"],))
+        if cur.rowcount != 1:
+            continue
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (x["task_id"],)).fetchone()
         requeued = False
         if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
             recv = conn.execute("SELECT id FROM members WHERE name=?",
                                 (x["to_member"],)).fetchone()
             if recv and t["assignee"] == recv["id"]:
-                conn.execute(
-                    "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
+                cur = conn.execute(
+                    "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND claim_token IS NULL AND status IN ('claimed','working')",
                     (now, t["id"]))
-                requeued = True
+                requeued = cur.rowcount == 1
         audit(conn, "sweeper", "transfer_expired",
               f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
         n_expired += 1
@@ -706,16 +719,25 @@ def sweep_once():
         "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
         (now,)).fetchall()
     for t in rows:
-        _close_run(conn, t["id"], "reaped", "sweeper")
+        # 守卫：回收 UPDATE 复检租约仍过期——SELECT 之后持有人可能已
+        # task_update/heartbeat 续租，无守卫会按旧快照误回收活跃任务
+        # （staging14 复检 SW2）。rowcount=0 说明任务已变，整行跳过
+        # （run 不关、审计不写）。
         # 租约超时 = 执行体失联，一律归 transient（合成清单第 3 项定死口径）。
         if t["attempts"] >= MAX_ATTEMPTS:
-            conn.execute("UPDATE tasks SET status='blocked', claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=NULL, updated_at=? WHERE id=?",
-                         (now, t["id"]))
+            cur = conn.execute("UPDATE tasks SET status='blocked', claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=NULL, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
+                               (now, t["id"], now))
+            if cur.rowcount != 1:
+                continue
+            _close_run(conn, t["id"], "reaped", "sweeper")
             audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
         else:
             nca = now + _backoff_seconds("transient", t["attempts"])
-            conn.execute("UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=?, updated_at=? WHERE id=?",
-                         (nca, now, t["id"]))
+            cur = conn.execute("UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=?, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
+                               (nca, now, t["id"], now))
+            if cur.rowcount != 1:
+                continue
+            _close_run(conn, t["id"], "reaped", "sweeper")
             audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
     conn.commit()
     conn.close()
@@ -895,7 +917,7 @@ def build_server():
         mid = cur.lastrowid
         extra = {}
         if kind == "approval_request":
-            extra = _approval_gate(conn, r["id"], mid, body)
+            extra = _approval_gate(conn, r["id"], mid, body, poster=me)
         conn.commit()
         conn.close()
         out = {"message_id": mid}
@@ -995,8 +1017,14 @@ def build_server():
         if m["deleted_at"]:
             conn.close()
             raise ValueError(f"message {message_id} already deleted")
-        conn.execute("UPDATE messages SET body=?, deleted_at=? WHERE id=?",
-                     (DELETED_PLACEHOLDER, time.time(), message_id))
+        # UPDATE 带 deleted_at IS NULL 守卫 + rowcount 复核：先检后写无守卫时
+        # 并发删同一条会一路成功（staging14 复检 C3：4 路并发 4 成功 4 审计）。
+        cur = conn.execute(
+            "UPDATE messages SET body=?, deleted_at=? WHERE id=? AND deleted_at IS NULL",
+            (DELETED_PLACEHOLDER, time.time(), message_id))
+        if cur.rowcount != 1:
+            conn.close()
+            raise ValueError(f"message {message_id} already deleted")
         audit(conn, me["name"], "message_delete", f"message {message_id}")
         conn.commit()
         conn.close()
@@ -1025,8 +1053,12 @@ def build_server():
         if m["deleted_at"]:
             conn.close()
             raise ValueError(f"message {message_id} already deleted")
-        conn.execute("UPDATE messages SET body=?, edited_at=? WHERE id=?",
-                     (new_body, time.time(), message_id))
+        cur = conn.execute(
+            "UPDATE messages SET body=?, edited_at=? WHERE id=? AND deleted_at IS NULL",
+            (new_body, time.time(), message_id))
+        if cur.rowcount != 1:
+            conn.close()
+            raise ValueError(f"message {message_id} already deleted")
         audit(conn, me["name"], "message_edit", f"message {message_id}")
         conn.commit()
         conn.close()
@@ -1110,18 +1142,29 @@ def build_server():
         me = authenticate()
         require(me)
         conn = db()
-        _holder(conn, me, task_id, claim_token)
-        now = time.time()
-        conn.execute("UPDATE tasks SET status='working', lease_expires=?, updated_at=? WHERE id=?",
-                     (now + LEASE_SECONDS, now, task_id))
-        if note:
-            t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
-            conn.execute(
-                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
-                (t["room_id"], me["id"], note, task_id, now))
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "working", "lease_expires": now + LEASE_SECONDS}
+        try:
+            _holder(conn, me, task_id, claim_token)
+            now = time.time()
+            # UPDATE 带持有人守卫 + rowcount 复核：_holder 是先检后写，两步之间
+            # 租约可能被 sweeper 回收并被他人重认领，无守卫 UPDATE 会覆盖新认领
+            # （staging14 复检 C6 语句级实证）。complete/block 同此修。
+            cur = conn.execute(
+                "UPDATE tasks SET status='working', lease_expires=?, updated_at=? "
+                "WHERE id=? AND assignee=? AND claim_token=?",
+                (now + LEASE_SECONDS, now, task_id, me["id"], claim_token))
+            if cur.rowcount != 1:
+                conn.close()
+                raise ValueError("not the current holder (claim_token mismatch)")
+            if note:
+                t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+                conn.execute(
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
+                    (t["room_id"], me["id"], note, task_id, now))
+            conn.commit()
+            conn.close()
+            return {"task_id": task_id, "status": "working", "lease_expires": now + LEASE_SECONDS}
+        finally:
+            conn.close()
 
     @mcp.tool
     def task_complete(task_id: int, claim_token: str, result: str,
@@ -1138,35 +1181,42 @@ def build_server():
         me = authenticate()
         require(me)
         conn = db()
-        _holder(conn, me, task_id, claim_token)
-        env = None
-        stored = result
-        if envelope is not None:
-            env, problems = _validate_envelope(envelope)
-            if problems:
+        try:
+            _holder(conn, me, task_id, claim_token)
+            env = None
+            stored = result
+            if envelope is not None:
+                env, problems = _validate_envelope(envelope)
+                if problems:
+                    conn.close()
+                    raise ValueError(json.dumps(
+                        {"error": "invalid_envelope", "task_id": task_id,
+                         "problems": problems}, ensure_ascii=False))
+                stored = env["summary"]
+            now = time.time()
+            cur = conn.execute(
+                "UPDATE tasks SET status='review', result=?, envelope=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND assignee=? AND claim_token=?",
+                (stored, json.dumps(env, ensure_ascii=False) if env else None, now, task_id,
+                 me["id"], claim_token))
+            if cur.rowcount != 1:
                 conn.close()
-                raise ValueError(json.dumps(
-                    {"error": "invalid_envelope", "task_id": task_id,
-                     "problems": problems}, ensure_ascii=False))
-            stored = env["summary"]
-        now = time.time()
-        conn.execute(
-            "UPDATE tasks SET status='review', result=?, envelope=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
-            (stored, json.dumps(env, ensure_ascii=False) if env else None, now, task_id))
-        _close_run(conn, task_id, "completed", me["name"])
-        t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
-        conn.execute(
-            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
-            (t["room_id"], me["id"], f"交活 任务#{task_id}: {stored}", task_id, now))
-        audit(conn, me["name"], "task_complete",
-              f"task {task_id}" + (f" verdict={env['verdict']}" if env else ""))
-        conn.commit()
-        conn.close()
-        out = {"task_id": task_id, "status": "review"}
-        if env:
-            out["verdict"] = env["verdict"]
-            out["envelope"] = env
-        return out
+                raise ValueError("not the current holder (claim_token mismatch)")
+            _close_run(conn, task_id, "completed", me["name"])
+            t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+            conn.execute(
+                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
+                (t["room_id"], me["id"], f"交活 任务#{task_id}: {stored}", task_id, now))
+            audit(conn, me["name"], "task_complete",
+                  f"task {task_id}" + (f" verdict={env['verdict']}" if env else ""))
+            conn.commit()
+            conn.close()
+            out = {"task_id": task_id, "status": "review"}
+            if env:
+                out["verdict"] = env["verdict"]
+                out["envelope"] = env
+            return out
+        finally:
+            conn.close()
 
     @mcp.tool
     def task_block(task_id: int, claim_token: str, reason: str, fail_class: str = "") -> dict:
@@ -1182,17 +1232,23 @@ def build_server():
         require(me)
         fc = fail_class if fail_class in FAIL_CLASSES else "unknown"
         conn = db()
-        t = _holder(conn, me, task_id, claim_token)
-        now = _now()
-        nca = now + _backoff_seconds(fc, t["attempts"])
-        conn.execute(
-            "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? WHERE id=?",
-            (reason, fc, nca, now, task_id))
-        _close_run(conn, task_id, "blocked", me["name"])
-        audit(conn, me["name"], "task_block", f"task {task_id}: {reason} fail_class={fc}")
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "blocked", "fail_class": fc, "next_claim_at": nca}
+        try:
+            t = _holder(conn, me, task_id, claim_token)
+            now = _now()
+            nca = now + _backoff_seconds(fc, t["attempts"])
+            cur = conn.execute(
+                "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? WHERE id=? AND assignee=? AND claim_token=?",
+                (reason, fc, nca, now, task_id, me["id"], claim_token))
+            if cur.rowcount != 1:
+                conn.close()
+                raise ValueError("not the current holder (claim_token mismatch)")
+            _close_run(conn, task_id, "blocked", me["name"])
+            audit(conn, me["name"], "task_block", f"task {task_id}: {reason} fail_class={fc}")
+            conn.commit()
+            conn.close()
+            return {"task_id": task_id, "status": "blocked", "fail_class": fc, "next_claim_at": nca}
+        finally:
+            conn.close()
 
     @mcp.tool
     def task_review(task_id: int, approve: bool, note: str = "") -> dict:
@@ -1443,6 +1499,13 @@ def build_server():
                     raise ValueError(
                         f"transfer target must be a member (got {to_member} "
                         f"with role={target['role']})")
+                if target["name"] == "owner":
+                    # owner 在库里 role 就是 'member'，单靠 role 拦不住——
+                    # 本工具口径「不得转给 owner/dispatcher」须按名补检
+                    # （与 _task_mention 对 owner 的处理同构；staging14 复检）。
+                    raise ValueError(
+                        "transfer target must be a member (owner is not an "
+                        "executor and cannot receive transfers)")
                 if target["id"] == t["assignee"]:
                     raise ValueError("cannot transfer to the current holder (self)")
                 pending = conn.execute(
@@ -1769,16 +1832,19 @@ def build_server():
         require(me)
         conn = db()
         try:
+            # 审计只记去查询串/片段的 URL：查询串常带签名 token，成员提交的
+            # URL 是不可信输入，不许把其查询串原样落进审计（staging14 复检 C8）。
+            safe_url = (url or "").split("?")[0].split("#")[0][:200]
             try:
                 host, decision, source = _egress_decide(conn, url, task_id)
             except ValueError as e:
                 audit(conn, "egress", "egress_check",
-                      f"member={me['name']} decision=reject reason={e} url={(url or '')[:200]}")
+                      f"member={me['name']} decision=reject reason={e} url={safe_url}")
                 conn.commit()
                 raise
             audit(conn, "egress", "egress_check",
                   f"member={me['name']} host={host} decision={decision} "
-                  f"source={source} url={(url or '')[:200]}")
+                  f"source={source} url={safe_url}")
             conn.commit()
             return {"decision": decision, "host": host, "source": source,
                     "task_id": task_id}
@@ -1810,35 +1876,40 @@ def build_server():
                 raise ValueError(f"missing evidence field: {label}")
         conn = db()
         try:
-            t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-            if not t:
-                raise ValueError(f"no such task: {task_id}")
-            req, decided_by = _approval_state(conn, task_id)
-            if not req:
-                raise ValueError(
-                    f"task {task_id} has no approval request on file; nothing to review")
-            if decided_by:
-                raise ValueError(
-                    f"task {task_id} already decided (via {decided_by}); "
-                    "review_file only handles undecided approvals")
-            now = time.time()
-            cur = conn.execute(
-                """INSERT INTO review_log(task_id,target_url,owner_quote,member_desc,
-                   verdict,reviewer,created_at) VALUES(?,?,?,?,?,?,?)""",
-                (task_id, target_url, owner_quote, member_desc, verdict, me["name"], now))
-            log_id = cur.lastrowid
-            text = (f"批准 任务#{task_id}（独立审查）" if verdict == "allow"
-                    else f"拒绝 任务#{task_id}（独立审查）")
-            cur = conn.execute(
-                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
-                "VALUES(?,?,'chat',?,?,?)",
-                (t["room_id"], me["id"], text, task_id, now))
-            mid = cur.lastrowid
-            audit(conn, "reviewer", f"review_{verdict}",
-                  f"task {task_id} review#{log_id} url={target_url}")
-            conn.commit()
-            return {"task_id": task_id, "verdict": verdict,
-                    "review_id": log_id, "message_id": mid}
+            # 「查未决议 → 落痕决议」是读-改-写，须走 _lock 串行化：无锁时两路
+            # 并发 filing（allow+deny）会双双通过 _approval_state 检查、给同一
+            # 待批任务留下互相矛盾的双决议（staging14 复检 C2，live 8/8 复现）。
+            with _lock:
+                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if not t:
+                    raise ValueError(f"no such task: {task_id}")
+                req, decided_by = _approval_state(conn, task_id)
+                if not req:
+                    raise ValueError(
+                        f"task {task_id} has no approval request on file; nothing to review")
+                if decided_by:
+                    raise ValueError(
+                        f"task {task_id} already decided (via {decided_by}); "
+                        "review_file only handles undecided approvals")
+                now = time.time()
+                cur = conn.execute(
+                    """INSERT INTO review_log(task_id,target_url,owner_quote,member_desc,
+                       verdict,reviewer,created_at) VALUES(?,?,?,?,?,?,?)""",
+                    (task_id, target_url, owner_quote, member_desc, verdict, me["name"], now))
+                log_id = cur.lastrowid
+                text = (f"批准 任务#{task_id}（独立审查）" if verdict == "allow"
+                        else f"拒绝 任务#{task_id}（独立审查）")
+                cur = conn.execute(
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
+                    "VALUES(?,?,'chat',?,?,?)",
+                    (t["room_id"], me["id"], text, task_id, now))
+                mid = cur.lastrowid
+                audit(conn, "reviewer", f"review_{verdict}",
+                      f"task {task_id} review#{log_id} "
+                      f"url={target_url.split('?')[0].split('#')[0]}")
+                conn.commit()
+                return {"task_id": task_id, "verdict": verdict,
+                        "review_id": log_id, "message_id": mid}
         finally:
             conn.close()
 
@@ -1890,72 +1961,76 @@ def build_server():
         require(me)
         conn = db()
         try:
-            _mem_validate_scope_key(scope, key)
-            target = _mem_target(conn, me, scope, member)
-            if scope == "room-shared" and me["role"] != "dispatcher":
-                _mem_denied(conn, me, target, scope, "write-room-shared")
-            eff_origin = _mem_origin(me, origin)
-            refs = _mem_validate_refs(source_refs)
-            if text is None:
-                if scope != "private":
-                    _mem_err("invalid_argument",
-                             "text=null（删主题）只对 scope=private 有效；"
-                             "private-core / room-shared 请写空串或改写全文")
-                refs = refs + [{"type": "delete"}]
+            # 写路径的「检查限额 → 落版 → 审计」是读-改-写，须走 _lock 串行化：
+            # 否则主题数 COUNT 检查与落版之间无锁，并发写可突破主题上限
+            # （staging14 复检 C1：31 预置 + 6 并发新主题 = 37 > 32）。
+            with _lock:
+                _mem_validate_scope_key(scope, key)
+                target = _mem_target(conn, me, scope, member)
+                if scope == "room-shared" and me["role"] != "dispatcher":
+                    _mem_denied(conn, me, target, scope, "write-room-shared")
+                eff_origin = _mem_origin(me, origin)
+                refs = _mem_validate_refs(source_refs)
+                if text is None:
+                    if scope != "private":
+                        _mem_err("invalid_argument",
+                                 "text=null（删主题）只对 scope=private 有效；"
+                                 "private-core / room-shared 请写空串或改写全文")
+                    refs = refs + [{"type": "delete"}]
+                    vid, size, _now = _mem_append_version(
+                        conn, target, scope, key, "", me["name"], eff_origin, refs)
+                    audit(conn, me["name"], "memory_write",
+                          json.dumps({"member": target, "scope": scope, "key": key,
+                                      "version_id": vid, "origin": eff_origin,
+                                      "size": 0, "deleted": True}, ensure_ascii=False))
+                    conn.commit()
+                    return {"version_id": vid, "size": 0,
+                            "limit": MEM_L1_LIMIT_CHARS, "deleted": True}
+                if not isinstance(text, str):
+                    _mem_err("invalid_argument", "text 必须是字符串（或删主题时传 null）")
+                size = _mem_measure(scope, text)
+                if scope in ("private-core", "room-shared"):
+                    limit = (MEM_CORE_LIMIT_BYTES if scope == "private-core"
+                             else MEM_SHARED_LIMIT_BYTES)
+                    if size > limit:
+                        _mem_err("memory_limit_exceeded", _MEM_HINT_LIMIT, scope=scope,
+                                 limit_bytes=limit, current_bytes=size)
+                else:
+                    if size > MEM_L1_LIMIT_CHARS:
+                        _mem_err("memory_limit_exceeded",
+                                 "拆分主题或删旧段落后重试", scope=scope,
+                                 limit_chars=MEM_L1_LIMIT_CHARS, current_chars=size)
+                    cur = _mem_current(conn, target, scope, key)
+                    is_new_topic = not (cur and cur["text"] != "")
+                    if is_new_topic and text != "":
+                        cnt = conn.execute(
+                            "SELECT COUNT(*) AS c FROM member_memory "
+                            "WHERE member=? AND scope='private' AND text != ''",
+                            (target,)).fetchone()["c"]
+                        if cnt >= MEM_L1_MAX_TOPICS:
+                            _mem_err("memory_topic_limit",
+                                     "合并或删除一个旧主题（删除 = memory_write 同 key 传 text=null）",
+                                     limit_topics=MEM_L1_MAX_TOPICS)
                 vid, size, _now = _mem_append_version(
-                    conn, target, scope, key, "", me["name"], eff_origin, refs)
+                    conn, target, scope, key, text, me["name"], eff_origin, refs)
                 audit(conn, me["name"], "memory_write",
                       json.dumps({"member": target, "scope": scope, "key": key,
                                   "version_id": vid, "origin": eff_origin,
-                                  "size": 0, "deleted": True}, ensure_ascii=False))
+                                  "size": size}, ensure_ascii=False))
+                if scope == "private":
+                    total = conn.execute(
+                        "SELECT COALESCE(SUM(LENGTH(text)),0) AS s FROM member_memory "
+                        "WHERE member=? AND scope='private'", (target,)).fetchone()["s"]
+                    if total > MEM_L1_SOFT_CAP_CHARS:
+                        audit(conn, "system", "memory_soft_cap",
+                              json.dumps({"member": target, "total_chars": total,
+                                          "soft_cap": MEM_L1_SOFT_CAP_CHARS},
+                                         ensure_ascii=False))
                 conn.commit()
-                return {"version_id": vid, "size": 0,
-                        "limit": MEM_L1_LIMIT_CHARS, "deleted": True}
-            if not isinstance(text, str):
-                _mem_err("invalid_argument", "text 必须是字符串（或删主题时传 null）")
-            size = _mem_measure(scope, text)
-            if scope in ("private-core", "room-shared"):
-                limit = (MEM_CORE_LIMIT_BYTES if scope == "private-core"
-                         else MEM_SHARED_LIMIT_BYTES)
-                if size > limit:
-                    _mem_err("memory_limit_exceeded", _MEM_HINT_LIMIT, scope=scope,
-                             limit_bytes=limit, current_bytes=size)
-            else:
-                if size > MEM_L1_LIMIT_CHARS:
-                    _mem_err("memory_limit_exceeded",
-                             "拆分主题或删旧段落后重试", scope=scope,
-                             limit_chars=MEM_L1_LIMIT_CHARS, current_chars=size)
-                cur = _mem_current(conn, target, scope, key)
-                is_new_topic = not (cur and cur["text"] != "")
-                if is_new_topic and text != "":
-                    cnt = conn.execute(
-                        "SELECT COUNT(*) AS c FROM member_memory "
-                        "WHERE member=? AND scope='private' AND text != ''",
-                        (target,)).fetchone()["c"]
-                    if cnt >= MEM_L1_MAX_TOPICS:
-                        _mem_err("memory_topic_limit",
-                                 "合并或删除一个旧主题（删除 = memory_write 同 key 传 text=null）",
-                                 limit_topics=MEM_L1_MAX_TOPICS)
-            vid, size, _now = _mem_append_version(
-                conn, target, scope, key, text, me["name"], eff_origin, refs)
-            audit(conn, me["name"], "memory_write",
-                  json.dumps({"member": target, "scope": scope, "key": key,
-                              "version_id": vid, "origin": eff_origin,
-                              "size": size}, ensure_ascii=False))
-            if scope == "private":
-                total = conn.execute(
-                    "SELECT COALESCE(SUM(LENGTH(text)),0) AS s FROM member_memory "
-                    "WHERE member=? AND scope='private'", (target,)).fetchone()["s"]
-                if total > MEM_L1_SOFT_CAP_CHARS:
-                    audit(conn, "system", "memory_soft_cap",
-                          json.dumps({"member": target, "total_chars": total,
-                                      "soft_cap": MEM_L1_SOFT_CAP_CHARS},
-                                     ensure_ascii=False))
-            conn.commit()
-            limit_out = (MEM_CORE_LIMIT_BYTES if scope == "private-core"
-                         else MEM_SHARED_LIMIT_BYTES if scope == "room-shared"
-                         else MEM_L1_LIMIT_CHARS)
-            return {"version_id": vid, "size": size, "limit": limit_out}
+                limit_out = (MEM_CORE_LIMIT_BYTES if scope == "private-core"
+                             else MEM_SHARED_LIMIT_BYTES if scope == "room-shared"
+                             else MEM_L1_LIMIT_CHARS)
+                return {"version_id": vid, "size": size, "limit": limit_out}
         finally:
             conn.close()
 
@@ -2009,27 +2084,28 @@ def build_server():
         require(me)
         conn = db()
         try:
-            _mem_validate_scope_key(scope, key)
-            if me["role"] != "dispatcher":
-                _mem_denied(conn, me, member or me["name"], scope, "rollback")
-            target = _mem_target(conn, me, scope, member)
-            v = conn.execute(
-                "SELECT * FROM member_memory_versions "
-                "WHERE id=? AND member=? AND scope=? AND key=?",
-                (version_id, target, scope, key)).fetchone()
-            if not v:
-                _mem_err("not_found",
-                         "该版本不属于这个 (成员, scope, key)，先用 memory_versions 核对",
-                         version_id=version_id)
-            refs = [{"type": "rollback_of", "id": version_id}]
-            vid, _size, _now = _mem_append_version(
-                conn, target, scope, key, v["text"], "dispatcher", "dispatcher", refs)
-            audit(conn, me["name"], "memory_rollback",
-                  json.dumps({"member": target, "scope": scope, "key": key,
-                              "restored_from": version_id, "new_version_id": vid},
-                             ensure_ascii=False))
-            conn.commit()
-            return {"new_version_id": vid, "restored_from": version_id}
+            with _lock:
+                _mem_validate_scope_key(scope, key)
+                if me["role"] != "dispatcher":
+                    _mem_denied(conn, me, member or me["name"], scope, "rollback")
+                target = _mem_target(conn, me, scope, member)
+                v = conn.execute(
+                    "SELECT * FROM member_memory_versions "
+                    "WHERE id=? AND member=? AND scope=? AND key=?",
+                    (version_id, target, scope, key)).fetchone()
+                if not v:
+                    _mem_err("not_found",
+                             "该版本不属于这个 (成员, scope, key)，先用 memory_versions 核对",
+                             version_id=version_id)
+                refs = [{"type": "rollback_of", "id": version_id}]
+                vid, _size, _now = _mem_append_version(
+                    conn, target, scope, key, v["text"], "dispatcher", "dispatcher", refs)
+                audit(conn, me["name"], "memory_rollback",
+                      json.dumps({"member": target, "scope": scope, "key": key,
+                                  "restored_from": version_id, "new_version_id": vid},
+                                 ensure_ascii=False))
+                conn.commit()
+                return {"new_version_id": vid, "restored_from": version_id}
         finally:
             conn.close()
 
