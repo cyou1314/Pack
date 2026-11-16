@@ -127,6 +127,10 @@ CREATE TABLE IF NOT EXISTS audit(
 CREATE TABLE IF NOT EXISTS room_summaries(
   room_id INTEGER PRIMARY KEY, data TEXT NOT NULL,
   updated_at REAL NOT NULL, updated_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS task_templates(
+  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, title_tpl TEXT NOT NULL,
+  body_tpl TEXT NOT NULL, assignee TEXT NOT NULL DEFAULT '',
+  updated_at REAL NOT NULL, updated_by TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS approval_rules(
   id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
   effect TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
@@ -1356,6 +1360,106 @@ def build_server():
         conn.commit()
         conn.close()
         return {"task_id": tid, "status": "open", "assignee": assignee_name or None}
+
+    @mcp.tool
+    def template_upsert(name: str, title_tpl: str, body_tpl: str, assignee: str = "") -> dict:
+        """调度员新建/更新任务模板（设计稿 TASK-TEMPLATES-DESIGN §2）。
+        模板 = 预填任务卡：标题/正文骨架（{arg} 占位）+ 默认指派。
+        name 非空 ≤40 字；title_tpl 非空 ≤200 字；body_tpl ≤4000 字（骨架不放
+        长规程，长规程走 skill）；assignee 非空时必须是已存在的成员名。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if not name or len(name) > 40:
+            raise ValueError("template name must be 1-40 chars")
+        if not title_tpl or len(title_tpl) > 200:
+            raise ValueError("title_tpl must be 1-200 chars")
+        if len(body_tpl) > 4000:
+            raise ValueError(f"body_tpl too long: {len(body_tpl)} > 4000")
+        conn = db()
+        try:
+            if assignee:
+                a = conn.execute("SELECT id FROM members WHERE name=?", (assignee,)).fetchone()
+                if not a:
+                    raise ValueError(f"no such member: {assignee}")
+            now = _now()
+            conn.execute(
+                "INSERT INTO task_templates(name,title_tpl,body_tpl,assignee,updated_at,updated_by)"
+                " VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET title_tpl=excluded.title_tpl,"
+                " body_tpl=excluded.body_tpl, assignee=excluded.assignee,"
+                " updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                (name, title_tpl, body_tpl, assignee, now, me["name"]))
+            audit(conn, me["name"], "template_upsert", f"template: {name}")
+            conn.commit()
+            row = conn.execute("SELECT id FROM task_templates WHERE name=?", (name,)).fetchone()
+        finally:
+            conn.close()
+        return {"template_id": row["id"], "name": name}
+
+    @mcp.tool
+    def template_list() -> dict:
+        """列出全部任务模板（调度员）。模板是调度员资产，成员不可见。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        try:
+            rows = conn.execute(
+                "SELECT id, name, title_tpl, body_tpl, assignee, updated_at, updated_by"
+                " FROM task_templates ORDER BY id").fetchall()
+        finally:
+            conn.close()
+        return {"templates": [dict(r) for r in rows]}
+
+    @mcp.tool
+    def template_delete(name: str) -> dict:
+        """调度员删除模板。只删模板本身，已开出的任务不受影响。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        try:
+            cur = conn.execute("DELETE FROM task_templates WHERE name=?", (name,))
+            if cur.rowcount == 0:
+                raise ValueError(f"no such template: {name}")
+            audit(conn, me["name"], "template_delete", f"template: {name}")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"deleted": name}
+
+    @mcp.tool
+    def template_fire(name: str, arg: str = "", room: str = "pack-main",
+                      assignee_override: str = "") -> dict:
+        """调度员按模板开卡：{arg} 纯文本替换后走 task_create 同路径（状态机/
+        审计/卡片消息全不变）。模板无 {arg} 占位时给了 arg 会拒绝；
+        arg ≤1000 字。指派 = assignee_override 优先，否则模板默认指派。
+        模板只省打字不降纪律：不得预设批准、不得绕出口管制（与普通卡无异）。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if len(arg) > 1000:
+            raise ValueError(f"arg too long: {len(arg)} > 1000")
+        conn = db()
+        try:
+            t = conn.execute(
+                "SELECT title_tpl, body_tpl, assignee FROM task_templates WHERE name=?",
+                (name,)).fetchone()
+        finally:
+            conn.close()
+        if not t:
+            raise ValueError(f"no such template: {name}")
+        if arg and "{arg}" not in t["title_tpl"] and "{arg}" not in t["body_tpl"]:
+            raise ValueError(f"template '{name}' has no {{arg}} placeholder")
+        title = t["title_tpl"].replace("{arg}", arg)
+        body = t["body_tpl"].replace("{arg}", arg)
+        out = task_create(room=room, title=title, body=body,
+                          assignee_name=assignee_override or t["assignee"])
+        conn = db()
+        try:
+            audit(conn, me["name"], "template_fire",
+                  f"template {name} -> task {out['task_id']}")
+            conn.commit()
+        finally:
+            conn.close()
+        out["template"] = name
+        return out
 
     @mcp.tool
     def task_claim(task_id: int) -> dict:
