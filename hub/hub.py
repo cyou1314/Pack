@@ -687,7 +687,7 @@ def _validate_summary(raw) -> dict:
 
 def _used_combos(conn) -> set:
     used = set()
-    for r in conn.execute("SELECT avatar FROM members").fetchall():
+    for r in conn.execute("SELECT avatar FROM members WHERE removed_at IS NULL").fetchall():
         try:
             a = json.loads(r["avatar"]) if r["avatar"] else {}
         except Exception:
@@ -747,6 +747,10 @@ def init():
                      ("quota_extra_left", "INTEGER"), ("quota_updated_at", "REAL")):
         if col not in mcols2:
             conn.execute(f"ALTER TABLE members ADD COLUMN {col} {ddl}")
+    # staging28 成员移除标记：removed_at 非空 = 已移除（软删：行保留备查、
+    # token 作废、列表隐藏、头像组合释放、接力候选排除）。
+    if "removed_at" not in mcols2:
+        conn.execute("ALTER TABLE members ADD COLUMN removed_at REAL")
     # H2 房间归档标记。
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
     if "archived_at" not in rcols:
@@ -784,6 +788,8 @@ def authenticate():
     conn = db()
     row = conn.execute("SELECT * FROM members WHERE token_hash=?", (hash_token(tok),)).fetchone()
     conn.close()
+    if row and row["removed_at"] is not None:
+        return None
     return dict(row) if row else None
 
 
@@ -826,7 +832,7 @@ def _auto_relay(conn, t, from_name, reason_label):
         return None
     now = _now()
     cand = conn.execute(
-        """SELECT * FROM members WHERE role='member' AND name<>? AND name<>'owner'
+        """SELECT * FROM members WHERE role='member' AND removed_at IS NULL AND name<>? AND name<>'owner'
              AND last_heartbeat IS NOT NULL AND last_heartbeat>=?
              AND quota_updated_at IS NOT NULL AND quota_updated_at>=?
              AND quota_week_used_pct IS NOT NULL AND quota_week_used_pct<?
@@ -1106,8 +1112,13 @@ def build_server():
     mcp = FastMCP("pack-hub")
 
     @mcp.tool
-    def member_register(name: str, profile: str = "") -> dict:
-        """调度员登记一个新成员，返回其一次性明文 token（中枢只存哈希）。"""
+    def member_register(name: str, profile: str = "", avatar_combo: str = "") -> dict:
+        """调度员登记一个新成员，返回其一次性明文 token（中枢只存哈希）。
+        avatar_combo 可选（JSON 字符串，如 {"species":"fox","palette":"ocean",
+        "accessory":"cap","bg":"peach"}）：App 添加成员流程先让群主预览挑选
+        组合再发起登记；给了的字段逐个校验（不在参数集内整笔拒绝），缺的
+        字段由自动分配补齐；拼出的组合已被在册成员占用则拒绝。不给则沿用
+        按名哈希自动分配避撞。已移除成员的名字保持占用，不许同名再登记。"""
         me = authenticate()
         require(me, "dispatcher")
         tok = "pk-mem-" + secrets.token_urlsafe(32)
@@ -1116,8 +1127,41 @@ def build_server():
         with _lock:
             conn = db()
             try:
+                old = conn.execute("SELECT removed_at FROM members WHERE name=?",
+                                   (name,)).fetchone()
+                if old is not None:
+                    if old["removed_at"] is not None:
+                        raise ValueError(f"member name reserved by removed member: {name}")
+                    raise ValueError(f"member name already exists: {name}")
                 av = avatar_for(name)
-                av.update(_avatar_combo(name, _used_combos(conn)))
+                used = _used_combos(conn)
+                if avatar_combo:
+                    try:
+                        want = json.loads(avatar_combo)
+                    except Exception:
+                        raise ValueError("avatar_combo: not valid JSON")
+                    if not isinstance(want, dict):
+                        raise ValueError("avatar_combo: must be a JSON object")
+                    pick = {}
+                    for key, allowed in (("species", AVATAR_SPECIES),
+                                         ("palette", AVATAR_PALETTES),
+                                         ("accessory", AVATAR_ACCESSORIES),
+                                         ("bg", AVATAR_BGS)):
+                        v = want.get(key)
+                        if v is not None:
+                            if v not in allowed:
+                                raise ValueError(f"avatar_combo: bad {key}: {v}")
+                            pick[key] = v
+                    merged = _avatar_combo(name, used)
+                    merged.update(pick)
+                    combo = (f"{merged['species']}|{merged['palette']}|"
+                             f"{merged['accessory']}|{merged['bg']}")
+                    if combo in used:
+                        raise ValueError(f"avatar_combo: combo already taken: {combo}")
+                    merged["combo"] = combo
+                    av.update(merged)
+                else:
+                    av.update(_avatar_combo(name, used))
                 cur = conn.execute(
                     "INSERT INTO members(name,role,token_hash,profile,created_at,avatar) VALUES(?,'member',?,?,?,?)",
                     (name, hash_token(tok), profile or None, time.time(), json.dumps(av)))
@@ -1128,7 +1172,92 @@ def build_server():
                 raise ValueError(f"member name already exists: {name}")
             finally:
                 conn.close()
-        return {"member_id": mid, "name": name, "token": tok}
+        return {"member_id": mid, "name": name, "token": tok, "avatar": av}
+
+    @mcp.tool
+    def member_remove(name: str) -> dict:
+        """调度员移除成员（软删）：token 立即作废、成员列表隐藏、头像组合
+        释放、自动接力候选排除；其 claimed/working 任务关 run 并顺手放桌面
+        锁后回池（open+未指派），open 已指派任务解除指派，pending 转交一律
+        过期（转交 limbo 中的任务同步回池，镜像 sweeper 口径），技能指派
+        清除。review 中的任务不动（成果已交付、等调度员验收）。成员行与
+        历史（消息/审计/记忆）保留备查，名字保持占用。不可移除
+        dispatcher 与 owner，也不可移除自己。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if name == me["name"]:
+            raise ValueError("cannot remove yourself")
+        recalled = unassigned = expired = skills_cleared = 0
+        lock_released = False
+        with _lock:
+            conn = db()
+            try:
+                row = conn.execute("SELECT * FROM members WHERE name=?",
+                                   (name,)).fetchone()
+                if not row:
+                    raise ValueError(f"no such member: {name}")
+                if row["role"] == "dispatcher":
+                    raise ValueError("cannot remove the dispatcher")
+                if name == "owner":
+                    raise ValueError("cannot remove the owner")
+                if row["removed_at"] is not None:
+                    raise ValueError(f"member already removed: {name}")
+                now = time.time()
+                mid = row["id"]
+                for t in conn.execute(
+                        "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','working')",
+                        (mid,)).fetchall():
+                    cur = conn.execute(
+                        "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND status IN ('claimed','working')",
+                        (now, t["id"]))
+                    if cur.rowcount == 1:
+                        _close_run(conn, t["id"], "member_removed", me["name"])
+                        _desktop_release_for_task(conn, t["id"], me["name"],
+                                                  "member_removed")
+                        recalled += 1
+                unassigned = conn.execute(
+                    "UPDATE tasks SET assignee=NULL, updated_at=? WHERE assignee=? AND status='open'",
+                    (now, mid)).rowcount
+                for x in conn.execute(
+                        "SELECT * FROM task_transfers WHERE status='pending' AND (from_member=? OR to_member=?)",
+                        (name, name)).fetchall():
+                    cur = conn.execute(
+                        "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
+                        (x["id"],))
+                    if cur.rowcount != 1:
+                        continue
+                    expired += 1
+                    t = conn.execute("SELECT * FROM tasks WHERE id=?",
+                                     (x["task_id"],)).fetchone()
+                    if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
+                        recv = conn.execute("SELECT id FROM members WHERE name=?",
+                                            (x["to_member"],)).fetchone()
+                        if recv and t["assignee"] == recv["id"]:
+                            conn.execute(
+                                "UPDATE tasks SET status='open', assignee=NULL, updated_at=? WHERE id=?",
+                                (now, t["id"]))
+                snap = _desktop_snapshot(conn)
+                if snap["held"] and snap["holder"] == name:
+                    conn.execute(
+                        "UPDATE desktop_lock SET holder=NULL, task_id=NULL, acquired_at=NULL WHERE id=1")
+                    audit(conn, me["name"], "desktop_auto_release",
+                          f"member_remove holder={name}")
+                    lock_released = True
+                skills_cleared = conn.execute(
+                    "DELETE FROM member_skills WHERE member_id=?", (mid,)).rowcount
+                conn.execute(
+                    "UPDATE members SET removed_at=?, token_hash=? WHERE id=?",
+                    (now, hash_token("revoked-" + secrets.token_urlsafe(32)), mid))
+                audit(conn, me["name"], "member_remove",
+                      f"{name} recalled={recalled} unassigned={unassigned} "
+                      f"transfers_expired={expired} skills_cleared={skills_cleared} "
+                      f"lock_released={lock_released}")
+                conn.commit()
+            finally:
+                conn.close()
+        return {"removed": name, "tasks_recalled": recalled,
+                "tasks_unassigned": unassigned, "transfers_expired": expired,
+                "skills_cleared": skills_cleared, "lock_released": lock_released}
 
     @mcp.tool
     def member_quota_set(member_name: str, week_used_pct: float = None,
@@ -1863,7 +1992,7 @@ def build_server():
         rows = conn.execute(
             "SELECT name, role, profile, created_at, last_heartbeat, avatar,"
             " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at"
-            " FROM members ORDER BY id"
+            " FROM members WHERE removed_at IS NULL ORDER BY id"
         ).fetchall()
         out = []
         for r in rows:
