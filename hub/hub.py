@@ -127,6 +127,9 @@ CREATE TABLE IF NOT EXISTS audit(
 CREATE TABLE IF NOT EXISTS room_summaries(
   room_id INTEGER PRIMARY KEY, data TEXT NOT NULL,
   updated_at REAL NOT NULL, updated_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS desktop_lock(
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  holder TEXT, task_id INTEGER, acquired_at REAL);
 CREATE TABLE IF NOT EXISTS task_templates(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, title_tpl TEXT NOT NULL,
   body_tpl TEXT NOT NULL, assignee TEXT NOT NULL DEFAULT '',
@@ -853,6 +856,38 @@ def _auto_relay(conn, t, from_name, reason_label):
     return cand["name"]
 
 
+# ---------------- 桌面锁（多成员同机互斥，2026-11-16 群主拍板） ----------------
+# 一台 Mac 只有一个屏幕、一个鼠标指针、一个键盘焦点：涉及 GUI 操控的
+# 任务动手前必须先 desktop_acquire 拿到桌面锁，同一时刻只许一个任务
+# 持有；无头任务（脚本 / 文件 / 接口调用）不占锁，可与持锁任务并行。
+# 锁的寿命不超过任务的持有期：交活 / 报卡 / 取消 / 转交 / 租约回收
+# 任一出口都顺手放锁（_desktop_release_for_task），成员进程死了也会
+# 随租约回收放锁，不会把桌面锁死。获取走全局 _lock 串行，无竞态窗口。
+
+def _desktop_snapshot(conn):
+    row = conn.execute(
+        "SELECT holder, task_id, acquired_at FROM desktop_lock WHERE id=1").fetchone()
+    if row and row["holder"]:
+        return {"held": True, "holder": row["holder"],
+                "task_id": row["task_id"], "since": row["acquired_at"]}
+    return {"held": False, "holder": None, "task_id": None, "since": None}
+
+
+def _desktop_release_for_task(conn, task_id, actor, reason):
+    """任务离开持有人时顺手放锁（在调用方的同一事务内）；只放本任务
+    正持有的锁，不是本任务的一律不动。放了返回 True 并留审计。"""
+    row = conn.execute(
+        "SELECT holder FROM desktop_lock WHERE id=1 AND task_id=?",
+        (task_id,)).fetchone()
+    if row and row["holder"]:
+        conn.execute(
+            "UPDATE desktop_lock SET holder=NULL, task_id=NULL, acquired_at=NULL WHERE id=1")
+        audit(conn, actor, "desktop_auto_release",
+              f"task {task_id} reason={reason} holder={row['holder']}")
+        return True
+    return False
+
+
 def sweep_once():
     now = _now()
     conn = db()
@@ -902,6 +937,7 @@ def sweep_once():
             if cur.rowcount != 1:
                 continue
             _close_run(conn, t["id"], "reaped", "sweeper")
+            _desktop_release_for_task(conn, t["id"], "sweeper", "max_attempts")
             audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
         else:
             nca = now + _backoff_seconds("transient", t["attempts"])
@@ -910,6 +946,7 @@ def sweep_once():
             if cur.rowcount != 1:
                 continue
             _close_run(conn, t["id"], "reaped", "sweeper")
+            _desktop_release_for_task(conn, t["id"], "sweeper", "lease_expired")
             audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
             # 自动接力（§14.3）：原持有人掉线失联——回池后试着直接接力给合格
             # 成员。_auto_relay 的转交记账与 task_transfer 同账，为防与工具层
@@ -1606,6 +1643,10 @@ def build_server():
             won = cur.rowcount == 1
             if won:
                 audit(conn, me["name"], "task_claim", f"task {task_id}")
+                # 防御：本任务名下若还挂着一把没放干净的旧锁（各出口本应
+                # 已放，此处兜底），新认领开始前清掉，免得新持有人被
+                # 自己任务的残锁挡住。
+                _desktop_release_for_task(conn, task_id, me["name"], "orphan_on_claim")
             conn.commit()
         t = conn.execute("SELECT status, assignee, next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
         conn.close()
@@ -1694,6 +1735,7 @@ def build_server():
                 conn.close()
                 raise ValueError("not the current holder (claim_token mismatch)")
             _close_run(conn, task_id, "completed", me["name"])
+            _desktop_release_for_task(conn, task_id, me["name"], "complete")
             t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
             conn.execute(
                 "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
@@ -1735,6 +1777,7 @@ def build_server():
                 conn.close()
                 raise ValueError("not the current holder (claim_token mismatch)")
             _close_run(conn, task_id, "blocked", me["name"])
+            _desktop_release_for_task(conn, task_id, me["name"], "block")
             audit(conn, me["name"], "task_block", f"task {task_id}: {reason} fail_class={fc}")
             relayed_to = None
             if fc == "quota":
@@ -1805,6 +1848,7 @@ def build_server():
             "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
             (time.time(), task_id))
         _close_run(conn, task_id, "cancelled", me["name"])
+        _desktop_release_for_task(conn, task_id, me["name"], "cancel")
         audit(conn, me["name"], "task_cancel", f"task {task_id}")
         conn.commit()
         conn.close()
@@ -2052,6 +2096,7 @@ def build_server():
                       f"task {task_id} {from_name}->{to_member}"
                       + (" (forced)" if forced else "")
                       + (f": {reason}" if reason else ""))
+                _desktop_release_for_task(conn, task_id, me["name"], "transfer")
                 conn.commit()
             return {"task_id": task_id, "status": t["status"],
                     "transfer_id": transfer_id, "transfer_status": "pending",
@@ -2820,6 +2865,93 @@ def build_server():
                                   "new_version": nv}, ensure_ascii=False))
                 conn.commit()
                 return {"name": s["name"], "version": nv, "restored_from": version}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def desktop_acquire(task_id: int, claim_token: str) -> dict:
+        """拿桌面锁：涉及 GUI 操控（点屏幕 / 打字 / 切窗口）的任务动手前
+        必须先拿到锁，同一时刻只许一个任务持有；无头任务不要拿。
+        调用者须为该任务当前持有人（claim_token 校验）。锁空闲 → 拿到，
+        返回 {held, task_id, acquired_at}；已被本任务持有 → 幂等成功
+        （idempotent=True，acquired_at 不变）；被别的任务占着 → 报错
+        载荷 {"error":"desktop_busy","holder","task_id","since"}，
+        据此等一会儿再试（锁随持锁任务交活/报卡/取消/转交/租约到期
+        自动释放，不会死锁）。"""
+        me = authenticate()
+        require(me)
+        if me["role"] != "member":
+            raise ValueError("desktop lock is for members holding a task")
+        conn = db()
+        try:
+            with _lock:
+                _holder(conn, me, task_id, claim_token)
+                snap = _desktop_snapshot(conn)
+                if snap["held"]:
+                    if snap["task_id"] == task_id and snap["holder"] == me["name"]:
+                        return {"held": True, "task_id": task_id,
+                                "acquired_at": snap["since"], "idempotent": True}
+                    raise ValueError(json.dumps(
+                        {"error": "desktop_busy", "holder": snap["holder"],
+                         "task_id": snap["task_id"], "since": snap["since"]},
+                        ensure_ascii=False))
+                now = _now()
+                conn.execute(
+                    "INSERT INTO desktop_lock(id, holder, task_id, acquired_at) "
+                    "VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                    "holder=excluded.holder, task_id=excluded.task_id, "
+                    "acquired_at=excluded.acquired_at",
+                    (me["name"], task_id, now))
+                audit(conn, me["name"], "desktop_acquire", f"task {task_id}")
+                conn.commit()
+                return {"held": True, "task_id": task_id, "acquired_at": now}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def desktop_release(task_id: int = 0, claim_token: str = "") -> dict:
+        """放桌面锁：活干完（或不再需要 GUI）就放，别等到交活。
+        成员放锁须给自己正持有的 task_id + claim_token；调度员不带参数
+        调用即强制放锁（成员失联、锁悬空时用，留 desktop_force_release
+        审计）。锁本来空闲时返回 {held: False, released: False}。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            with _lock:
+                snap = _desktop_snapshot(conn)
+                if not snap["held"]:
+                    return {"held": False, "released": False}
+                if me["role"] == "dispatcher":
+                    conn.execute(
+                        "UPDATE desktop_lock SET holder=NULL, task_id=NULL, "
+                        "acquired_at=NULL WHERE id=1")
+                    audit(conn, me["name"], "desktop_force_release",
+                          f"task {snap['task_id']} holder={snap['holder']}")
+                    conn.commit()
+                    return {"held": False, "released": True,
+                            "was_task_id": snap["task_id"]}
+                if not task_id or snap["task_id"] != task_id:
+                    raise ValueError("desktop lock is held by another task")
+                _holder(conn, me, task_id, claim_token)
+                conn.execute(
+                    "UPDATE desktop_lock SET holder=NULL, task_id=NULL, "
+                    "acquired_at=NULL WHERE id=1")
+                audit(conn, me["name"], "desktop_release", f"task {task_id}")
+                conn.commit()
+                return {"held": False, "released": True, "was_task_id": task_id}
+        finally:
+            conn.close()
+
+    @mcp.tool
+    def desktop_status() -> dict:
+        """看桌面锁现在在谁手里：{held, holder, task_id, since}。
+        任何已认证身份可查（群里协调谁在用桌面是公共信息）。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        try:
+            return _desktop_snapshot(conn)
         finally:
             conn.close()
 
