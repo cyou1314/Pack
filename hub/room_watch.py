@@ -4,6 +4,10 @@
 
 规则（与规格红线一致：只有人说的话算指令）：
 - 只处理 kind=chat 且 author=owner 的消息；成员与调度员的消息一律不转。
+- 模板直发（2026-11-16）：正文以「模板：」/「模板:」开头时按模板开卡
+  （template_fire），先于 @ 匹配判定；模板名同宽容口径（精确优先、
+  唯一前缀可、歧义回请写全名、查无此名回现有模板清单）；开卡失败
+  （如模板含 {arg} 却没给参数）把原因回在房间里，不静默丢。
 - @ 提及 = @ 或 ＠ 紧跟成员名（dispatcher/owner 自身除外）；宽容匹配：
   全名精确命中优先；否则大小写不敏感的唯一前缀也算命中（如 @a → absent）；
   前缀对上多个成员时不猜，调度员在房间里回一行请群主写全名。
@@ -77,6 +81,25 @@ def resolve_mention(body, targets):
     return ("none", None, None, None)
 
 
+def parse_template_command(body, names):
+    """识别模板直发指令「模板：<名> <参数>」（冒号全/半角皆可，名后参数可空）。
+    不是模板指令返回 None；命中返回 ("hit", name, arg)；前缀对上多个返回
+    ("ambiguous", token, candidates)；查无此名返回 ("unknown", token, None)。
+    名字匹配与 @ 提及同一宽容口径：精确优先，否则唯一前缀。"""
+    mm = re.match(r"^\s*模板[:：]\s*(\S+)(?:\s+(.*))?$", body.strip(), re.DOTALL)
+    if not mm:
+        return None
+    token, arg = mm.group(1), (mm.group(2) or "").strip()
+    if token in names:
+        return ("hit", token, arg)
+    cands = [n for n in names if n.startswith(token)]
+    if len(cands) == 1:
+        return ("hit", cands[0], arg)
+    if len(cands) > 1:
+        return ("ambiguous", token, cands)
+    return ("unknown", token, None)
+
+
 def load_state():
     """读状态并归一化为 {"rooms": {房间名: last_id}}。
     旧格式 {"last_id": N}（多房间改造前）把 N 迁移为 pack-main 的进度；
@@ -113,6 +136,8 @@ async def run():
             try:
                 # 每轮经 room_list 刷新房间集合，新房间自动纳入
                 rooms = parse(await c.call_tool("room_list", {}))["rooms"]
+                tpl_names = [t["name"] for t in
+                             parse(await c.call_tool("template_list", {}))["templates"]]
                 for rm in rooms:
                     room = rm["name"]
                     if room not in since:
@@ -129,6 +154,34 @@ async def run():
                         if m["kind"] != "chat" or m["author"] != "owner":
                             continue
                         body = m["body"]
+                        tc = parse_template_command(body, tpl_names)
+                        if tc is not None:
+                            if tc[0] == "hit":
+                                _, tname, arg = tc
+                                try:
+                                    r = parse(await c.call_tool("template_fire", {
+                                        "name": tname, "arg": arg, "room": room}))
+                                    await c.call_tool("room_post", {
+                                        "room": room,
+                                        "body": f"已按模板「{tname}」开卡 #{r['task_id']} → @{r['assignee']}"})
+                                    log(f"template-fired msg {m['id']} ({room}) -> task {r['task_id']} tpl={tname}")
+                                except Exception as e:
+                                    await c.call_tool("room_post", {
+                                        "room": room,
+                                        "body": f"模板「{tname}」没开成卡：{e}。补上参数再发一次。"})
+                                    log(f"template fire failed msg {m['id']} ({room}) tpl={tname}: {e!r}")
+                            elif tc[0] == "ambiguous":
+                                await c.call_tool("room_post", {
+                                    "room": room,
+                                    "body": f"「模板：{tc[1]}」对上了 {len(tc[2])} 个模板（{'、'.join(tc[2])}），写全名我再开卡。"})
+                                log(f"ambiguous template in msg {m['id']} ({room}): {tc[1]} -> {tc[2]}")
+                            else:
+                                avail = "、".join(tpl_names) if tpl_names else "（暂无模板）"
+                                await c.call_tool("room_post", {
+                                    "room": room,
+                                    "body": f"没有叫「{tc[1]}」的模板。现有模板：{avail}。"})
+                                log(f"unknown template in msg {m['id']} ({room}): {tc[1]}")
+                            continue
                         kind, name, span, cands = resolve_mention(body, targets)
                         if kind == "ambiguous":
                             token = body[span[0] + 1:span[1]]

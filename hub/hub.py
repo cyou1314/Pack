@@ -1563,6 +1563,8 @@ def build_server():
             raise ValueError(f"no such template: {name}")
         if arg and "{arg}" not in t["title_tpl"] and "{arg}" not in t["body_tpl"]:
             raise ValueError(f"template '{name}' has no {{arg}} placeholder")
+        if not arg.strip() and ("{arg}" in t["title_tpl"] or "{arg}" in t["body_tpl"]):
+            raise ValueError(f"template '{name}' requires an arg")
         title = t["title_tpl"].replace("{arg}", arg)
         body = t["body_tpl"].replace("{arg}", arg)
         out = task_create(room=room, title=title, body=body,
