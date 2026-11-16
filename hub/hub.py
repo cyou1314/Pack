@@ -1880,14 +1880,18 @@ def build_server():
         """列任务（可按状态/被指派人过滤）。运行时靠它找指派给自己成员的活。
         每行带 fail_class（最近失败类别）、next_claim_at（下次可认领时间，
         epoch 秒）与 backoff_remaining_sec（退避剩余秒数，0=可认领），
-        供看板展示与调度员人工干预（task_clear_backoff）。"""
+        供看板展示与调度员人工干预（task_clear_backoff）。
+        另带 created_by（创建者成员名，供 App「我派的」筛选）与 review_note
+        （最近一次验收意见：通过备注或打回理由，供跨端展示）。"""
         me = authenticate()
         require(me)
         conn = db()
         q = """SELECT t.id, t.title, t.body, t.status, mb.name AS assignee, t.attempts,
                       t.result, t.envelope, t.lease_expires, t.updated_at,
-                      t.fail_class, t.next_claim_at, t.sched_at
-               FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee WHERE 1=1"""
+                      t.fail_class, t.next_claim_at, t.sched_at,
+                      cr.name AS created_by, t.review_note
+               FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee
+               LEFT JOIN members cr ON cr.id=t.created_by WHERE 1=1"""
         args = []
         if status:
             q += " AND t.status=?"
