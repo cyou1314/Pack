@@ -19,8 +19,10 @@ struct TaskEnvelope {
     let summary: String
     let artifacts: [[String: Any]]
     let selfCheck: String?
-    let knownIssues: String?
-    let followups: String?
+    // 中枢口径：known_issues / followups 是字符串数组（不是单个字符串），
+    // staging23 S2 契约演练实证——按 String 解析会永远读不到。
+    let knownIssues: [String]
+    let followups: [String]
 }
 
 struct PackTask: Identifiable {
@@ -179,11 +181,27 @@ func envelopeVal(_ v: Any?) -> TaskEnvelope? {
     }
     guard let d, let verdict = d["verdict"] as? String,
           let summary = d["summary"] as? String else { return nil }
+    // 数组字段容错：正常是 [String]；万一遇到历史脏数据是单个字符串，
+    // 非空则包成一条，别让整封信封读不出来。
+    func strList(_ v: Any?) -> [String] {
+        if let arr = v as? [String] { return arr }
+        if let s = v as? String, !s.isEmpty { return [s] }
+        return []
+    }
+    // self_check 中枢允许两种形态：字符串，或 {ran, evidence} 对象；
+    // 对象形态拼成一行展示文本，别静默丢掉。
+    var selfCheck: String? = d["self_check"] as? String
+    if selfCheck == nil, let sc = d["self_check"] as? [String: Any] {
+        var parts: [String] = []
+        if let ran = sc["ran"] as? Bool { parts.append(ran ? "自检已跑" : "自检未跑") }
+        if let ev = sc["evidence"] as? String, !ev.isEmpty { parts.append(ev) }
+        selfCheck = parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
     return TaskEnvelope(verdict: verdict, summary: summary,
                         artifacts: (d["artifacts"] as? [[String: Any]]) ?? [],
-                        selfCheck: d["self_check"] as? String,
-                        knownIssues: d["known_issues"] as? String,
-                        followups: d["followups"] as? String)
+                        selfCheck: selfCheck,
+                        knownIssues: strList(d["known_issues"]),
+                        followups: strList(d["followups"]))
 }
 
 /// room_summary_get 的返回 → RoomSummary。
