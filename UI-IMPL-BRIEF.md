@@ -78,8 +78,15 @@
 - **H3 头像还是字母版**：members.avatar 存的是字母字形+渐变（avatar_for 哈希生成），参数化动物组合无处存。补：注册时按「动物×配色×配饰×底色」分配组合（查占用避撞）存进 avatar JSON（v2 字段与旧字形字段并存过渡），App 按组合渲染。
 
 ### App 侧解析缺口（已点名，纳入对应切片范围，不算越界改 HubClient）
-- Models.RoomMessage 缺 deleted/edited（中枢 room_read_new 已返回）→ B1-5 补字段 + 解析。
-- Models.PackTask 缺 envelope/fail_class/next_claim_at（中枢 task_list 已返回）→ B1-4 补字段 + 解析，任务详情的时间线/信封靠它。
+> **状态：解析预写已于 2026-11-16 完成入仓**——Models.swift 已加 RoomMessage
+> deleted/edited、PackTask envelope（TaskEnvelope + envelopeVal，字符串/对象
+> 两吃）/failClass/nextClaimAt/schedAt、MemberInfo 额度四字段 + 过期/耗尽
+> 口径、AvatarInfo 组合五字段、RoomSummary + summaryVal；PackApp.swift
+> refresh() 三处解析已接线。**未经 Mac 编译**（VM 无 macOS 工具链），动工日
+> 预检的基线构建须包含这批预写代码，编译问题在 B1-1 之前先清。Codex 在
+> B1-4/B1-5/B1-7 只做呈现，不再碰解析。
+- Models.RoomMessage 缺 deleted/edited（中枢 room_read_new 已返回）→ B1-5 补字段 + 解析。✔ 预写完成
+- Models.PackTask 缺 envelope/fail_class/next_claim_at（中枢 task_list 已返回）→ B1-4 补字段 + 解析，任务详情的时间线/信封靠它。✔ 预写完成（另加 sched_at 排班标记）
 
 ### 先定义再施工（防 Codex 自行发明）
 - **回执「已认领」定义**：群主消息被转成任务卡，或调度员在其后有回复，即为已认领（客户端从消息流推断，**不新增中枢字段**）。B1-2 按此实现，前两态（发送中/已送达）先行，此态随后。
