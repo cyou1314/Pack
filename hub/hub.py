@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, author_id INTEGER NOT NULL,
   kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER, created_at REAL NOT NULL,
   deleted_at REAL, edited_at REAL);
+CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id, id);
 CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
   created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
