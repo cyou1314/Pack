@@ -721,6 +721,8 @@ def init():
         conn.execute("ALTER TABLE tasks ADD COLUMN fail_class TEXT")
     if "next_claim_at" not in tcols:
         conn.execute("ALTER TABLE tasks ADD COLUMN next_claim_at REAL")
+    if "sched_at" not in tcols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN sched_at REAL")
     xcols = [r[1] for r in conn.execute("PRAGMA table_info(task_transfers)").fetchall()]
     if "status" not in xcols:
         conn.execute("ALTER TABLE task_transfers ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
@@ -791,6 +793,66 @@ def require(me, role=None):
 
 # ---------------- sweeper ----------------
 
+# ---------------- 自动接力（UI 定稿 §14.3） ----------------
+RELAY_HEARTBEAT_FRESH = 180   # 候选须在线：心跳 3 分钟内
+RELAY_QUOTA_FRESH = 900       # 候选额度数据须 15 分钟内（与 App 额度过期口径一致）
+RELAY_QUOTA_HEADROOM = 90     # 候选周额度已用须 <90%
+EXECUTOR_MARKERS = ("[M4A]", "[ENG]", "[ENG-image]")
+
+
+def _auto_relay(conn, t, from_name, reason_label):
+    """尝试把任务自动接力给一名合格成员，走 §4.8 留痕转交的账（pending 转交行
+    + assignee 换人 + 令牌/租约置空，接收方 task_accept_transfer 才算接手）。
+    调用者负责事务与 _lock，并保证任务状态适合转交（blocked，或刚被 sweeper
+    回池的 open）。返回接手成员名；不适用/无合格候选返回 None、任务不变。
+    合格口径（保守）：role=member 且非 owner、非原持有人；心跳新鲜；额度数据
+    新鲜且周已用 <90%（数据缺失/过期 = 不合格，未知不当可用）；标题带执行体
+    标记的任务执行体钉死、不接力；转交链未达 TRANSFER_CAP；无既有 pending
+    转交。多名合格时取周已用最低者。"""
+    title = (t["title"] or "").lstrip()
+    if any(title.startswith(m) for m in EXECUTOR_MARKERS):
+        return None
+    chain = conn.execute("SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=?",
+                         (t["id"],)).fetchone()["n"]
+    if chain >= TRANSFER_CAP:
+        return None
+    pend = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=? AND status='pending'",
+        (t["id"],)).fetchone()["n"]
+    if pend:
+        return None
+    now = _now()
+    cand = conn.execute(
+        """SELECT * FROM members WHERE role='member' AND name<>? AND name<>'owner'
+             AND last_heartbeat IS NOT NULL AND last_heartbeat>=?
+             AND quota_updated_at IS NOT NULL AND quota_updated_at>=?
+             AND quota_week_used_pct IS NOT NULL AND quota_week_used_pct<?
+           ORDER BY quota_week_used_pct ASC LIMIT 1""",
+        (from_name, now - RELAY_HEARTBEAT_FRESH, now - RELAY_QUOTA_FRESH,
+         RELAY_QUOTA_HEADROOM)).fetchone()
+    if not cand:
+        return None
+    conn.execute(
+        "INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,expires_at)"
+        " VALUES(?,?,?,?,?,?,?,?)",
+        (t["id"], from_name, cand["name"], f"auto-relay: {reason_label}", "auto-relay",
+         now, "pending", now + TRANSFER_ACCEPT_TTL))
+    conn.execute(
+        "UPDATE tasks SET status='claimed', assignee=?, claim_token=NULL,"
+        " lease_expires=NULL, next_claim_at=NULL, sched_at=NULL, updated_at=? WHERE id=?",
+        (cand["id"], now, t["id"]))
+    disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+    conn.execute(
+        "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'chat',?,?,?)",
+        (t["room_id"], disp["id"] if disp else cand["id"],
+         f"任务#{t['id']} 已自动接力：{from_name} {reason_label} → {cand['name']} 接手"
+         f"（第 {chain + 1} 棒），等其接受",
+         t["id"], now))
+    audit(conn, "auto-relay", "task_auto_relay",
+          f"task {t['id']} {from_name}->{cand['name']} reason={reason_label} chain={chain + 1}")
+    return cand["name"]
+
+
 def sweep_once():
     now = _now()
     conn = db()
@@ -849,6 +911,21 @@ def sweep_once():
                 continue
             _close_run(conn, t["id"], "reaped", "sweeper")
             audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
+            # 自动接力（§14.3）：原持有人掉线失联——回池后试着直接接力给合格
+            # 成员。_auto_relay 的转交记账与 task_transfer 同账，为防与工具层
+            # 的转交/接受竞态，记账段走 _lock 并复检任务仍是刚回池的状态。
+            holder_row = conn.execute("SELECT name FROM members WHERE id=?",
+                                      (t["assignee"],)).fetchone()
+            holder_name = holder_row["name"] if holder_row else None
+            if holder_name:
+                with _lock:
+                    t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
+                    if (t2 and t2["status"] == "open" and t2["assignee"] is None
+                            and t2["claim_token"] is None):
+                        try:
+                            _auto_relay(conn, t2, holder_name, "掉线失联")
+                        except Exception:
+                            pass  # 接力失败不连累本轮回收
     conn.commit()
     conn.close()
     return len(rows) + n_expired
@@ -1362,6 +1439,45 @@ def build_server():
         return {"task_id": tid, "status": "open", "assignee": assignee_name or None}
 
     @mcp.tool
+    def task_schedule(room: str, title: str, body: str, member_name: str, at_epoch: float) -> dict:
+        """调度员排班开卡（UI 定稿 §14.2）：任务先开出来、挂到 member_name 名下，
+        到 at_epoch（epoch 秒，须为未来）之前不可认领（复用退避闸 next_claim_at，
+        task_claim 天然拒绝），到期由该成员的执行体认领开跑——典型场景：等某
+        成员额度重置后自动开跑。sched_at 是排班标记（区别于失败退避），
+        task_list 可见；认领成功或调度员 task_clear_backoff（取消排班）时清除。
+        目标须是 role=member 且非 owner 的成员。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        now = _now()
+        if not (at_epoch > now):
+            raise ValueError(f"at_epoch must be in the future: {at_epoch} <= {now:.0f}")
+        conn = db()
+        try:
+            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+            if not r:
+                raise ValueError(f"no such room: {room}")
+            a = conn.execute("SELECT id, role FROM members WHERE name=?", (member_name,)).fetchone()
+            if not a:
+                raise ValueError(f"no such member: {member_name}")
+            if a["role"] != "member" or member_name == "owner":
+                raise ValueError(f"cannot schedule for {member_name}: not an AI member")
+            cur = conn.execute(
+                "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,next_claim_at,sched_at,created_at,updated_at)"
+                " VALUES(?,?,?,?,?,'open',?,?,?,?)",
+                (r["id"], title, body, me["id"], a["id"], float(at_epoch), float(at_epoch), now, now))
+            tid = cur.lastrowid
+            conn.execute(
+                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'task_card',?,?,?)",
+                (r["id"], me["id"], f"任务#{tid} {title}", tid, now))
+            audit(conn, me["name"], "task_schedule",
+                  f"task {tid} -> {member_name} at {float(at_epoch):.0f}")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"task_id": tid, "status": "open", "assignee": member_name,
+                "scheduled_at": float(at_epoch)}
+
+    @mcp.tool
     def template_upsert(name: str, title_tpl: str, body_tpl: str, assignee: str = "") -> dict:
         """调度员新建/更新任务模板（设计稿 TASK-TEMPLATES-DESIGN §2）。
         模板 = 预填任务卡：标题/正文骨架（{arg} 占位）+ 默认指派。
@@ -1474,7 +1590,7 @@ def build_server():
         with _lock:
             cur = conn.execute(
                 """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
-                   lease_expires=?, attempts=attempts+1, next_claim_at=NULL, updated_at=?
+                   lease_expires=?, attempts=attempts+1, next_claim_at=NULL, sched_at=NULL, updated_at=?
                    WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)
                      AND (next_claim_at IS NULL OR next_claim_at<=?)""",
                 (me["id"], tok, now + LEASE_SECONDS, now, task_id, me["id"], now))
@@ -1611,9 +1727,24 @@ def build_server():
                 raise ValueError("not the current holder (claim_token mismatch)")
             _close_run(conn, task_id, "blocked", me["name"])
             audit(conn, me["name"], "task_block", f"task {task_id}: {reason} fail_class={fc}")
+            relayed_to = None
+            if fc == "quota":
+                # 自动接力（§14.3）：额度耗尽先试着转给有额度、在线的成员，
+                # 没人可接才留在 blocked 等调度员。记账段走 _lock 并复检
+                # 任务仍是本人刚 block 的状态。
+                with _lock:
+                    t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+                    if t2 and t2["status"] == "blocked" and t2["assignee"] == me["id"]:
+                        try:
+                            relayed_to = _auto_relay(conn, t2, me["name"], "额度耗尽")
+                        except Exception:
+                            relayed_to = None  # 接力是尽力而为，失败不连累 block 本身
             conn.commit()
             conn.close()
-            return {"task_id": task_id, "status": "blocked", "fail_class": fc, "next_claim_at": nca}
+            return {"task_id": task_id,
+                    "status": "claimed" if relayed_to else "blocked",
+                    "fail_class": fc, "next_claim_at": nca,
+                    "relayed_to": relayed_to}
         finally:
             conn.close()
 
@@ -1702,7 +1833,7 @@ def build_server():
         conn = db()
         q = """SELECT t.id, t.title, t.body, t.status, mb.name AS assignee, t.attempts,
                       t.result, t.envelope, t.lease_expires, t.updated_at,
-                      t.fail_class, t.next_claim_at
+                      t.fail_class, t.next_claim_at, t.sched_at
                FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee WHERE 1=1"""
         args = []
         if status:
@@ -1746,7 +1877,7 @@ def build_server():
         if t["status"] != "open":
             conn.close()
             raise ValueError(f"task {task_id} not open (status={t['status']})")
-        conn.execute("UPDATE tasks SET next_claim_at=NULL, updated_at=? WHERE id=?",
+        conn.execute("UPDATE tasks SET next_claim_at=NULL, sched_at=NULL, updated_at=? WHERE id=?",
                      (_now(), task_id))
         audit(conn, me["name"], "task_clear_backoff", f"task {task_id} fail_class={t['fail_class']}")
         conn.commit()
