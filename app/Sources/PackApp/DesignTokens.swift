@@ -72,6 +72,13 @@ enum DesignTokens {
     static let chatMetadataSpacing: CGFloat = 5
     static let chatAvatar: CGFloat = 34
     static let composerControl: CGFloat = 29
+    static let composerMenuWidth: CGFloat = 235
+    static let composerMenuRow: CGFloat = 34
+    static let composerMenuIcon: CGFloat = 16
+    static let composerPillHorizontal: CGFloat = 9
+    static let composerPillVertical: CGFloat = 5
+    static let composerSend: CGFloat = 32
+    static let composerMenuShadow: CGFloat = 10
     static let chatReceiptFont = Font.system(size: 11)
     static let boardInset: CGFloat = 16
     static let boardGap: CGFloat = 12

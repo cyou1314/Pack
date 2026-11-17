@@ -12,6 +12,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/debug/PackApp "$APP/Contents/MacOS/PackApp"
 cp Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources/avatars"
+cp ui-mock/avatars/dispatcher.webp ui-mock/avatars/absent.webp "$APP/Contents/Resources/avatars/"
 if [ -f Assets/AppIcon-1024.png ]; then
   ICONSET=$(mktemp -d)/AppIcon.iconset
   mkdir -p "$ICONSET"

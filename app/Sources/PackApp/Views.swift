@@ -64,21 +64,25 @@ private struct MemberAvatarView: View {
     let member: MemberInfo?
     var size: CGFloat = 34
     var showStatus = true
+
+    private var designedImage: NSImage? {
+        guard name == "dispatcher" || name == "absent",
+              let url = Bundle.main.url(forResource: name, withExtension: "webp", subdirectory: "avatars") else { return nil }
+        return NSImage(contentsOf: url)
+    }
+
     var body: some View {
-        let c1 = DesignTokens.avatarPalettes[member?.avatar?.palette ?? ""] ?? PackStyle.color(member?.avatar?.c1)
-        let c2 = member?.avatar == nil ? Color.gray : PackStyle.color(member?.avatar?.c2)
-        let species = member?.avatar?.species
-        let animals = ["fox":"🦊", "owl":"🦉", "wolf":"🐺", "cat":"🐱", "panda":"🐼", "marten":"🦦", "bear":"🐻", "rabbit":"🐰", "deer":"🦌", "raccoon":"🦝", "tiger":"🐯", "penguin":"🐧"]
-        let accessories = ["star-clip":"✦", "glasses":"◉", "headset":"♫", "scarf":"▰", "cap":"⌒"]
+        let avatar = member?.avatar
+        let color = DesignTokens.avatarPalettes[avatar?.palette ?? ""] ?? PackStyle.color(avatar?.c1)
+        let background = DesignTokens.avatarBackgrounds[avatar?.bg ?? ""] ?? PackStyle.color(avatar?.c2)
         ZStack(alignment: .bottomTrailing) {
-            Circle().fill(species == nil ? c1 : (DesignTokens.avatarBackgrounds[member?.avatar?.bg ?? ""] ?? c2))
-                .overlay(Text(species.flatMap { animals[$0] } ?? member?.avatar?.glyph ?? String(name.prefix(1)).uppercased())
-                    .font(.system(size: size * DesignTokens.memberIconRatio, weight: .semibold)).foregroundStyle(c1))
-                .overlay(alignment: .topTrailing) {
-                    if let accessory = member?.avatar?.accessory, let glyph = accessories[accessory] {
-                        Text(glyph).font(.system(size: size * DesignTokens.memberAccessoryRatio, weight: .bold)).foregroundStyle(c1)
-                    }
+            Group {
+                if let image = designedImage {
+                    Image(nsImage: image).resizable().scaledToFill().clipShape(Circle())
+                } else {
+                    ParameterAvatar(species: avatar?.species ?? "fox", color: color, background: background, accessory: avatar?.accessory ?? "none")
                 }
+            }.frame(width: size, height: size).clipShape(Circle())
             if showStatus {
                 Circle().fill(member?.isOnline == true ? Color.green : Color.gray)
                     .frame(width: max(8, size * 0.27), height: max(8, size * 0.27))
@@ -86,6 +90,42 @@ private struct MemberAvatarView: View {
                     .offset(x: 1, y: 1)
             }
         }.frame(width: size, height: size)
+    }
+}
+
+/// Local vector placeholder driven by the member's registered avatar combination.
+private struct ParameterAvatar: View {
+    let species: String
+    let color: Color
+    let background: Color
+    let accessory: String
+    private var pointed: Bool { ["fox", "wolf", "cat", "tiger", "owl", "raccoon"].contains(species) }
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width, h = size.height
+            func rect(_ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) -> CGRect {
+                CGRect(x: x*w, y: y*h, width: width*w, height: height*h)
+            }
+            context.fill(Path(ellipseIn: rect(0, 0, 1, 1)), with: .color(background))
+            if pointed {
+                var ears = Path()
+                ears.move(to: CGPoint(x: 0.18*w, y: 0.48*h)); ears.addLine(to: CGPoint(x: 0.20*w, y: 0.14*h)); ears.addLine(to: CGPoint(x: 0.43*w, y: 0.32*h))
+                ears.move(to: CGPoint(x: 0.57*w, y: 0.32*h)); ears.addLine(to: CGPoint(x: 0.80*w, y: 0.14*h)); ears.addLine(to: CGPoint(x: 0.82*w, y: 0.48*h))
+                context.fill(ears, with: .color(color))
+            } else {
+                context.fill(Path(ellipseIn: rect(0.14, 0.17, 0.27, 0.3)), with: .color(color))
+                context.fill(Path(ellipseIn: rect(0.59, 0.17, 0.27, 0.3)), with: .color(color))
+            }
+            context.fill(Path(ellipseIn: rect(0.16, 0.25, 0.68, 0.63)), with: .color(color))
+            context.fill(Path(ellipseIn: rect(0.31, 0.57, 0.38, 0.22)), with: .color(.white.opacity(0.75)))
+            for x: CGFloat in [0.34, 0.61] { context.fill(Path(ellipseIn: rect(x, 0.47, 0.06, 0.07)), with: .color(DesignTokens.ink)) }
+            context.fill(Path(ellipseIn: rect(0.47, 0.61, 0.06, 0.05)), with: .color(DesignTokens.ink))
+            if accessory == "glasses" || accessory == "headset" {
+                for x: CGFloat in [0.27, 0.54] { context.stroke(Path(ellipseIn: rect(x, 0.41, 0.19, 0.19)), with: .color(DesignTokens.ink), lineWidth: max(1, w * 0.025)) }
+            } else if accessory != "none" {
+                context.fill(Path(ellipseIn: rect(0.67, 0.18, 0.15, 0.15)), with: .color(DesignTokens.blue))
+            }
+        }.accessibilityLabel("参数化头像：\(species)")
     }
 }
 
@@ -443,6 +483,12 @@ private struct Composer: View {
     @FocusState private var messageFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Button { state.newNeedsApproval.toggle() } label: {
+                Text("需批准 · \(state.newNeedsApproval ? "开" : "关")")
+                    .font(DesignTokens.fontSmall).foregroundStyle(state.newNeedsApproval ? DesignTokens.blue : DesignTokens.subText)
+                    .padding(.horizontal, DesignTokens.composerPillHorizontal).padding(.vertical, DesignTokens.composerPillVertical)
+                    .background(DesignTokens.bubbleAI, in: Capsule())
+            }.buttonStyle(.plain).help("切换是否需要批准")
             if state.showInlineTask {
                 TextField("任务标题", text: $state.newTitle).textFieldStyle(.plain).font(.system(size: 13, weight: .medium))
                 TextField("任务要求和交付内容", text: $state.newBody, axis: .vertical).textFieldStyle(.plain).font(.system(size: 12)).lineLimit(2...4)
@@ -473,25 +519,34 @@ private struct Composer: View {
                     .onExitCommand { state.dismissMentions() }
             }
             HStack(spacing: 12) {
-                Menu {
-                    Button("添加文件…") { chooseFiles(imagesOnly: false) }
-                    Button("添加照片…") { chooseFiles(imagesOnly: true) }
-                    Button("选择技能") { state.loadCatalog("技能") }
-                    Button("选择模板") { state.loadCatalog("模板") }
-                    Button(state.showInlineTask ? "关闭派活" : "派活给 absent") { state.newAssignee = "absent"; state.showInlineTask.toggle() }
-                } label: {
+                Button { state.showAddMenu.toggle() } label: {
                     Image(systemName: "plus").font(DesignTokens.fontTitle).foregroundStyle(.white)
-                        .frame(width: DesignTokens.composerControl, height: DesignTokens.composerControl)
+                        .frame(width: DesignTokens.menuButtonSize, height: DesignTokens.menuButtonSize)
                         .background(DesignTokens.ink, in: Circle())
-                }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: DesignTokens.menuButtonSize, height: DesignTokens.menuButtonSize).background(DesignTokens.ink, in: Circle()).help("添加或派活")
-                Toggle("需批准", isOn: $state.newNeedsApproval).toggleStyle(.checkbox).font(.system(size: 11)).foregroundStyle(.secondary)
+                }.buttonStyle(.plain).help("添加或派活")
+                .overlay(alignment: .bottomLeading) {
+                    if state.showAddMenu {
+                    VStack(spacing: 0) {
+                        menuRow("添加文件…", icon: "doc.badge.plus") { chooseFiles(imagesOnly: false) }
+                        menuRow("添加照片…", icon: "photo") { chooseFiles(imagesOnly: true) }
+                        menuRow("选择技能", icon: "sparkles", arrow: true) { state.loadCatalog("技能") }
+                        menuRow("选择模板", icon: "rectangle.split.2x2", arrow: true) { state.loadCatalog("模板") }
+                        menuRow(state.showInlineTask ? "关闭派活" : "派活给 absent", icon: "at", arrow: true) { state.newAssignee = "absent"; state.showInlineTask.toggle() }
+                    }.padding(DesignTokens.shellGap).frame(width: DesignTokens.composerMenuWidth)
+                        .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+                        .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine))
+                        .shadow(color: .black.opacity(DesignTokens.shellSelectionOpacity), radius: DesignTokens.composerMenuShadow)
+                        .offset(y: -DesignTokens.menuButtonSize - DesignTokens.shellGap)
+                    }
+                }
+                .zIndex(1)
                 Spacer()
                 if state.showInlineTask {
                     Picker("指派", selection: $state.newAssignee) { ForEach(state.members.filter { $0.role == "member" }) { Text($0.name).tag($0.name) } }.labelsHidden().frame(maxWidth: 130)
-                    Button { state.createTask(); state.showInlineTask = false } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(PackStyle.accent, in: Circle()) }.buttonStyle(.plain).disabled(state.newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).help("建卡派活")
+                    Button { state.createTask(); state.showInlineTask = false } label: { Image(systemName: "arrow.up").font(DesignTokens.fontTitle).foregroundStyle(.white).frame(width: DesignTokens.composerSend, height: DesignTokens.composerSend).background(DesignTokens.blue, in: Circle()) }.buttonStyle(.plain).disabled(state.newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.attachments.isEmpty).help("建卡派活")
                 } else {
                     Text("群聊").font(.system(size: 11)).foregroundStyle(.tertiary)
-                    Button { state.sendDraft() } label: { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(PackStyle.accent, in: Circle()) }.buttonStyle(.plain).help("发送")
+                    Button { state.sendDraft() } label: { Image(systemName: "arrow.up").font(DesignTokens.fontTitle).foregroundStyle(.white).frame(width: DesignTokens.composerSend, height: DesignTokens.composerSend).background(DesignTokens.blue, in: Circle()) }.buttonStyle(.plain).help("发送")
                 }
             }
             if !state.attachments.isEmpty {
@@ -499,7 +554,21 @@ private struct Composer: View {
                     .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
                 Button("移除所选文件") { state.attachments = [] }.font(DesignTokens.fontSmall)
             }
-        }.padding(14).background(PackStyle.surface, in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).stroke(PackStyle.line)).shadow(color: .black.opacity(0.04), radius: 6, y: 2).frame(maxWidth: 720).frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.top, 8)
+        }.padding(14).background {
+            RoundedRectangle(cornerRadius: 18).fill(PackStyle.surface)
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(PackStyle.line))
+                .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
+        }.frame(maxWidth: 720).frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.top, 8)
+    }
+    private func menuRow(_ title: String, icon: String, arrow: Bool = false, action: @escaping () -> Void) -> some View {
+        Button { state.showAddMenu = false; action() } label: {
+            HStack(spacing: DesignTokens.shellGap) {
+                Image(systemName: icon).frame(width: DesignTokens.composerMenuIcon).foregroundStyle(DesignTokens.subText)
+                Text(title).foregroundStyle(DesignTokens.ink)
+                Spacer()
+                if arrow { Image(systemName: "chevron.right").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.faintText) }
+            }.font(DesignTokens.fontUI).frame(height: DesignTokens.composerMenuRow).contentShape(Rectangle())
+        }.buttonStyle(.plain)
     }
     private func chooseFiles(imagesOnly: Bool) {
         let picker = NSOpenPanel()
