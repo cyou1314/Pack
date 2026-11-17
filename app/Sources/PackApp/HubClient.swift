@@ -1,19 +1,89 @@
 import Foundation
+import Security
 
 struct PackConfig {
     var hubUrl: String
     var token: String
     var ownerToken: String?
 
-    static func load() -> PackConfig? {
-        let path = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pack/config.json")
-        guard let data = try? Data(contentsOf: path),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let url = obj["hubUrl"] as? String,
-              let token = obj["token"] as? String else { return nil }
-        return PackConfig(hubUrl: url, token: token, ownerToken: obj["ownerToken"] as? String)
+    struct LoadResult {
+        let config: PackConfig?
+        let credentialStatus: String
     }
+
+    static func load() -> LoadResult {
+        let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pack/config.json")
+        return load(path: path, service: Bundle.main.bundleIdentifier ?? "com.cyou.pack")
+    }
+
+    static func load(path: URL, service: String) -> LoadResult {
+        guard let data = try? Data(contentsOf: path),
+              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let url = object["hubUrl"] as? String else {
+            return LoadResult(config: nil, credentialStatus: "无法读取本机配置。")
+        }
+        var values: [String: String] = [:]
+        var failure: String?
+        var migratedFields: [String] = []
+        for (field, account) in [("token", "dispatcher"), ("ownerToken", "owner")] {
+            let fileValue = (object[field] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                        kSecAttrService as String: service,
+                                        kSecAttrAccount as String: account]
+            var readQuery = query
+            readQuery[kSecReturnData as String] = true
+            readQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+            var result: CFTypeRef?
+            let readStatus = SecItemCopyMatching(readQuery as CFDictionary, &result)
+            if readStatus == errSecSuccess {
+                guard let bytes = result as? Data, let stored = String(data: bytes, encoding: .utf8), !stored.isEmpty else {
+                    failure = "钥匙串凭证无法读取，配置文件保持原样。"
+                    if let fileValue { values[account] = fileValue }
+                    continue
+                }
+                if let fileValue, fileValue != stored {
+                    failure = "钥匙串与配置文件中的凭证不一致，配置文件保持原样。"
+                    values[account] = fileValue
+                } else {
+                    values[account] = stored
+                    if fileValue != nil { migratedFields.append(field) }
+                }
+            } else if readStatus == errSecItemNotFound, let fileValue {
+                var addQuery = query
+                addQuery[kSecValueData as String] = Data(fileValue.utf8)
+                let added = SecItemAdd(addQuery as CFDictionary, nil)
+                var verified: CFTypeRef?
+                let check = added == errSecSuccess ? SecItemCopyMatching(readQuery as CFDictionary, &verified) : added
+                if check == errSecSuccess, let bytes = verified as? Data, bytes == Data(fileValue.utf8) {
+                    values[account] = fileValue
+                    migratedFields.append(field)
+                } else {
+                    values[account] = fileValue
+                    failure = "钥匙串写入或回读校验失败，配置文件保持原样。"
+                }
+            } else if readStatus != errSecItemNotFound {
+                if let fileValue { values[account] = fileValue }
+                failure = "钥匙串读取失败，配置文件保持原样。"
+            }
+        }
+        if failure == nil && !migratedFields.isEmpty {
+            do {
+                guard try Data(contentsOf: path) == data else { throw CocoaError(.fileWriteUnknown) }
+                for field in migratedFields { object.removeValue(forKey: field) }
+                let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+                let temporary = path.deletingLastPathComponent().appendingPathComponent(".config-\(UUID().uuidString).tmp")
+                guard FileManager.default.createFile(atPath: temporary.path, contents: updated, attributes: [.posixPermissions: 0o600]) else { throw CocoaError(.fileWriteUnknown) }
+                defer { try? FileManager.default.removeItem(at: temporary) }
+                _ = try FileManager.default.replaceItemAt(path, withItemAt: temporary)
+            } catch { failure = "凭证已写入钥匙串，但配置文件清理失败；原配置已保留。" }
+        }
+        guard let token = values["dispatcher"] else {
+            return LoadResult(config: nil, credentialStatus: failure ?? "未找到调度员凭证。")
+        }
+        return LoadResult(config: PackConfig(hubUrl: url, token: token, ownerToken: values["owner"]),
+                          credentialStatus: failure ?? "凭证已存入钥匙串。")
+    }
+
 }
 
 enum HubError: Error {

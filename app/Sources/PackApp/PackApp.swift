@@ -114,7 +114,7 @@ final class AppState: ObservableObject {
     @Published var lastActionNote: String = ""
     @Published var settingsHubURL = ""
     @Published var settingsMessage = ""
-    @Published var hasLocalCredentials = false
+    @Published var credentialStatus = "正在检查凭证…"
     @Published var showOnboarding = false
     @Published var approvalDefault: Bool = UserDefaults.standard.bool(forKey: "pack.approvalDefault") {
         didSet { UserDefaults.standard.set(approvalDefault, forKey: "pack.approvalDefault") }
@@ -137,14 +137,15 @@ final class AppState: ObservableObject {
         PackNotifications.shared.start(state: self)
         draftMessage = roomDrafts[currentRoom] ?? ""
         newNeedsApproval = approvalDefault
-        guard let cfg = PackConfig.load() else {
+        let loaded = PackConfig.load()
+        credentialStatus = loaded.credentialStatus
+        guard let cfg = loaded.config else {
             connectionNote = "缺少配置 ~/.pack/config.json"
             roomLoading = false
             showOnboarding = true
             return
         }
         settingsHubURL = cfg.hubUrl
-        hasLocalCredentials = true
         client = HubClient(cfg: cfg)
         if let ownerToken = cfg.ownerToken, !ownerToken.isEmpty {
             var ownerCfg = cfg
@@ -354,7 +355,9 @@ final class AppState: ObservableObject {
             let temporary = path.deletingLastPathComponent().appendingPathComponent(".config-\(UUID().uuidString).tmp")
             guard FileManager.default.createFile(atPath: temporary.path, contents: updated, attributes: [.posixPermissions: 0o600]) else { settingsMessage = "无法创建安全的配置临时文件"; return }
             _ = try FileManager.default.replaceItemAt(path, withItemAt: temporary)
-            guard let cfg = PackConfig.load() else { settingsMessage = "保存后无法读取配置"; return }
+            let loaded = PackConfig.load()
+            credentialStatus = loaded.credentialStatus
+            guard let cfg = loaded.config else { settingsMessage = "保存后无法读取配置"; return }
             client = HubClient(cfg: cfg)
             if let token = cfg.ownerToken, !token.isEmpty { var ownerCfg = cfg; ownerCfg.token = token; ownerClient = HubClient(cfg: ownerCfg) }
             settingsMessage = "地址已保存，正在连接"
@@ -419,6 +422,14 @@ final class AppState: ObservableObject {
         editAvatarBackground = member.avatar?.bg ?? "cream"
         avatarSaveError = ""
         showAvatarPicker = true
+    }
+
+    func restoreDesignedAvatar() {
+        guard !avatarSaving else { return }
+        var customNames = Set(UserDefaults.standard.stringArray(forKey: "pack.customAvatarNames") ?? [])
+        customNames.remove(avatarTargetName)
+        UserDefaults.standard.set(Array(customNames), forKey: "pack.customAvatarNames")
+        showAvatarPicker = false
     }
 
     func saveMemberAvatar() {

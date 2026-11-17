@@ -1065,7 +1065,7 @@ private struct SettingsView: View {
                 GroupBox("中枢地址") {
                     VStack(alignment: .leading, spacing: DesignTokens.settingsGap) {
                         HStack { TextField("中枢地址", text: $state.settingsHubURL).textFieldStyle(.roundedBorder); Button("保存") { state.saveHubURL() } }
-                        Text(state.hasLocalCredentials ? "凭证已保存在本机配置，尚未迁入钥匙串。" : "未找到本机凭证。")
+                        Text(state.credentialStatus)
                             .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                         if !state.settingsMessage.isEmpty { Text(state.settingsMessage).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
@@ -1105,7 +1105,7 @@ private struct OnboardingView: View {
         VStack(alignment: .leading, spacing: DesignTokens.settingsGap) {
             Text("欢迎使用 Pack").font(DesignTokens.fontTitle)
             Text("1. 连接中枢：请先配置中枢地址。")
-            Text("2. 确认身份：请安全配置本机凭证；当前版本尚未接入钥匙串。")
+            Text("2. 确认身份：请安全配置本机凭证，App 会尝试迁入钥匙串。")
             Text("3. 配置完成后重新打开 App，进入主房间。")
             Button("知道了") { state.showOnboarding = false }
         }.padding(DesignTokens.settingsInset).frame(width: DesignTokens.memberLoginWidth)
@@ -1237,6 +1237,9 @@ private struct AvatarPickerView: View {
                 .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             if !state.avatarSaveError.isEmpty { Text(state.avatarSaveError).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger).textSelection(.enabled) }
             HStack {
+                if ["dispatcher", "absent"].contains(state.avatarTargetName) {
+                    Button("恢复默认") { state.restoreDesignedAvatar() }.disabled(state.avatarSaving)
+                }
                 Spacer()
                 Button("取消") { state.showAvatarPicker = false }.disabled(state.avatarSaving)
                 Button(state.avatarSaving ? "保存中…" : "保存") { state.saveMemberAvatar() }.buttonStyle(.borderedProminent).disabled(state.avatarSaving)
