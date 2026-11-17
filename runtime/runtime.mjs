@@ -15,7 +15,7 @@
  *   profileId, spaceName, pollSeconds, egoBin }
  * Smoke mode: node runtime.mjs --smoke "message"  (runs driver once)
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,7 @@ let rpcId = 0;
 async function rpc(method, params) {
   const headers = {
     "Content-Type": "application/json",
+    Connection: "close",
     Accept: "application/json, text/event-stream",
     Authorization: `Bearer ${cfg.memberToken}`,
   };
@@ -105,6 +106,7 @@ async function mcpInit() {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Connection: "close",
       Accept: "application/json, text/event-stream",
       Authorization: `Bearer ${cfg.memberToken}`,
       ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
@@ -129,7 +131,7 @@ function runDriver(message) {
     child.stderr.on("data", (d) => (err += d));
     child.on("error", reject);
     child.on("close", (code) => {
-      const line = out.split("\n").filter((l) => l.startsWith("DRIVER-RESULT")).pop();
+      const line = (out + "\n" + err).split("\n").filter((l) => l.startsWith("DRIVER-RESULT")).pop();
       if (!line) return reject(new Error(`driver no result (code ${code}): ${err.slice(0, 300)}`));
       try { resolve(JSON.parse(line.slice("DRIVER-RESULT".length).trim())); }
       catch { reject(new Error("driver result not json")); }
@@ -145,21 +147,74 @@ let failStreak = 0;
 // repo file runtime/hub-url.txt. On repeated failures, fetch it and move.
 async function discoverHubUrl() {
   try {
-    const res = await fetch("https://api.github.com/repos/cyou1314/Pack/contents/runtime/hub-url.txt", {
+    const source = "https://raw.githubusercontent.com/cyou1314/Pack/refs/heads/main/runtime/hub-url.txt?pack=" + Date.now();
+    const res = await fetch(source, {
       signal: AbortSignal.timeout(15000),
-      headers: { Accept: "application/vnd.github.raw", "User-Agent": "pack-runtime" },
+      headers: { "Cache-Control": "no-cache", Connection: "close", "User-Agent": "pack-runtime" },
     });
-    if (!res.ok) return;
+    if (!res.ok) { console.error(`hub discovery failed: HTTP ${res.status}`); return; }
     const url = (await res.text()).trim();
-    if (url.startsWith("https://") && url !== cfg.hubUrl) {
+    let parsed;
+    try { parsed = new URL(url); } catch { console.error("hub discovery failed: invalid URL"); return; }
+    if (parsed.protocol !== "https:") { console.error("hub discovery failed: non-HTTPS URL"); return; }
+    if (url !== cfg.hubUrl) {
       console.log(`hub url discovered: ${url}`);
       cfg.hubUrl = url;
       sessionId = null;
     }
-  } catch {}
+  } catch (e) { console.error("hub discovery failed:", e.message); }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const receiptPath = path.join(DIR, "delivery-receipts.json");
+let deliveryReceipts;
+try { deliveryReceipts = JSON.parse(readFileSync(receiptPath, "utf8")); }
+catch (e) { if (e.code === "ENOENT") deliveryReceipts = {}; else throw e; }
+function storeReceipt(task, reply, chatUrl) {
+  deliveryReceipts[task.id] = { taskId: task.id, title: task.title, body: task.body, reply, chatUrl, state: "pending" };
+  saveReceipts();
+}
+function saveReceipts() {
+  const temp = receiptPath + ".tmp";
+  writeFileSync(temp, JSON.stringify(deliveryReceipts, null, 2) + "\n", { mode: 0o600 });
+  renameSync(temp, receiptPath);
+}
+function matchingReceipt(task) {
+  const receipt = deliveryReceipts[task.id];
+  return receipt?.state === "pending" && receipt.title === task.title && receipt.body === task.body ? receipt : null;
+}
+async function completeSafely(task, claimToken, receipt) {
+  for (;;) {
+    try {
+      await tool("task_complete", { task_id: task.id, claim_token: claimToken, result: receipt.reply });
+      receipt.state = "completed"; saveReceipts();
+      console.log(`task ${task.id} delivered from saved receipt`);
+      return;
+    } catch (e) {
+      console.error(`task ${task.id} completion retry:`, e.message);
+      await sleep(POLL_MS);
+      try {
+        const result = await tool("task_list", {});
+        const current = result.tasks.find(t => t.id === task.id);
+        if (current && ["review", "done"].includes(current.status) && current.result === receipt.reply) {
+          receipt.state = "completed"; saveReceipts();
+          console.log(`task ${task.id} delivery already confirmed`);
+          return;
+        }
+        if (!current || !["claimed", "working"].includes(current.status) || current.assignee !== cfg.memberName || current.attempts !== task.attempts + 1) {
+          console.error(`task ${task.id} no longer held; saved receipt retained`);
+          return;
+        }
+      } catch (checkError) {
+        console.error(`task ${task.id} delivery status check failed:`, checkError.message);
+        sessionId = null;
+        await discoverHubUrl();
+        try { await enqueue(mcpInit); } catch {}
+      }
+    }
+  }
+}
+
 const approvedWaits = new Map();
 let lastMsgId = 0;
 
@@ -178,6 +233,12 @@ async function checkApprovals() {
 async function processTask(task) {
   const claim = await tool("task_claim", { task_id: task.id });
   const ctok = claim.claim_token;
+  const saved = matchingReceipt(task);
+  if (saved) {
+    console.log(`task ${task.id} recovering verified reply without resending`);
+    await completeSafely(task, ctok, saved);
+    return;
+  }
   const needsApproval = task.title.includes(NEED_TAG) || task.body.includes(NEED_TAG);
   if (needsApproval) {
     await tool("room_post", {
@@ -227,7 +288,8 @@ async function processTask(task) {
     await tool("task_block", { task_id: task.id, claim_token: ctok, reason: "落点核对失败，未发送" });
     return;
   }
-  await tool("task_complete", { task_id: task.id, claim_token: ctok, result: res.reply });
+  storeReceipt(task, res.reply, res.chatUrl || "");
+  await completeSafely(task, ctok, deliveryReceipts[task.id]);
 }
 
 async function main() {
@@ -257,8 +319,11 @@ async function main() {
     try {
       await tool("heartbeat");
       await checkApprovals();
-      const r = await tool("task_list", { status: "open", assignee_name: cfg.memberName });
+      const r = await tool("task_list", { status: "open" });
       for (const t of r.tasks) {
+        // A single browser space must process at most one task at a time.
+        if (busy.size) break;
+        if (t.assignee !== cfg.memberName && !(t.assignee == null && matchingReceipt(t))) continue;
         if (busy.has(t.id)) continue;
         busy.add(t.id);
         processTask(t).catch((e) => console.error("task", t.id, e.message)).finally(() => busy.delete(t.id));
@@ -266,7 +331,7 @@ async function main() {
     } catch (e) {
       console.error("poll error:", e.message);
       failStreak++;
-      if (failStreak >= 3) {
+      if (failStreak >= 1) {
         failStreak = 0;
         await discoverHubUrl();
       }
