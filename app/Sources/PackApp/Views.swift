@@ -1116,6 +1116,8 @@ private struct SettingsView: View {
                 GroupBox("中枢地址") {
                     VStack(alignment: .leading, spacing: DesignTokens.settingsGap) {
                         HStack { TextField("中枢地址", text: $state.settingsHubURL).textFieldStyle(.roundedBorder); Button("保存") { state.saveHubURL() } }
+                        Text("地址会自动跟随中枢发布地址，手动保存后本次运行以手动为准")
+                            .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                         Text(state.credentialStatus)
                             .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                         if !state.settingsMessage.isEmpty { Text(state.settingsMessage).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }

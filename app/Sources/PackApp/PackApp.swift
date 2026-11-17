@@ -132,6 +132,14 @@ final class AppState: ObservableObject {
     private var client: HubClient?
     private var ownerClient: HubClient?
     private var pollTask: Task<Void, Never>?
+    private var storedHubURL = ""
+    private var manualHubURLSaved = false
+    private var lastHubDiscoveryUptime: TimeInterval?
+    private var discoveryInProgress = false
+    private var clientGeneration = 0
+    private var consecutiveRefreshFailures = 0
+    private let hubDiscoveryInterval: TimeInterval = 60
+    private let hubDiscoveryTimeout: TimeInterval = 5
     private var roomGeneration = 0
     private var unreadTask: Task<Void, Never>?
     private var notificationDiff = NotificationDiff()
@@ -152,6 +160,7 @@ final class AppState: ObservableObject {
             return
         }
         settingsHubURL = cfg.hubUrl
+        storedHubURL = cfg.hubUrl
         client = HubClient(cfg: cfg)
         if let ownerToken = cfg.ownerToken, !ownerToken.isEmpty {
             var ownerCfg = cfg
@@ -159,6 +168,7 @@ final class AppState: ObservableObject {
             ownerClient = HubClient(cfg: ownerCfg)
         }
         pollTask = Task { [weak self] in
+            _ = await self?.followPublishedHubURL()
             while !Task.isCancelled {
                 await self?.refresh()
                 let seconds = max(5, self?.appRefreshSeconds ?? 15)
@@ -171,6 +181,7 @@ final class AppState: ObservableObject {
         guard let client else { return }
         let room = currentRoom
         let generation = roomGeneration
+        let currentClientGeneration = clientGeneration
         do {
             let roomRes = try await client.call(name: "room_list")
             let msgRes = try await client.call(name: "room_read_new",
@@ -178,7 +189,7 @@ final class AppState: ObservableObject {
             let taskRes = try await client.call(name: "task_list")
             let memRes = try await client.call(name: "member_list")
             let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
-            guard room == currentRoom, generation == roomGeneration else { return }
+            guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
             if let summaryRes { roomSummary = summaryVal(summaryRes) }
             if let arr = roomRes["rooms"] as? [[String: Any]] {
                 let updated = arr.map { RoomItem(id: intVal($0["id"]), name: ($0["name"] as? String) ?? "?", lastMessageId: intVal($0["last_message_id"])) }.reversed()
@@ -245,6 +256,7 @@ final class AppState: ObservableObject {
             }
             roomLoading = false
             connected = true
+            consecutiveRefreshFailures = 0
             connectionFailed = false
             connectionNote = "已连接"
             for (taskId, decisionRoom) in decisionRooms where decisionRoom == room && tasks.contains(where: { $0.id == taskId }) && !pendingApprovals.contains(where: { $0.taskId == taskId }) {
@@ -265,11 +277,13 @@ final class AppState: ObservableObject {
             }
             scheduleMarkRoomRead(room, generation: generation)
         } catch {
-            guard room == currentRoom, generation == roomGeneration else { return }
+            guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
             roomLoading = false
             connected = false
             connectionFailed = true
             connectionNote = "连接中断，重试中"
+            consecutiveRefreshFailures += 1
+            if consecutiveRefreshFailures >= 2, await followPublishedHubURL() { await refresh() }
         }
     }
 
@@ -368,27 +382,68 @@ final class AppState: ObservableObject {
     var selectedTask: PackTask? { tasks.first { $0.id == selectedTaskId } }
 
     func saveHubURL() {
-        let text = settingsHubURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parts = URLComponents(string: text), ["http", "https"].contains(parts.scheme?.lowercased() ?? ""), parts.host != nil, parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else {
-            settingsMessage = "地址格式无效，请使用不带凭证或查询参数的 HTTP(S) 地址。"; return
+        if persistHubURL(settingsHubURL.trimmingCharacters(in: .whitespacesAndNewlines), manual: true) {
+            Task { await refresh() }
+        }
+    }
+
+    // Manual and automatic updates share the same atomic configuration write
+    // and credential reload. Automatic failures leave settings silent.
+    private func persistHubURL(_ text: String, manual: Bool) -> Bool {
+        func fail(_ message: String) -> Bool {
+            if manual { settingsMessage = message }
+            return false
+        }
+        guard let parts = URLComponents(string: text), ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
+              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else {
+            return fail("地址格式无效，请使用不带凭证或查询参数的 HTTP(S) 地址。")
         }
         let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pack/config.json")
         do {
+            let loaded = PackConfig.load()
+            credentialStatus = loaded.credentialStatus
+            guard var cfg = loaded.config else { return fail("无法读取本机凭证") }
             let data = try Data(contentsOf: path)
-            guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { settingsMessage = "配置格式无效"; return }
+            guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return fail("配置格式无效") }
             object["hubUrl"] = text
             let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
             let temporary = path.deletingLastPathComponent().appendingPathComponent(".config-\(UUID().uuidString).tmp")
-            guard FileManager.default.createFile(atPath: temporary.path, contents: updated, attributes: [.posixPermissions: 0o600]) else { settingsMessage = "无法创建安全的配置临时文件"; return }
+            guard FileManager.default.createFile(atPath: temporary.path, contents: updated, attributes: [.posixPermissions: 0o600]) else { return fail("无法创建安全的配置临时文件") }
+            defer { try? FileManager.default.removeItem(at: temporary) }
             _ = try FileManager.default.replaceItemAt(path, withItemAt: temporary)
-            let loaded = PackConfig.load()
-            credentialStatus = loaded.credentialStatus
-            guard let cfg = loaded.config else { settingsMessage = "保存后无法读取配置"; return }
+            if manual { manualHubURLSaved = true }
+            storedHubURL = text
+            clientGeneration += 1
+            cfg.hubUrl = text
             client = HubClient(cfg: cfg)
-            if let token = cfg.ownerToken, !token.isEmpty { var ownerCfg = cfg; ownerCfg.token = token; ownerClient = HubClient(cfg: ownerCfg) }
-            settingsMessage = "地址已保存，正在连接"
-            Task { await refresh() }
-        } catch { settingsMessage = "保存失败，请检查本机配置后重试" }
+            if let token = cfg.ownerToken, !token.isEmpty {
+                var ownerCfg = cfg; ownerCfg.token = token; ownerClient = HubClient(cfg: ownerCfg)
+            } else { ownerClient = nil }
+            settingsHubURL = text
+            if manual { settingsMessage = "地址已保存，正在连接" }
+            return true
+        } catch { return fail("保存失败，请检查本机配置后重试") }
+    }
+
+    private func followPublishedHubURL() async -> Bool {
+        guard !manualHubURLSaved, !discoveryInProgress else { return false }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = lastHubDiscoveryUptime, now - last < hubDiscoveryInterval { return false }
+        lastHubDiscoveryUptime = now
+        discoveryInProgress = true
+        defer { discoveryInProgress = false }
+        guard let source = URL(string: "https://raw.githubusercontent.com/cyou1314/Pack/main/runtime/hub-url.txt") else { return false }
+        var request = URLRequest(url: source, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: hubDiscoveryTimeout)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard !manualHubURLSaved, let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let parts = URLComponents(string: value), parts.scheme?.lowercased() == "https",
+                  let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
+                  parts.query == nil, parts.fragment == nil, value != storedHubURL else { return false }
+            return persistHubURL(value, manual: false)
+        } catch { return false }
     }
 
     func toggleMember(_ name: String) {

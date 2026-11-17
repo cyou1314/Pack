@@ -94,16 +94,17 @@ enum HubError: Error {
 /// Hand-rolled MCP JSON-RPC client for the Pack hub.
 /// Port of the proven runtime.mjs logic: all calls serialized through this
 /// actor, session re-initialized transparently when the hub forgets it,
-/// and the hub URL re-discovered from the repo when the tunnel rotates.
+/// and the App coordinates URL discovery and client replacement.
 actor HubClient {
     private var cfg: PackConfig
     private var sessionId: String?
     private var rpcId = 0
-    private var failStreak = 0
 
     init(cfg: PackConfig) { self.cfg = cfg }
 
-    func discoverBeforeSending() async { await discoverHubUrl() }
+    // Discovery is coordinated by AppState so both identities use the same
+    // persisted address, throttle and manual-override rule.
+    func discoverBeforeSending() async { }
 
     private func post(body: [String: Any], isNotification: Bool) async throws -> (Data, HTTPURLResponse) {
         guard let url = URL(string: cfg.hubUrl) else { throw HubError.badResponse("bad hub url") }
@@ -173,9 +174,7 @@ actor HubClient {
 
     func call(name: String, args: [String: Any] = [:]) async throws -> [String: Any] {
         do {
-            let r = try await callOnce(name: name, args: args)
-            failStreak = 0
-            return r
+            return try await callOnce(name: name, args: args)
         } catch {
             let s = String(describing: error)
             if s.contains("Session not found") || s.contains("Missing session ID") {
@@ -183,36 +182,8 @@ actor HubClient {
                 return try await callOnce(name: name, args: args)
             }
             NSLog("Pack App hub call %@ failed: %@", name, String(describing: error))
-            failStreak += 1
-            if failStreak >= 1 {
-                failStreak = 0
-                await discoverHubUrl()
-            }
             throw error
         }
-    }
-
-    /// Fetch the published repository file without the rate-limited API.
-    private func discoverHubUrl() async {
-        let source = "https://raw.githubusercontent.com/cyou1314/Pack/refs/heads/main/runtime/hub-url.txt?pack=\(Int(Date().timeIntervalSince1970))"
-        guard let sourceURL = URL(string: source) else { return }
-        var req = URLRequest(url: sourceURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
-        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-        req.setValue("pack-app", forHTTPHeaderField: "User-Agent")
-        do {
-            let (data, response) = try await URLSession.shared.data(for: req)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let url = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let parsed = URL(string: url), parsed.scheme == "https", parsed.host != nil else {
-                NSLog("Pack App hub discovery returned an invalid response")
-                return
-            }
-            if url != cfg.hubUrl {
-                NSLog("Pack App discovered updated hub URL")
-                cfg.hubUrl = url
-                sessionId = nil
-            }
-        } catch { NSLog("Pack App hub discovery failed: %@", error.localizedDescription) }
     }
 
 }
