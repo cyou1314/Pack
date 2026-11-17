@@ -18,6 +18,7 @@ enum DesignTokens {
     static let quotaGreen = Color(hex: 0x23B45C)
     static let quotaYellow = Color(hex: 0xF2B220)
     static let quotaRed = Color(hex: 0xE84046)
+    static let quotaStaleText = subText
 
     // 圆角
     static let radiusCard: CGFloat = 8

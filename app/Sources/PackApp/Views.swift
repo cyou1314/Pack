@@ -59,6 +59,32 @@ private struct Pill: View {
     }
 }
 
+private enum QuotaDisplay {
+    private static func date(_ timestamp: Double, format: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        formatter.dateFormat = format
+        return formatter.string(from: Date(timeIntervalSince1970: timestamp))
+    }
+
+    static func resetDate(_ timestamp: Double) -> String { date(timestamp, format: "M月d日") }
+    static func updatedDate(_ timestamp: Double) -> String { date(timestamp, format: "MM/dd HH:mm") }
+    static func tokens(_ value: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(value), countStyle: .decimal)
+            .replacingOccurrences(of: "B", with: "")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    static func freshness(_ member: MemberInfo?) -> String? {
+        guard let member else { return nil }
+        if member.quotaUpdatedAt == nil {
+            return member.quotaWeekUsedPct != nil || member.quotaExtraLeft != nil ? "数据时间未知" : nil
+        }
+        return member.quotaIsStale ? "已过期" : nil
+    }
+}
+
 private struct MemberAvatarView: View {
     let name: String
     let member: MemberInfo?
@@ -294,14 +320,17 @@ private struct Sidebar: View {
                     HStack {
                         Text("周额度"); Spacer()
                         Text(member?.quotaWeekUsedPct.map { "已用 \(Int($0.rounded()))%" } ?? "暂无数据")
-                        if let reset = member?.quotaWeekResetAt { Text(Date(timeIntervalSince1970: reset), style: .date).foregroundStyle(DesignTokens.subText) }
+                        if let reset = member?.quotaWeekResetAt { Text(QuotaDisplay.resetDate(reset)) }
                     }
                     HStack {
                         Text("附加 token"); Spacer()
-                        Text(member?.quotaExtraLeft.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .decimal).replacingOccurrences(of: "B", with: "") } ?? "—")
-                        Text("不过期").foregroundStyle(DesignTokens.subText)
+                        Text(member?.quotaExtraLeft.map { QuotaDisplay.tokens($0) } ?? "—")
+                        Text("不过期")
                     }
-                }.font(DesignTokens.fontSmall).padding(DesignTokens.shellInset)
+                    if let freshness = QuotaDisplay.freshness(member) { Text(freshness) }
+                }.font(DesignTokens.fontSmall)
+                    .foregroundStyle((member?.quotaIsStale ?? true) ? DesignTokens.quotaStaleText : DesignTokens.ink)
+                    .padding(DesignTokens.shellInset)
                     .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
             } else {
                 QuotaRingView(usedPct: member?.quotaWeekUsedPct, stale: member?.quotaIsStale ?? true, size: DesignTokens.shellQuota).help("周额度剩余")
@@ -1052,9 +1081,13 @@ private struct MemberDetail: View {
                 HStack { QuotaRingView(usedPct: member.quotaWeekUsedPct, stale: member.quotaIsStale); VStack(alignment: .leading) {
                     Text("周额度").font(DesignTokens.fontTitle)
                     Text(member.quotaWeekUsedPct.map { "已用 \(Int($0.rounded()))%" } ?? "暂无数据").font(DesignTokens.fontSmall)
-                    Text("附加 token：\(member.quotaExtraLeft.map { String($0) } ?? "暂无数据")").font(DesignTokens.fontSmall)
-                } }
-                Text("额度更新时间：\(member.quotaUpdatedAt.map { Date(timeIntervalSince1970: $0).formatted() } ?? "暂无")").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                    Text("附加 token：\(member.quotaExtraLeft.map { QuotaDisplay.tokens($0) } ?? "暂无数据")").font(DesignTokens.fontSmall)
+                }.foregroundStyle(member.quotaIsStale ? DesignTokens.quotaStaleText : DesignTokens.ink) }
+                HStack(spacing: DesignTokens.shellGap) {
+                    Text("额度更新时间：\(member.quotaUpdatedAt.map { QuotaDisplay.updatedDate($0) } ?? "暂无")")
+                    if let freshness = QuotaDisplay.freshness(member) { Text(freshness) }
+                }.font(DesignTokens.fontSmall)
+                    .foregroundStyle(member.quotaIsStale ? DesignTokens.quotaStaleText : DesignTokens.subText)
                 Divider()
                 Text("当前房间的任务").font(DesignTokens.fontTitle)
                 let active = state.tasks.filter { $0.assignee == member.name && ["claimed", "working"].contains($0.status) }
