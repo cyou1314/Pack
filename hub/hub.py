@@ -49,6 +49,7 @@
 """
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -748,9 +749,12 @@ def init():
         conn.execute("INSERT INTO members(name,role,token_hash,created_at,avatar) VALUES('dispatcher','dispatcher',?,?,?)",
                      (hash_token(tok), time.time(), json.dumps(avatar_for("dispatcher"))))
         audit(conn, "system", "init", "dispatcher created")
-        with open(os.path.join(BASE, ".dispatcher_token"), "w") as f:
+        _tok_path = os.path.join(BASE, ".dispatcher_token")
+        _tmp_path = _tok_path + f".tmp-{os.getpid()}"
+        _fd = os.open(_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(_fd, "w") as f:
             f.write(tok)
-        os.chmod(os.path.join(BASE, ".dispatcher_token"), 0o600)
+        os.replace(_tmp_path, _tok_path)
     tcols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
     if "envelope" not in tcols:
         conn.execute("ALTER TABLE tasks ADD COLUMN envelope TEXT")
@@ -1172,6 +1176,8 @@ def build_server():
         按名哈希自动分配避撞。已移除成员的名字保持占用，不许同名再登记。"""
         me = authenticate()
         require(me, "dispatcher")
+        if len(profile or "") > 2000:
+            raise ValueError("profile too long: > 2000 chars")
         tok = "pk-mem-" + secrets.token_urlsafe(32)
         # 头像组合分配（查占用→选组合→插入）必须原子，否则并发注册会撞组合；
         # 按 task_claim 范式走全局 _lock（S1 复检教训）。
@@ -1419,6 +1425,8 @@ def build_server():
         伪造的待批项进不了批准中心、也喂不到 _approval_state。"""
         me = authenticate()
         require(me)
+        if len(body or "") > 20000:
+            raise ValueError("message body too long: > 20000 chars")
         if kind == "task_card":
             raise ValueError("kind task_card is hub-internal")
         if kind == "decision" and me["role"] != "dispatcher":
@@ -1630,9 +1638,11 @@ def build_server():
 
     @mcp.tool
     def room_read_new(room: str, since_id: int = 0, limit: int = 50) -> dict:
-        """读房间里 id 大于 since_id 的新消息（含作者名）。"""
+        """读房间里 id 大于 since_id 的新消息（含作者名）。limit 钳制在
+        1..200（staging40 / S1）：调用方传超大 limit 不再整表拉取。"""
         me = authenticate()
         require(me)
+        limit = max(1, min(int(limit), 200))
         conn = db()
         r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
         if not r:
@@ -1817,6 +1827,8 @@ def build_server():
         require(me)
         if not new_body or not new_body.strip():
             raise ValueError("new_body must not be empty")
+        if len(new_body) > 20000:
+            raise ValueError("new_body too long: > 20000 chars")
         conn = db()
         m = conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
         if not m:
@@ -2079,7 +2091,7 @@ def build_server():
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
             raise ValueError(f"no such task: {task_id}")
-        if t["assignee"] != me["id"] or not t["claim_token"] or t["claim_token"] != claim_token:
+        if t["assignee"] != me["id"] or not t["claim_token"] or not hmac.compare_digest(t["claim_token"], claim_token or ""):
             raise ValueError("not the current holder (claim_token mismatch)")
         return t
 
