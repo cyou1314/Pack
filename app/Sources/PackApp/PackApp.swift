@@ -84,6 +84,8 @@ final class AppState: ObservableObject {
     @Published var mentionDismissedText: String?
     @Published var showCreateTask: Bool = false
     @Published var showInlineTask: Bool = false
+    @Published var inlineTaskSending = false
+    @Published var inlineTaskError = ""
     @Published var showSidebar: Bool = true
     @Published var sidebarPinned: Bool = false
     @Published var roomExpanded: Bool = true
@@ -565,6 +567,46 @@ final class AppState: ObservableObject {
 
     func dismissMentions() {
         mentionDismissedText = draftMessage
+    }
+
+    func submitComposer() {
+        if showInlineTask { createTaskFromDraft() } else { sendDraft() }
+    }
+
+    private func createTaskFromDraft() {
+        guard !inlineTaskSending else { return }
+        guard attachments.isEmpty else { inlineTaskError = "中枢暂不支持附件上传，请先移除所选文件"; return }
+        let original = draftMessage
+        guard !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let client else { inlineTaskError = "中枢未连接，草稿已保留"; return }
+        let parts = original.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        var title = String(parts[0]).trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { inlineTaskError = "请在首行填写任务标题"; return }
+        let body = parts.count > 1 ? String(parts[1]) : ""
+        let tag = "【需批准】"
+        if newNeedsApproval && !title.contains(tag) { title = tag + title }
+        let assignee = newAssignee
+        let room = currentRoom
+        inlineTaskError = ""
+        inlineTaskSending = true
+        Task {
+            defer { inlineTaskSending = false }
+            do {
+                _ = try await client.call(name: "task_create", args: ["room": room, "title": title, "body": body, "assignee_name": assignee])
+                if currentRoom == room && draftMessage == original {
+                    draftMessage = ""
+                    showInlineTask = false
+                    newNeedsApproval = approvalDefault
+                } else if currentRoom != room && roomDrafts[room] == original {
+                    roomDrafts[room] = ""
+                    UserDefaults.standard.set(roomDrafts, forKey: "pack.roomDrafts")
+                }
+                lastActionNote = "已派活"
+                await refresh()
+            } catch {
+                inlineTaskError = "派活结果未确认，请先查看任务板，草稿已保留"
+            }
+        }
     }
 
     func createTask() {

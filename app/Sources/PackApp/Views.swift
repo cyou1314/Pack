@@ -553,10 +553,6 @@ private struct Composer: View {
     @FocusState private var messageFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.composerSpacing) {
-            if state.showInlineTask {
-                TextField("任务标题", text: $state.newTitle).textFieldStyle(.plain).font(DesignTokens.fontTitle)
-                TextField("任务要求和交付内容", text: $state.newBody, axis: .vertical).textFieldStyle(.plain).font(DesignTokens.fontUI).lineLimit(DesignTokens.composerTaskMinLines...DesignTokens.composerTaskMaxLines).fixedSize(horizontal: false, vertical: true)
-            } else {
                 if state.mentionPopupVisible {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(state.mentionCandidates) { member in
@@ -581,9 +577,8 @@ private struct Composer: View {
                     .lineLimit(DesignTokens.composerMinLines...DesignTokens.composerMaxLines)
                     .fixedSize(horizontal: false, vertical: true)
                     .focused($messageFocused)
-                    .onSubmit { state.sendDraft() }
+                    .onSubmit { state.submitComposer() }
                     .onExitCommand { state.dismissMentions() }
-            }
             HStack(spacing: DesignTokens.composerSpacing) {
                 Button { state.showAddMenu.toggle() } label: {
                     Image(systemName: "plus").font(DesignTokens.fontTitle).foregroundStyle(.white)
@@ -597,7 +592,7 @@ private struct Composer: View {
                         menuRow("添加照片…", icon: "photo") { chooseFiles(imagesOnly: true) }
                         menuRow("选择技能", icon: "sparkles", arrow: true) { state.loadCatalog("技能") }
                         menuRow("选择模板", icon: "rectangle.split.2x2", arrow: true) { state.loadCatalog("模板") }
-                        menuRow(state.showInlineTask ? "关闭派活" : "派活给 absent", icon: "at", arrow: true) { state.newAssignee = "absent"; state.showInlineTask.toggle() }
+                        menuRow(state.showInlineTask ? "关闭派活" : "派活给 absent", icon: "at", arrow: true) { state.newAssignee = "absent"; state.showInlineTask.toggle(); state.inlineTaskError = ""; messageFocused = true }
                     }.padding(DesignTokens.shellGap).frame(width: DesignTokens.composerMenuWidth)
                         .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
                         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine))
@@ -614,12 +609,18 @@ private struct Composer: View {
                 }.buttonStyle(.plain).help("切换是否需要批准")
                 Spacer()
                 if state.showInlineTask {
-                    Picker("指派", selection: $state.newAssignee) { ForEach(state.members.filter { $0.role == "member" }) { Text($0.name).tag($0.name) } }.labelsHidden().frame(maxWidth: DesignTokens.composerPickerWidth)
-                    Button { state.createTask(); state.showInlineTask = false } label: { Image(systemName: "arrow.up").font(DesignTokens.fontTitle).foregroundStyle(.white).frame(width: DesignTokens.composerSend, height: DesignTokens.composerSend).background(DesignTokens.blue, in: Circle()) }.buttonStyle(.plain).disabled(state.newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.attachments.isEmpty).help("建卡派活")
-                } else {
-                    Text("群聊").font(DesignTokens.fontSmall).foregroundStyle(.tertiary)
-                    Button { state.sendDraft() } label: { Image(systemName: "arrow.up").font(DesignTokens.fontTitle).foregroundStyle(.white).frame(width: DesignTokens.composerSend, height: DesignTokens.composerSend).background(DesignTokens.blue, in: Circle()) }.buttonStyle(.plain).help("发送")
+                    Text("指派：\(state.newAssignee)").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                 }
+                Button { state.submitComposer() } label: {
+                    Image(systemName: "arrow.up").font(DesignTokens.fontTitle).foregroundStyle(.white)
+                        .frame(width: DesignTokens.composerSend, height: DesignTokens.composerSend)
+                        .background(DesignTokens.blue, in: Circle())
+                }.buttonStyle(.plain)
+                    .disabled(state.showInlineTask && (state.inlineTaskSending || state.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.attachments.isEmpty))
+                    .help(state.showInlineTask ? "建卡派活" : "发送")
+            }
+            if !state.inlineTaskError.isEmpty {
+                Text(state.inlineTaskError).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
             }
             if !state.attachments.isEmpty {
                 Text("已选择 \(state.attachments.count) 个本地文件；中枢暂不支持附件上传，请移除后发送。")
