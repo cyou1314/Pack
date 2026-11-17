@@ -247,12 +247,12 @@ def _approval_gate(conn, room_id, msg_id, body, poster=None):
     if not m:
         return {}
     tid = int(m.group(1))
-    conn.execute("UPDATE messages SET task_id=? WHERE id=?", (tid, msg_id))
     t = conn.execute(
         """SELECT t.title, t.assignee, mb.name AS assignee_name FROM tasks t
            LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (tid,)).fetchone()
     if not t:
         return {}
+    conn.execute("UPDATE messages SET task_id=? WHERE id=?", (tid, msg_id))
     # 批准门只认持有人本人（或调度员代发）的请求：非持有人冒发
     # approval_request 不得触发规则自动决议（staging14 复检 C7 实证）。
     # 消息本身照常落库，只是不求值——决议权不能被房间里的第三方行使。
@@ -727,6 +727,8 @@ def init():
         conn.execute("ALTER TABLE tasks ADD COLUMN next_claim_at REAL")
     if "sched_at" not in tcols:
         conn.execute("ALTER TABLE tasks ADD COLUMN sched_at REAL")
+    if "urgent" not in tcols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0")
     xcols = [r[1] for r in conn.execute("PRAGMA table_info(task_transfers)").fetchall()]
     if "status" not in xcols:
         conn.execute("ALTER TABLE task_transfers ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
@@ -1362,7 +1364,11 @@ def build_server():
         """在房间发一条消息。kind: chat/system/report/approval_request。
         完整性守卫：task_card 只能由 task_create 内部落库、decision 只能由
         规则引擎/审查内部落库或调度员客户端代发——成员经 room_post 伪造
-        这两类消息一律拒绝（staging21 对抗复检实证的缺口）。"""
+        这两类消息一律拒绝（staging21 对抗复检实证的缺口）。
+        approval_request 同理设门（staging35，第 1 轮深查 F1）：必须引用
+        存在的任务（任务#N）；非调度员还必须是该任务的当前执行者
+        （assignee 本人且任务 claimed/working）——否则整笔拒绝、不落库，
+        伪造的待批项进不了批准中心、也喂不到 _approval_state。"""
         me = authenticate()
         require(me)
         if kind == "task_card":
@@ -1374,6 +1380,19 @@ def build_server():
         if not r:
             conn.close()
             raise ValueError(f"no such room: {room}")
+        if kind == "approval_request":
+            m = TASK_REF_RE.search(body or "")
+            t = None
+            if m:
+                t = conn.execute("SELECT assignee, status FROM tasks WHERE id=?",
+                                 (int(m.group(1)),)).fetchone()
+            if not t:
+                conn.close()
+                raise ValueError("approval_request must reference an existing task")
+            if me["role"] != "dispatcher" and (
+                    t["assignee"] != me["id"] or t["status"] not in ("claimed", "working")):
+                conn.close()
+                raise ValueError("approval_request only from the member executing that task")
         cur = conn.execute(
             "INSERT INTO messages(room_id,author_id,kind,body,created_at) VALUES(?,?,?,?,?)",
             (r["id"], me["id"], kind, body, time.time()))
@@ -1638,8 +1657,9 @@ def build_server():
         return {"message_id": message_id, "edited": True}
 
     @mcp.tool
-    def task_create(room: str, title: str, body: str, assignee_name: str = "") -> dict:
-        """调度员建任务卡。assignee_name 非空 = 直接指派（仍需成员 claim 才算数）。"""
+    def task_create(room: str, title: str, body: str, assignee_name: str = "", urgent: bool = False) -> dict:
+        """调度员建任务卡。assignee_name 非空 = 直接指派（仍需成员 claim 才算数）。
+        urgent=True 标加急（定稿 §15.3）：task_list 恒置顶，认领与派单优先。"""
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
@@ -1656,16 +1676,39 @@ def build_server():
             assignee = a["id"]
         now = time.time()
         cur = conn.execute(
-            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,created_at,updated_at) VALUES(?,?,?,?,?,'open',?,?)",
-            (r["id"], title, body, me["id"], assignee, now, now))
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,urgent,created_at,updated_at) VALUES(?,?,?,?,?,'open',?,?,?)",
+            (r["id"], title, body, me["id"], assignee, 1 if urgent else 0, now, now))
         tid = cur.lastrowid
         conn.execute(
             "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'task_card',?,?,?)",
             (r["id"], me["id"], f"任务#{tid} {title}", tid, now))
-        audit(conn, me["name"], "task_create", f"task {tid}: {title}")
+        audit(conn, me["name"], "task_create", f"task {tid}: {title}" + (" [urgent]" if urgent else ""))
         conn.commit()
         conn.close()
-        return {"task_id": tid, "status": "open", "assignee": assignee_name or None}
+        return {"task_id": tid, "status": "open", "assignee": assignee_name or None,
+                "urgent": bool(urgent)}
+
+    @mcp.tool
+    def task_set_urgent(task_id: int, urgent: bool) -> dict:
+        """调度员给未终结任务标/撤加急（定稿 §15.3）。加急只影响
+        task_list 排序（恒置顶）与呈现，不改状态机；done/cancelled 拒绝。
+        幂等：重复设同值照常成功并留审计。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        t = conn.execute("SELECT status, urgent FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not t:
+            conn.close()
+            raise ValueError(f"no such task: {task_id}")
+        if t["status"] in ("done", "cancelled"):
+            conn.close()
+            raise ValueError(f"task {task_id} is {t['status']}, cannot set urgent")
+        conn.execute("UPDATE tasks SET urgent=?, updated_at=? WHERE id=?",
+                     (1 if urgent else 0, _now(), task_id))
+        audit(conn, me["name"], "task_set_urgent", f"task {task_id} urgent={1 if urgent else 0}")
+        conn.commit()
+        conn.close()
+        return {"task_id": task_id, "urgent": bool(urgent)}
 
     @mcp.tool
     def task_schedule(room: str, title: str, body: str, member_name: str, at_epoch: float) -> dict:
@@ -2067,13 +2110,14 @@ def build_server():
         epoch 秒）与 backoff_remaining_sec（退避剩余秒数，0=可认领），
         供看板展示与调度员人工干预（task_clear_backoff）。
         另带 created_by（创建者成员名，供 App「我派的」筛选）与 review_note
-        （最近一次验收意见：通过备注或打回理由，供跨端展示）。"""
+        （最近一次验收意见：通过备注或打回理由，供跨端展示）。
+        排序：加急（urgent）恒置顶，其余按 id 升序（定稿 §15.3）。"""
         me = authenticate()
         require(me)
         conn = db()
         q = """SELECT t.id, t.title, t.body, t.status, mb.name AS assignee, t.attempts,
                       t.result, t.envelope, t.lease_expires, t.updated_at,
-                      t.fail_class, t.next_claim_at, t.sched_at,
+                      t.fail_class, t.next_claim_at, t.sched_at, t.urgent,
                       cr.name AS created_by, t.review_note
                FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee
                LEFT JOIN members cr ON cr.id=t.created_by WHERE 1=1"""
@@ -2084,7 +2128,7 @@ def build_server():
         if assignee_name:
             q += " AND mb.name=?"
             args.append(assignee_name)
-        q += " ORDER BY t.id ASC LIMIT 100"
+        q += " ORDER BY t.urgent DESC, t.id ASC LIMIT 100"
         rows = conn.execute(q, args).fetchall()
         conn.close()
         out = []
