@@ -17,6 +17,7 @@ async function egoOpenMuse(space) {
   return page;
 }
 async function egoCurrentThreadId(page) {
+  await page.waitForSelector('loc=css:[role="log"][aria-label="聊天消息"]', { state: "attached", timeout: 30000 });
   const state = await page.evaluate(() => ({
     url: location.href,
     log: !!document.querySelector('[role="log"][aria-label="聊天消息"]'),
