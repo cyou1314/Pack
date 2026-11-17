@@ -483,16 +483,10 @@ private struct Composer: View {
     @ObservedObject var state: AppState
     @FocusState private var messageFocused: Bool
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button { state.newNeedsApproval.toggle() } label: {
-                Text("需批准 · \(state.newNeedsApproval ? "开" : "关")")
-                    .font(DesignTokens.fontSmall).foregroundStyle(state.newNeedsApproval ? DesignTokens.blue : DesignTokens.subText)
-                    .padding(.horizontal, DesignTokens.composerPillHorizontal).padding(.vertical, DesignTokens.composerPillVertical)
-                    .background(DesignTokens.bubbleAI, in: Capsule())
-            }.buttonStyle(.plain).help("切换是否需要批准")
+        VStack(alignment: .leading, spacing: DesignTokens.composerSpacing) {
             if state.showInlineTask {
-                TextField("任务标题", text: $state.newTitle).textFieldStyle(.plain).font(.system(size: 13, weight: .medium))
-                TextField("任务要求和交付内容", text: $state.newBody, axis: .vertical).textFieldStyle(.plain).font(.system(size: 12)).lineLimit(2...4)
+                TextField("任务标题", text: $state.newTitle).textFieldStyle(.plain).font(DesignTokens.fontTitle)
+                TextField("任务要求和交付内容", text: $state.newBody, axis: .vertical).textFieldStyle(.plain).font(DesignTokens.fontUI).lineLimit(DesignTokens.composerTaskMinLines...DesignTokens.composerTaskMaxLines).fixedSize(horizontal: false, vertical: true)
             } else {
                 if state.mentionPopupVisible {
                     VStack(alignment: .leading, spacing: 0) {
@@ -514,12 +508,14 @@ private struct Composer: View {
                     }.background(Color(nsColor: .controlBackgroundColor))
                 }
                 TextField(state.connected ? "发消息或派活，@ 成员指派" : "连接恢复后可发送", text: $state.draftMessage, axis: .vertical)
-                    .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(2...5)
+                    .textFieldStyle(.plain).font(DesignTokens.fontUI)
+                    .lineLimit(DesignTokens.composerMinLines...DesignTokens.composerMaxLines)
+                    .fixedSize(horizontal: false, vertical: true)
                     .focused($messageFocused)
                     .onSubmit { state.sendDraft() }
                     .onExitCommand { state.dismissMentions() }
             }
-            HStack(spacing: 12) {
+            HStack(spacing: DesignTokens.composerSpacing) {
                 Button { state.showAddMenu.toggle() } label: {
                     Image(systemName: "plus").font(DesignTokens.fontTitle).foregroundStyle(.white)
                         .frame(width: DesignTokens.menuButtonSize, height: DesignTokens.menuButtonSize)
@@ -541,12 +537,18 @@ private struct Composer: View {
                     }
                 }
                 .zIndex(1)
+                Button { state.newNeedsApproval.toggle() } label: {
+                    Text("需批准 · \(state.newNeedsApproval ? "开" : "关")")
+                        .font(DesignTokens.fontSmall).foregroundStyle(state.newNeedsApproval ? DesignTokens.blue : DesignTokens.subText)
+                        .padding(.horizontal, DesignTokens.composerPillHorizontal).padding(.vertical, DesignTokens.composerPillVertical)
+                        .background(DesignTokens.bubbleAI, in: Capsule())
+                }.buttonStyle(.plain).help("切换是否需要批准")
                 Spacer()
                 if state.showInlineTask {
-                    Picker("指派", selection: $state.newAssignee) { ForEach(state.members.filter { $0.role == "member" }) { Text($0.name).tag($0.name) } }.labelsHidden().frame(maxWidth: 130)
+                    Picker("指派", selection: $state.newAssignee) { ForEach(state.members.filter { $0.role == "member" }) { Text($0.name).tag($0.name) } }.labelsHidden().frame(maxWidth: DesignTokens.composerPickerWidth)
                     Button { state.createTask(); state.showInlineTask = false } label: { Image(systemName: "arrow.up").font(DesignTokens.fontTitle).foregroundStyle(.white).frame(width: DesignTokens.composerSend, height: DesignTokens.composerSend).background(DesignTokens.blue, in: Circle()) }.buttonStyle(.plain).disabled(state.newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.attachments.isEmpty).help("建卡派活")
                 } else {
-                    Text("群聊").font(.system(size: 11)).foregroundStyle(.tertiary)
+                    Text("群聊").font(DesignTokens.fontSmall).foregroundStyle(.tertiary)
                     Button { state.sendDraft() } label: { Image(systemName: "arrow.up").font(DesignTokens.fontTitle).foregroundStyle(.white).frame(width: DesignTokens.composerSend, height: DesignTokens.composerSend).background(DesignTokens.blue, in: Circle()) }.buttonStyle(.plain).help("发送")
                 }
             }
@@ -555,11 +557,13 @@ private struct Composer: View {
                     .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
                 Button("移除所选文件") { state.attachments = [] }.font(DesignTokens.fontSmall)
             }
-        }.padding(14).background {
-            RoundedRectangle(cornerRadius: 18).fill(PackStyle.surface)
-                .overlay(RoundedRectangle(cornerRadius: 18).stroke(PackStyle.line))
-                .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
-        }.frame(maxWidth: 720).frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.top, 8)
+        }.fixedSize(horizontal: false, vertical: true)
+            .padding(DesignTokens.composerPadding).background {
+            RoundedRectangle(cornerRadius: DesignTokens.composerRadius).fill(PackStyle.surface)
+                .overlay(RoundedRectangle(cornerRadius: DesignTokens.composerRadius).stroke(PackStyle.line))
+                .shadow(color: .black.opacity(DesignTokens.composerShadowOpacity), radius: DesignTokens.composerShadowRadius, y: DesignTokens.composerShadowOffset)
+        }.frame(maxWidth: DesignTokens.composerWidth).frame(maxWidth: .infinity)
+            .padding(.horizontal, DesignTokens.chatInset).padding(.top, DesignTokens.composerSpacing)
     }
     private func menuRow(_ title: String, icon: String, arrow: Bool = false, action: @escaping () -> Void) -> some View {
         Button { state.showAddMenu = false; action() } label: {
