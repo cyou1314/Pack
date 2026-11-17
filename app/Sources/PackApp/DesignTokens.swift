@@ -68,6 +68,13 @@ enum DesignTokens {
     static let shellSurface = Color(nsColor: .textBackgroundColor)
     static let shellSelectionOpacity: Double = 0.1
     static let quotaGradientOpacity: Double = 0.6
+    static let emptyRoomHeight: CGFloat = 340
+    static let emptyMarkSize: CGFloat = 64
+    static let emptyShortcutWidth: CGFloat = 300
+    static let emptyShortcutHeight: CGFloat = 34
+    static let unreadReadDelayNanoseconds: UInt64 = 2_000_000_000
+    static let unreadBadgeSize: CGFloat = 18
+    static let unreadBadgeHorizontal: CGFloat = 5
     static let chatContentWidth: CGFloat = 740
     static let chatBubbleWidth: CGFloat = 520
     static let chatInset: CGFloat = 24

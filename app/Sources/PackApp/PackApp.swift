@@ -4,6 +4,7 @@ import Security
 struct RoomItem: Identifiable {
     let id: Int
     let name: String
+    let lastMessageId: Int
 }
 
 @MainActor
@@ -15,6 +16,8 @@ final class AppState: ObservableObject {
     @Published var connected: Bool = false
     @Published var connectionFailed: Bool = false
     @Published var roomSummary: RoomSummary?
+    @Published var roomLoading = true
+    @Published var unreadCounts: [String: Int] = [:]
     @Published var summaryExpanded = true
     @Published var showAddMenu = false
     @Published var selection: String? = "room"
@@ -104,6 +107,8 @@ final class AppState: ObservableObject {
     private var client: HubClient?
     private var ownerClient: HubClient?
     private var pollTask: Task<Void, Never>?
+    private var roomGeneration = 0
+    private var unreadTask: Task<Void, Never>?
 
     func start() {
         guard pollTask == nil else { return }
@@ -111,6 +116,7 @@ final class AppState: ObservableObject {
         newNeedsApproval = approvalDefault
         guard let cfg = PackConfig.load() else {
             connectionNote = "缺少配置 ~/.pack/config.json"
+            roomLoading = false
             showOnboarding = true
             return
         }
@@ -134,6 +140,7 @@ final class AppState: ObservableObject {
     func refresh() async {
         guard let client else { return }
         let room = currentRoom
+        let generation = roomGeneration
         do {
             let roomRes = try await client.call(name: "room_list")
             let msgRes = try await client.call(name: "room_read_new",
@@ -141,12 +148,17 @@ final class AppState: ObservableObject {
             let taskRes = try await client.call(name: "task_list")
             let memRes = try await client.call(name: "member_list")
             let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
-            guard room == currentRoom else { return }
+            guard room == currentRoom, generation == roomGeneration else { return }
             if let summaryRes { roomSummary = summaryVal(summaryRes) }
             if let arr = roomRes["rooms"] as? [[String: Any]] {
-                rooms = arr.map { RoomItem(id: intVal($0["id"]), name: ($0["name"] as? String) ?? "?") }.reversed()
+                let updated = arr.map { RoomItem(id: intVal($0["id"]), name: ($0["name"] as? String) ?? "?", lastMessageId: intVal($0["last_message_id"])) }.reversed()
+                for item in updated where rooms.first(where: { $0.id == item.id })?.lastMessageId != item.lastMessageId {
+                    unreadCounts.removeValue(forKey: item.name)
+                }
+                rooms = Array(updated)
             }
-            if let arr = msgRes["messages"] as? [[String: Any]] {
+            guard let arr = msgRes["messages"] as? [[String: Any]] else { throw HubError.badResponse("missing messages") }
+            do {
                 messages = arr.map {
                     RoomMessage(id: intVal($0["id"]), author: ($0["author"] as? String) ?? "?",
                                 kind: ($0["kind"] as? String) ?? "chat", body: ($0["body"] as? String) ?? "",
@@ -181,13 +193,67 @@ final class AppState: ObservableObject {
                                quotaUpdatedAt: optDoubleVal($0["quota_updated_at"]))
                 }
             }
+            roomLoading = false
             connected = true
             connectionFailed = false
             connectionNote = "已连接"
+            let snapshot = rooms
+            if unreadTask == nil {
+                unreadTask = Task { [weak self] in
+                    await self?.refreshUnreadCounts(snapshot)
+                    self?.unreadTask = nil
+                }
+            }
+            scheduleMarkRoomRead(room, generation: generation)
         } catch {
+            guard room == currentRoom, generation == roomGeneration else { return }
+            roomLoading = false
             connected = false
             connectionFailed = true
             connectionNote = "连接中断，重试中"
+        }
+    }
+
+    var hasUnreadRooms: Bool { rooms.contains { hasUnread($0) } }
+
+    func hasUnread(_ room: RoomItem) -> Bool {
+        room.lastMessageId > (lastSeenByRoom[room.name] ?? 0) && !(room.name == currentRoom && selection == "room" && !roomLoading)
+    }
+
+    private func refreshUnreadCounts(_ snapshot: [RoomItem]) async {
+        guard let client else { return }
+        for room in snapshot {
+            let seen = lastSeenByRoom[room.name] ?? 0
+            guard hasUnread(room) else { unreadCounts.removeValue(forKey: room.name); continue }
+            do {
+                var cursor = seen
+                var count = 0
+                while cursor < room.lastMessageId {
+                    let result = try await client.call(name: "room_read_new", args: ["room": room.name, "since_id": cursor, "limit": 200])
+                    guard let rows = result["messages"] as? [[String: Any]], !rows.isEmpty else { break }
+                    let inSnapshot = rows.filter { intVal($0["id"]) <= room.lastMessageId }
+                    count += inSnapshot.count
+                    guard let last = rows.last.map({ intVal($0["id"]) }), last > cursor else { break }
+                    cursor = last
+                }
+                guard (lastSeenByRoom[room.name] ?? 0) == seen,
+                      rooms.first(where: { $0.id == room.id })?.lastMessageId == room.lastMessageId,
+                      hasUnread(room), cursor >= room.lastMessageId else { continue }
+                unreadCounts[room.name] = count
+            } catch { unreadCounts.removeValue(forKey: room.name) }
+        }
+    }
+
+    private func scheduleMarkRoomRead(_ room: String, generation: Int) {
+        guard selection == "room", let last = messages.last?.id,
+              last > (lastSeenByRoom[room] ?? 0) else { return }
+        Task {
+            try? await Task.sleep(nanoseconds: DesignTokens.unreadReadDelayNanoseconds)
+            guard room == currentRoom, generation == roomGeneration, selection == "room", !roomLoading else { return }
+            lastSeenByRoom[room] = max(lastSeenByRoom[room] ?? 0, last)
+            UserDefaults.standard.set(lastSeenByRoom, forKey: "pack.lastSeen")
+            unreadCounts.removeValue(forKey: room)
+            unreadBoundary = nil
         }
     }
 
@@ -306,6 +372,8 @@ final class AppState: ObservableObject {
         guard room != currentRoom else { selection = "room"; return }
         if let last = messages.last?.id { lastSeenByRoom[currentRoom] = last; UserDefaults.standard.set(lastSeenByRoom, forKey: "pack.lastSeen") }
         currentRoom = room
+        roomGeneration += 1
+        roomLoading = true
         roomSummary = nil
         unreadBoundary = lastSeenByRoom[room]
         draftMessage = roomDrafts[room] ?? ""

@@ -193,9 +193,11 @@ struct ContentView: View {
                         }
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                Composer(state: state)
-                    .disabled(!state.connected)
-                    .opacity(state.connected ? 1 : DesignTokens.connectionDisabledOpacity)
+                if state.selection == "room" {
+                    Composer(state: state)
+                        .disabled(!state.connected)
+                        .opacity(state.connected ? 1 : DesignTokens.connectionDisabledOpacity)
+                }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(PackStyle.canvas)
         }
         .background(PackStyle.canvas)
@@ -239,6 +241,9 @@ private struct Sidebar: View {
             HStack(spacing: DesignTokens.shellGap) {
                 Image(systemName: icon).frame(width: DesignTokens.shellIcon)
                 if state.showSidebar { Text(title); Spacer(minLength: 0) }
+                if key == "room" && !state.showSidebar && state.hasUnreadRooms {
+                    Circle().fill(DesignTokens.blue).frame(width: DesignTokens.radiusSmall, height: DesignTokens.radiusSmall)
+                }
                 if key == "approvals" && !state.pendingApprovals.isEmpty {
                     Circle().fill(DesignTokens.amber).frame(width: DesignTokens.radiusSmall, height: DesignTokens.radiusSmall)
                 }
@@ -282,6 +287,16 @@ private struct Sidebar: View {
                             HStack {
                                 Image(systemName: "bubble.left"); Text(room.name).lineLimit(1); Spacer(minLength: 0)
                                 if !(state.roomDrafts[room.name] ?? "").isEmpty { Text("草稿").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.amber) }
+                                if state.hasUnread(room) {
+                                    if let count = state.unreadCounts[room.name], count > 0 {
+                                        Text("\(count)").font(DesignTokens.fontSmall).foregroundStyle(.white)
+                                            .padding(.horizontal, DesignTokens.unreadBadgeHorizontal)
+                                            .frame(minWidth: DesignTokens.unreadBadgeSize, minHeight: DesignTokens.unreadBadgeSize)
+                                            .background(DesignTokens.blue, in: Capsule())
+                                    } else {
+                                        Circle().fill(DesignTokens.blue).frame(width: DesignTokens.radiusSmall, height: DesignTokens.radiusSmall)
+                                    }
+                                }
                             }.font(DesignTokens.fontUI).frame(height: DesignTokens.shellRow).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                         if room.name != "pack-main" && state.hoveredRoom == room.name {
@@ -366,7 +381,7 @@ private struct CenterHeader: View {
     @ObservedObject var state: AppState
     var body: some View {
         HStack(spacing: DesignTokens.shellGap) {
-            Text(state.currentRoom).font(DesignTokens.shellHeaderTitle)
+            Text(state.selection == "tasks" ? "任务板" : state.selection == "members" ? "成员" : state.selection == "settings" ? "设置" : state.selection == "approvals" ? "收件箱" : state.currentRoom).font(DesignTokens.shellHeaderTitle)
             Spacer()
             if !state.pendingApprovals.isEmpty { Pill(title: "待批准 \(state.pendingApprovals.count)", color: PackStyle.amber) }
         }.padding(.horizontal, DesignTokens.shellHeaderInset).frame(height: DesignTokens.shellHeaderHeight)
@@ -378,7 +393,7 @@ private struct RoomView: View {
     private var visibleMessages: [RoomMessage] { state.messages.filter { $0.kind != "task_card" && $0.kind != "report" } }
     var body: some View {
         VStack(spacing: 0) {
-        if let summary = state.roomSummary {
+        if !state.roomLoading && !state.messages.isEmpty, let summary = state.roomSummary {
             SummaryCardView(summary: summary, expanded: state.summaryExpanded) {
                 withAnimation(DesignTokens.animFast) { state.summaryExpanded.toggle() }
             }
@@ -390,8 +405,12 @@ private struct RoomView: View {
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(spacing: DesignTokens.chatSpacing) {
-                if visibleMessages.isEmpty {
-                    EmptyPanel(icon: "bubble.left.and.bubble.right", title: state.connected ? "还没有消息，开始一次协作吧" : "暂时无法加载群聊", subtitle: state.connected ? "派发任务，或先了解当前成员。" : "中枢连接中断，正在自动重试。", first: "派第一张活", second: "查看成员", action1: { state.showCreateTask = true }, action2: { state.selection = "members" })
+                if state.roomLoading {
+                    ProgressView("正在加载对话…").font(DesignTokens.fontSmall).frame(maxWidth: .infinity)
+                } else if !state.connected {
+                    Text("暂时无法加载群聊").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).frame(maxWidth: .infinity)
+                } else if state.messages.isEmpty {
+                    EmptyRoomView(state: state)
                 }
                 ForEach(visibleMessages) { message in
                     if let boundary = state.unreadBoundary, visibleMessages.first(where: { $0.id > boundary })?.id == message.id {
@@ -655,19 +674,25 @@ private struct CatalogView: View {
     }
 }
 
-private struct EmptyPanel: View {
-    let icon: String; let title: String; let subtitle: String; let first: String; let second: String
-    let action1: () -> Void; let action2: () -> Void
+private struct EmptyRoomView: View {
+    @ObservedObject var state: AppState
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: icon).font(.system(size: 25, weight: .light)).foregroundStyle(PackStyle.accent).frame(width: 58, height: 58).background(PackStyle.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 18))
-            Text(title).font(.system(size: 14, weight: .semibold))
-            Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            HStack(spacing: 8) {
-                Button(first, action: action1).buttonStyle(.bordered)
-                Button(second, action: action2).buttonStyle(.bordered)
-            }.font(.system(size: 11)).padding(.top, 4)
-        }.frame(maxWidth: .infinity).padding(20)
+        VStack(spacing: DesignTokens.memberGap) {
+            if let url = Bundle.main.url(forResource: "mark", withExtension: "png"), let mark = NSImage(contentsOf: url) {
+                Image(nsImage: mark).resizable().scaledToFit().frame(width: DesignTokens.emptyMarkSize, height: DesignTokens.emptyMarkSize)
+            }
+            Text("新对话").font(DesignTokens.shellTitle)
+            Text("在下方输入，或点一个快捷开始").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            shortcut("查资料", draft: "让 absent 查个资料：")
+            shortcut("生成图", draft: "让 absent 生成一张图：")
+            shortcut("巡检额度", draft: "巡检一下各成员额度")
+        }.frame(maxWidth: .infinity, minHeight: DesignTokens.emptyRoomHeight)
+    }
+    private func shortcut(_ title: String, draft: String) -> some View {
+        Button { state.draftMessage = draft } label: {
+            Text(title).font(DesignTokens.fontUI).frame(maxWidth: DesignTokens.emptyShortcutWidth, minHeight: DesignTokens.emptyShortcutHeight)
+                .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine))
+        }.buttonStyle(.plain)
     }
 }
 
@@ -930,7 +955,7 @@ private struct BoardTaskCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.boardCardGap) {
             HStack(alignment: .top, spacing: DesignTokens.boardCardGap) {
-                Text(task.title).font(DesignTokens.fontTitle).foregroundStyle(task.status == "done" ? DesignTokens.subText : DesignTokens.ink)
+                Text("#\(task.id) \(task.title)").font(DesignTokens.fontTitle).foregroundStyle(task.status == "done" ? DesignTokens.subText : DesignTokens.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 if let tag { Text(tag).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.faintText).lineLimit(1) }
