@@ -132,13 +132,13 @@ stateDiagram-v2
 
 | 组 | 工具 |
 |---|---|
-| 成员 | member_register / member_list / member_quota_set / member_heartbeat / member_remove |
+| 成员 | member_register / member_list / member_quota_set / heartbeat / member_remove / member_avatar_set |
 | 房间与消息 | room_create / room_list / room_rename / room_archive / room_post / room_read_new / message_delete / message_edit / attachment_put / attachment_get / attachment_list |
-| 任务 | task_create / task_list / task_claim / task_update / task_complete / task_block / task_cancel / task_release / task_clear_backoff / task_schedule |
-| 转交与接力 | task_transfer / task_accept_transfer |
+| 任务 | task_create / task_list / task_claim / task_update / task_complete / task_block / task_cancel / task_release / task_clear_backoff / task_schedule / task_audit / task_review / task_set_urgent |
+| 转交与接力 | task_transfer / task_accept_transfer / task_transfers_list |
 | 执行与审查 | run_start / run_finish / run_list / review_file |
 | 批准规则 | rule_list / rule_upsert / rule_delete |
-| 出口管制 | egress_check |
+| 出口管制 | egress_check / egress_rule_list / egress_rule_upsert / egress_rule_delete |
 | 记忆 | memory_read / memory_write / memory_versions / memory_rollback |
 | 技能 | skill_publish / skill_list / skill_read / skill_assign / skill_unassign / skill_rollback |
 | 摘要与模板 | room_summary_get / room_summary_set / template_upsert / template_list / template_delete / template_fire |
