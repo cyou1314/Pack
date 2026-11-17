@@ -1261,6 +1261,61 @@ def build_server():
                 "skills_cleared": skills_cleared, "lock_released": lock_released}
 
     @mcp.tool
+    def member_avatar_set(name: str, avatar_combo: str) -> dict:
+        """调度员为在册成员更换参数化头像组合（UI 定稿 §12.6「更换头像」写路径）。
+        avatar_combo 为完整组合 JSON（species/palette/accessory/bg 四字段
+        必填，逐个按参数集校验，缺一或越界整笔拒绝）；拼出的组合被其他
+        在册成员占用则拒绝，设为成员本人当前组合则幂等通过。成员不存在
+        或已移除则拒绝。只改 avatar 的组合四键与 combo 键，glyph 与渐变
+        色保留；查占用→校验→更新走全局 _lock 原子完成，写审计。
+        返回 {"name", "avatar"}。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        with _lock:
+            conn = db()
+            try:
+                row = conn.execute("SELECT * FROM members WHERE name=?",
+                                   (name,)).fetchone()
+                if not row:
+                    raise ValueError(f"no such member: {name}")
+                if row["removed_at"] is not None:
+                    raise ValueError(f"member removed: {name}")
+                try:
+                    want = json.loads(avatar_combo)
+                except Exception:
+                    raise ValueError("avatar_combo: not valid JSON")
+                if not isinstance(want, dict):
+                    raise ValueError("avatar_combo: must be a JSON object")
+                pick = {}
+                for key, allowed in (("species", AVATAR_SPECIES),
+                                     ("palette", AVATAR_PALETTES),
+                                     ("accessory", AVATAR_ACCESSORIES),
+                                     ("bg", AVATAR_BGS)):
+                    v = want.get(key)
+                    if v is None:
+                        raise ValueError(f"avatar_combo: missing {key}")
+                    if v not in allowed:
+                        raise ValueError(f"avatar_combo: bad {key}: {v}")
+                    pick[key] = v
+                combo = (f"{pick['species']}|{pick['palette']}|"
+                         f"{pick['accessory']}|{pick['bg']}")
+                try:
+                    cur = json.loads(row["avatar"]) if row["avatar"] else {}
+                except Exception:
+                    cur = {}
+                if combo in _used_combos(conn) and cur.get("combo") != combo:
+                    raise ValueError(f"avatar_combo: combo already taken: {combo}")
+                cur.update(pick)
+                cur["combo"] = combo
+                conn.execute("UPDATE members SET avatar=? WHERE id=?",
+                             (json.dumps(cur), row["id"]))
+                audit(conn, me["name"], "member_avatar_set", name)
+                conn.commit()
+                return {"name": name, "avatar": cur}
+            finally:
+                conn.close()
+
+    @mcp.tool
     def member_quota_set(member_name: str, week_used_pct: float = None,
                          week_reset_at: float = None, extra_tokens_left: int = None) -> dict:
         """调度员维护成员额度数据（UI 用量卡/成员详情的数据源，v1 人工维护）。

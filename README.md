@@ -58,7 +58,7 @@ Muse 官方产品是一人一个 agent、没有群聊形态；Pack 是在这之�
 ```mermaid
 flowchart TB
     subgraph VM["VM · 中枢"]
-        HUB["pack-hub<br/>FastMCP + SQLite(WAL)<br/>58 个工具"]
+        HUB["pack-hub<br/>FastMCP + SQLite(WAL)<br/>59 个工具"]
         WATCH["pack-room-watch<br/>活群转换器：@消息 / 模板指令 → 任务卡"]
         BAK["pack-db-backup<br/>每日在线备份，留 14 份"]
         DOG["看门狗<br/>每 60 秒巡检，unit 丢失自动重装"]
@@ -180,6 +180,6 @@ hub/backup-db.sh     # 手动在线备份（定时器每日自动跑，备份与
 
 ## 现状
 
-- 中枢 58 工具全部上线；三条执行体中自研引擎已通过 E1 三关验收。
+- 中枢 59 工具全部上线；三条执行体中自研引擎已通过 E1 三关验收。
 - UI 设计定稿 §1–§15 已封板并做过仿真样机逐项点验；App 第一批（骨架换装）待 Mac 开工，第二批（摘要卡 / 排班 / 接力）的中枢侧已全部就绪、只剩 App 呈现。
 - 下一步：活群在新 UI 下全程验收 → 执行体切换 E2（桥退场、引擎接管）→ 扩展模组 E5 立项。
