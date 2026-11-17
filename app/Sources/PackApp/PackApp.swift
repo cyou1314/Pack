@@ -82,6 +82,7 @@ final class AppState: ObservableObject {
     /// (Esc / click elsewhere); the popup stays hidden while the draft
     /// still equals this, and reappears as soon as the text changes.
     @Published var mentionDismissedText: String?
+    @Published var composerFocusRequest = 0
     @Published var showCreateTask: Bool = false
     @Published var showInlineTask: Bool = false
     @Published var inlineTaskSending = false
@@ -450,7 +451,17 @@ final class AppState: ObservableObject {
         return members.filter { m in
             m.role == "member" && m.name != "owner" &&
             (q.isEmpty || m.name.lowercased().hasPrefix(q))
+        }.sorted { a, b in
+            let aAvailable = a.isOnline && !a.quotaExhausted
+            let bAvailable = b.isOnline && !b.quotaExhausted
+            return aAvailable == bAvailable ? a.name < b.name : aAvailable && !bAvailable
         }
+    }
+
+    func mentionStatus(_ member: MemberInfo) -> String {
+        if member.quotaExhausted { return "额度耗尽" }
+        if !member.isOnline { return pendingMembers.contains(member.name) && member.lastHeartbeat == nil ? "接入中" : "离线" }
+        return memberStatus(member)
     }
 
     var mentionPopupVisible: Bool {
@@ -563,6 +574,7 @@ final class AppState: ObservableObject {
         guard let r = mentionTokenRange else { return }
         draftMessage.replaceSubrange(r, with: "@\(member.name) ")
         mentionDismissedText = nil
+        composerFocusRequest += 1
     }
 
     func dismissMentions() {

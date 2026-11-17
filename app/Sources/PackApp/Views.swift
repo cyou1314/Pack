@@ -550,7 +550,6 @@ private struct MessageRow: View {
 
 private struct Composer: View {
     @ObservedObject var state: AppState
-    @FocusState private var messageFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.composerSpacing) {
                 if state.mentionPopupVisible {
@@ -558,27 +557,19 @@ private struct Composer: View {
                         ForEach(state.mentionCandidates) { member in
                             Button {
                                 state.completeMention(member)
-                                messageFocused = true
                             } label: {
-                                HStack(spacing: 8) {
-                                    MemberAvatarView(name: member.name, member: member, size: 22, showStatus: false)
-                                    Text(member.name).font(.callout)
-                                    if let profile = member.profile {
-                                        Text(profile).font(.caption).foregroundStyle(.secondary)
-                                    }
+                                HStack(spacing: DesignTokens.shellGap) {
+                                    MemberAvatarView(name: member.name, member: member, size: DesignTokens.mentionCandidateAvatar, showStatus: false)
+                                    Text(member.name).font(DesignTokens.fontUI)
                                     Spacer()
-                                }.padding(.horizontal, 10).padding(.vertical, 5).contentShape(Rectangle())
+                                    Text(state.mentionStatus(member)).font(DesignTokens.fontSmall)
+                                        .foregroundStyle(member.quotaExhausted ? DesignTokens.danger : DesignTokens.subText)
+                                }.padding(.horizontal, DesignTokens.mentionCandidateHorizontal).padding(.vertical, DesignTokens.mentionCandidateVertical).contentShape(Rectangle())
                             }.buttonStyle(.plain)
                         }
                     }.background(Color(nsColor: .controlBackgroundColor))
                 }
-                TextField(state.connected ? "发消息或派活，@ 成员指派" : "连接恢复后可发送", text: $state.draftMessage, axis: .vertical)
-                    .textFieldStyle(.plain).font(DesignTokens.fontUI)
-                    .lineLimit(DesignTokens.composerMinLines...DesignTokens.composerMaxLines)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .focused($messageFocused)
-                    .onSubmit { state.submitComposer() }
-                    .onExitCommand { state.dismissMentions() }
+                MentionTextEditor(state: state)
             HStack(spacing: DesignTokens.composerSpacing) {
                 Button { state.showAddMenu.toggle() } label: {
                     Image(systemName: "plus").font(DesignTokens.fontTitle).foregroundStyle(.white)
@@ -592,7 +583,7 @@ private struct Composer: View {
                         menuRow("添加照片…", icon: "photo") { chooseFiles(imagesOnly: true) }
                         menuRow("选择技能", icon: "sparkles", arrow: true) { state.loadCatalog("技能") }
                         menuRow("选择模板", icon: "rectangle.split.2x2", arrow: true) { state.loadCatalog("模板") }
-                        menuRow(state.showInlineTask ? "关闭派活" : "派活给 absent", icon: "at", arrow: true) { state.newAssignee = "absent"; state.showInlineTask.toggle(); state.inlineTaskError = ""; messageFocused = true }
+                        menuRow(state.showInlineTask ? "关闭派活" : "派活给 absent", icon: "at", arrow: true) { state.newAssignee = "absent"; state.showInlineTask.toggle(); state.inlineTaskError = ""; state.composerFocusRequest += 1 }
                     }.padding(DesignTokens.shellGap).frame(width: DesignTokens.composerMenuWidth)
                         .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
                         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine))

@@ -93,6 +93,12 @@ enum DesignTokens {
     static let composerShadowOpacity: Double = 0.04
     static let composerShadowRadius: CGFloat = 6
     static let composerShadowOffset: CGFloat = 2
+    static let mentionFontSize: CGFloat = 13
+    static let mentionTextInset: CGFloat = 0
+    static let mentionBadgeOpacity: Double = 0.12
+    static let mentionCandidateAvatar: CGFloat = 22
+    static let mentionCandidateHorizontal: CGFloat = 10
+    static let mentionCandidateVertical: CGFloat = 5
     static let composerMinLines = 1
     static let composerMaxLines = 5
     static let composerTaskMinLines = 2
