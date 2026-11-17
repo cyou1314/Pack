@@ -102,3 +102,4 @@
 - B1-16 派单 rider（App 侧配合 staging42）：refresh 拉 task_list 时带 offset 翻页（每页 100 条、直到返回不足一页为止，上限 10 页防失控），任务板不再被单页 100 条截断；排序与呈现口径不变。中枢侧 offset 参数由 staging42 提供（部署状态见状态卡后续条目）。
 - staging42 task_list 分页已部署关账（2026-11-17 晚）：新增可选 offset 参数（默认 0、负钳 0），排序口径不变；定向 4/4、全量回归 ALL GREEN、生产冒烟过（41 条任务 offset=40 恰取回第 41 条）。App 侧翻页拉取在 B1-16 rider 内。
 - **B1-15 M15 发送失败气泡已关账（2026-11-17 晚，965441b）**：代码四点全过（失败留 FailedChatMessage 气泡不回填草稿、retryFailedMessage 走同一 sendChat 原 wireBody+附件 ids、按房间内存态、discardFailedMessage 带引用/附件冲突守卫地恢复草稿；HubClient 未动）。生产实物亲验全过：调度员停中枢造失败 → 黑气泡+红字「发送失败 · 点击重发」+✕、输入框未回填；恢复中枢后点重发 → 发送中… → 气泡消失、消息恰一条落库（#142，owner chat）。
+- **B1-16 断连自愈补强 + task_list 翻页已关账（2026-11-17 晚，4eb3f51）**：代码两点全过（followPublishedHubURL(rebuildOnFailure:) 在地址未变/拉取失败时也强制 rebuildHubClients 重建双客户端、代次守卫防手动保存被覆盖、60 秒节流与手动锁定口径不变；loadTaskPages 每页 100、offset 翻页、上限 10 页）。生产实证：调度员重启中枢后 App 先显断连横幅，约一个刷新周期量级内自行恢复（横幅消失、房间与额度数据全回），无人碰 App——18:0x 那次「必须手动重开」的病根已除。翻页 rider 为代码验（现 41 条任务未过百，单页路径每轮 refresh 都在跑）。
