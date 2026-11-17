@@ -17,6 +17,15 @@ struct PendingAttachment: Identifiable {
     var uploading = true
 }
 
+struct FailedChatMessage: Identifiable {
+    let id: UUID
+    let room: String
+    let body: String
+    let wireBody: String
+    let reply: ReplySnapshot?
+    let attachments: [PendingAttachment]
+}
+
 struct RoomMessage: Identifiable {
     let id: Int
     let author: String

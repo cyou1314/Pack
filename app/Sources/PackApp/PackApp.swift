@@ -113,6 +113,9 @@ final class AppState: ObservableObject {
     @Published var sendingReply: ReplySnapshot?
     @Published var sendingMessage: String?
     @Published var sendingRoom: String?
+    @Published var sendingFailedID: UUID?
+    @Published var failedMessagesByRoom: [String: [FailedChatMessage]] = [:]
+    @Published var failedMessageNotices: [UUID: String] = [:]
     /// Draft text at the moment the user dismissed the @-mention popup
     /// (Esc / click elsewhere); the popup stays hidden while the draft
     /// still equals this, and reappears as soon as the text changes.
@@ -830,37 +833,73 @@ final class AppState: ObservableObject {
         let body = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty || !selected.isEmpty else { return }
         guard let ownerClient else { lastActionNote = "操作失败：缺少 owner 凭证"; return }
-        let ids = selected.compactMap(\.uploadedID)
-        let selectedIDs = Set(selected.map(\.id))
         let reply = replyByRoom.removeValue(forKey: room)
-        let wireBody = ReplyCodec.encode(body, reply: reply)
+        let outgoing = FailedChatMessage(id: UUID(), room: room, body: body,
+                                         wireBody: ReplyCodec.encode(body, reply: reply),
+                                         reply: reply, attachments: selected)
+        let selectedIDs = Set(selected.map(\.id))
+        attachmentsByRoom[room]?.removeAll { selectedIDs.contains($0.id) }
+        attachmentNoticeByRoom[room] = nil
         draftMessage = ""
-        sendingRoom = room
-        sendingMessage = body
-        sendingReply = reply
+        sendChat(outgoing, client: ownerClient, retry: false)
+    }
+
+    func retryFailedMessage(_ message: FailedChatMessage) {
+        guard sendingMessage == nil, let ownerClient,
+              failedMessagesByRoom[message.room]?.contains(where: { $0.id == message.id }) == true else { return }
+        failedMessageNotices[message.id] = nil
+        sendChat(message, client: ownerClient, retry: true)
+    }
+
+    private func sendChat(_ message: FailedChatMessage, client: HubClient, retry: Bool) {
+        sendingRoom = message.room
+        sendingMessage = message.body
+        sendingReply = message.reply
+        sendingFailedID = retry ? message.id : nil
         Task {
             do {
-                await ownerClient.discoverBeforeSending()
-                var args: [String: Any] = ["room": room, "body": wireBody, "kind": "chat"]
+                await client.discoverBeforeSending()
+                var args: [String: Any] = ["room": message.room, "body": message.wireBody, "kind": "chat"]
+                let ids = message.attachments.compactMap(\.uploadedID)
                 if !ids.isEmpty {
                     let json = try JSONSerialization.data(withJSONObject: ids)
                     args["attachment_ids"] = String(decoding: json, as: UTF8.self)
                 }
-                _ = try await ownerClient.call(name: "room_post", args: args)
-                attachmentsByRoom[room]?.removeAll { selectedIDs.contains($0.id) }
-                attachmentNoticeByRoom[room] = nil
-                sendingReply = nil; sendingMessage = nil; sendingRoom = nil
+                _ = try await client.call(name: "room_post", args: args)
+                failedMessagesByRoom[message.room]?.removeAll { $0.id == message.id }
+                failedMessageNotices[message.id] = nil
+                sendingReply = nil; sendingMessage = nil; sendingRoom = nil; sendingFailedID = nil
                 lastActionNote = "已发送"
                 await refresh()
             } catch {
-                sendingReply = nil; sendingMessage = nil; sendingRoom = nil
-                if replyByRoom[room] == nil { replyByRoom[room] = reply }
-                if currentRoom == room && draftMessage.isEmpty { draftMessage = body }
-                else if (roomDrafts[room] ?? "").isEmpty { roomDrafts[room] = body; UserDefaults.standard.set(roomDrafts, forKey: "pack.roomDrafts") }
-                attachmentNoticeByRoom[room] = "发送结果未确认，请先查看对话；草稿和图片已保留。"
+                if failedMessagesByRoom[message.room]?.contains(where: { $0.id == message.id }) != true {
+                    failedMessagesByRoom[message.room, default: []].append(message)
+                }
+                sendingReply = nil; sendingMessage = nil; sendingRoom = nil; sendingFailedID = nil
                 lastActionNote = "操作未完成，请检查连接后重试"
             }
         }
+    }
+
+    func discardFailedMessage(_ message: FailedChatMessage) {
+        guard sendingFailedID != message.id,
+              failedMessagesByRoom[message.room]?.contains(where: { $0.id == message.id }) == true else { return }
+        let existingReply = replyByRoom[message.room]
+        if let reply = message.reply, let existingReply, existingReply != reply {
+            failedMessageNotices[message.id] = "当前草稿已有其他引用，请先处理引用再放弃此消息。"; return
+        }
+        let existingAttachments = attachmentsByRoom[message.room] ?? []
+        guard existingAttachments.count + message.attachments.count <= AttachmentLimits.maxCount else {
+            failedMessageNotices[message.id] = "当前草稿图片数量已满，请先移除图片再放弃此消息。"; return
+        }
+        let existingText = message.room == currentRoom ? draftMessage : (roomDrafts[message.room] ?? "")
+        let restored = [existingText, message.body].filter { !$0.isEmpty }.joined(separator: "\n")
+        if message.room == currentRoom { draftMessage = restored }
+        else { roomDrafts[message.room] = restored; UserDefaults.standard.set(roomDrafts, forKey: "pack.roomDrafts") }
+        if let reply = message.reply, existingReply == nil { replyByRoom[message.room] = reply }
+        attachmentsByRoom[message.room] = existingAttachments + message.attachments
+        failedMessagesByRoom[message.room]?.removeAll { $0.id == message.id }
+        failedMessageNotices[message.id] = nil
     }
 
     func replyTo(_ message: RoomMessage) {

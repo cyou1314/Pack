@@ -469,6 +469,11 @@ private struct RoomView: View {
                         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(state.highlightedMessageId == message.id ? DesignTokens.blue : Color.clear, lineWidth: DesignTokens.boardHighlightLine).allowsHitTesting(false))
                         .id(message.id)
                 }
+                ForEach(state.failedMessagesByRoom[state.currentRoom] ?? []) { failed in
+                    if state.sendingFailedID != failed.id {
+                        FailedMessageRow(state: state, message: failed)
+                    }
+                }
                 if let pending = state.sendingMessage, state.sendingRoom == state.currentRoom {
                     HStack { Spacer(minLength: 0); VStack(alignment: .trailing, spacing: DesignTokens.chatMetadataSpacing) {
                         if let reply = state.sendingReply { ReplyQuoteView(reply: reply) }
@@ -486,6 +491,46 @@ private struct RoomView: View {
             if let id { withAnimation(DesignTokens.animStd) { proxy.scrollTo(id, anchor: .center) } }
         }
         }
+        }
+    }
+}
+
+private struct FailedMessageRow: View {
+    @ObservedObject var state: AppState
+    let message: FailedChatMessage
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: DesignTokens.chatMetadataSpacing) {
+                if let reply = message.reply { ReplyQuoteView(reply: reply) }
+                if !message.body.isEmpty {
+                    Text(message.body).font(DesignTokens.fontUI).foregroundStyle(.white)
+                        .padding(.horizontal, DesignTokens.chatBubbleHorizontal).padding(.vertical, DesignTokens.chatBubbleVertical)
+                        .background(DesignTokens.ink, in: RoundedRectangle(cornerRadius: DesignTokens.radiusBubble))
+                        .textSelection(.enabled)
+                }
+                if !message.attachments.isEmpty {
+                    HStack(spacing: DesignTokens.composerSpacing) {
+                        ForEach(message.attachments) { item in
+                            Group {
+                                if let image = item.preview { Image(nsImage: image).resizable().scaledToFill() }
+                                else { Image(systemName: "photo").foregroundStyle(DesignTokens.subText) }
+                            }.frame(width: DesignTokens.attachmentChipSize, height: DesignTokens.attachmentChipSize)
+                                .background(DesignTokens.bubbleAI).clipped().clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusSmall))
+                        }
+                    }
+                }
+                HStack(spacing: DesignTokens.messageActionSpacing) {
+                    Button { state.retryFailedMessage(message) } label: {
+                        Label("发送失败 · 点击重发", systemImage: "exclamationmark.circle.fill")
+                    }.buttonStyle(.plain).foregroundStyle(DesignTokens.danger).disabled(state.sendingMessage != nil)
+                    Button { state.discardFailedMessage(message) } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).foregroundStyle(DesignTokens.subText).help("放弃并恢复草稿")
+                }.font(DesignTokens.fontSmall)
+                if let note = state.failedMessageNotices[message.id] {
+                    Text(note).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
+                }
+            }.frame(maxWidth: DesignTokens.chatBubbleWidth, alignment: .trailing)
         }
     }
 }
