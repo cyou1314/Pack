@@ -2911,21 +2911,34 @@ def build_server():
     @mcp.tool
     def skill_list() -> dict:
         """列 skill 目录：调度员看全部；成员只看指派给自己且 enabled 的。
-        只返回 name/description/version，不含正文（目录常驻、正文按需 skill_read）。"""
+        只返回 name/description/version，不含正文（目录常驻、正文按需 skill_read）。
+        staging32：调度员视角每条 skill 追加 assignees（指派到的成员名 + enabled），
+        供 App 成员详情「已装技能」按成员过滤；成员视角返回形状不变。"""
         me = authenticate()
         require(me)
         conn = db()
         try:
             if me["role"] == "dispatcher":
                 rows = conn.execute(
-                    "SELECT name, description, current_version, updated_at "
+                    "SELECT id, name, description, current_version, updated_at "
                     "FROM skills ORDER BY name").fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT s.name, s.description, s.current_version, s.updated_at "
-                    "FROM skills s JOIN member_skills ms ON ms.skill_id=s.id "
-                    "WHERE ms.member_id=? AND ms.enabled=1 ORDER BY s.name",
-                    (me["id"],)).fetchall()
+                arows = conn.execute(
+                    "SELECT ms.skill_id AS sid, m.name AS mname, ms.enabled AS en "
+                    "FROM member_skills ms JOIN members m ON m.id = ms.member_id "
+                    "ORDER BY m.name").fetchall()
+                by_skill = {}
+                for a in arows:
+                    by_skill.setdefault(a["sid"], []).append(
+                        {"member": a["mname"], "enabled": bool(a["en"])})
+                return {"skills": [{"name": r["name"], "description": r["description"],
+                                    "version": r["current_version"],
+                                    "updated_at": r["updated_at"],
+                                    "assignees": by_skill.get(r["id"], [])} for r in rows]}
+            rows = conn.execute(
+                "SELECT s.name, s.description, s.current_version, s.updated_at "
+                "FROM skills s JOIN member_skills ms ON ms.skill_id=s.id "
+                "WHERE ms.member_id=? AND ms.enabled=1 ORDER BY s.name",
+                (me["id"],)).fetchall()
             return {"skills": [{"name": r["name"], "description": r["description"],
                                 "version": r["current_version"],
                                 "updated_at": r["updated_at"]} for r in rows]}
