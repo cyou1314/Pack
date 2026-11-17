@@ -85,6 +85,14 @@ private enum QuotaDisplay {
     }
 }
 
+private struct UrgentBadge: View {
+    var body: some View {
+        Text("加急").font(DesignTokens.urgentFont).foregroundStyle(DesignTokens.urgentText)
+            .padding(.horizontal, DesignTokens.urgentHorizontal).padding(.vertical, DesignTokens.urgentVertical)
+            .background(DesignTokens.urgentBackground, in: Capsule())
+    }
+}
+
 private struct MemberAvatarView: View {
     let name: String
     let member: MemberInfo?
@@ -672,6 +680,8 @@ private struct Composer: View {
                 Spacer()
                 if state.showInlineTask {
                     Text("指派：\(state.newAssignee)").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                    Toggle("加急", isOn: $state.newUrgent).toggleStyle(.switch).controlSize(.small)
+                        .font(DesignTokens.fontSmall).disabled(state.inlineTaskSending)
                 }
                 Button { state.submitComposer() } label: {
                     Image(systemName: "arrow.up").font(DesignTokens.fontTitle).foregroundStyle(.white)
@@ -1030,6 +1040,7 @@ private struct BoardTaskCard: View {
             HStack(alignment: .top, spacing: DesignTokens.boardCardGap) {
                 Text("#\(task.id) \(task.title)").font(DesignTokens.fontTitle).foregroundStyle(task.status == "done" ? DesignTokens.subText : DesignTokens.ink)
                     .fixedSize(horizontal: false, vertical: true)
+                if task.urgent { UrgentBadge() }
                 Spacer(minLength: 0)
                 if let tag { Text(tag).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.faintText).lineLimit(1) }
             }
@@ -1333,7 +1344,19 @@ private struct TaskDetail: View {
     @FocusState private var reasonFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
-            HStack { Text("任务 #\(task.id) · \(task.title)").font(DesignTokens.fontTitle); Spacer(); Text(task.statusLabel).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
+            HStack {
+                Text("任务 #\(task.id) · \(task.title)").font(DesignTokens.fontTitle)
+                if task.urgent { UrgentBadge() }
+                Spacer()
+                Text(task.statusLabel).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            }
+            if !["done", "cancelled"].contains(task.status) {
+                Button(task.urgent ? "取消加急" : "标为加急") { state.setTaskUrgent(task) }
+                    .buttonStyle(.bordered).disabled(state.urgentUpdating.contains(task.id))
+            }
+            if let error = state.urgentErrors[task.id] {
+                Text("加急状态更新失败：\(error)").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger).textSelection(.enabled)
+            }
             if !task.body.isEmpty { Text(task.body).font(DesignTokens.fontUI).textSelection(.enabled) }
             ChatTaskDetail(state: state, task: task)
             if let artifacts = task.envelope?.artifacts, !artifacts.isEmpty {

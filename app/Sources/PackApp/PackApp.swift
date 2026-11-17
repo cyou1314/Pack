@@ -113,6 +113,9 @@ final class AppState: ObservableObject {
     @Published var newBody: String = ""
     @Published var newAssignee: String = "absent"
     @Published var newNeedsApproval: Bool = false
+    @Published var newUrgent = false
+    @Published var urgentUpdating: Set<Int> = []
+    @Published var urgentErrors: [Int: String] = [:]
     @Published var rejectReasons: [Int: String] = [:]
     @Published var lastActionNote: String = ""
     @Published var settingsHubURL = ""
@@ -208,7 +211,8 @@ final class AppState: ObservableObject {
                              failClass: optStringVal($0["fail_class"]),
                              nextClaimAt: optDoubleVal($0["next_claim_at"]),
                              schedAt: optDoubleVal($0["sched_at"]),
-                             createdBy: optStringVal($0["created_by"]), reviewNote: optStringVal($0["review_note"]))
+                             createdBy: optStringVal($0["created_by"]), reviewNote: optStringVal($0["review_note"]),
+                             urgent: boolVal($0["urgent"]))
                 }
                 if !roomLoading {
                     let claimed = Set(updatedTasks.compactMap { task -> String? in
@@ -783,12 +787,14 @@ final class AppState: ObservableObject {
         if newNeedsApproval && !title.contains(tag) { title = tag + title }
         let assignee = newAssignee
         let room = currentRoom
+        let urgent = newUrgent
         inlineTaskError = ""
         inlineTaskSending = true
         Task {
             defer { inlineTaskSending = false }
             do {
-                _ = try await client.call(name: "task_create", args: ["room": room, "title": title, "body": body, "assignee_name": assignee])
+                _ = try await client.call(name: "task_create", args: ["room": room, "title": title, "body": body, "assignee_name": assignee, "urgent": urgent])
+                newUrgent = false
                 if currentRoom == room && draftMessage == original {
                     draftMessage = ""
                     showInlineTask = false
@@ -889,6 +895,25 @@ final class AppState: ObservableObject {
     }
 
     func toggleChatTask(_ tid: Int) { openTaskDetail(tid) }
+
+    func setTaskUrgent(_ task: PackTask) {
+        guard !urgentUpdating.contains(task.id) else { return }
+        guard let client else { urgentErrors[task.id] = "中枢未连接"; return }
+        let tid = task.id
+        urgentUpdating.insert(tid)
+        urgentErrors[tid] = nil
+        Task {
+            defer { urgentUpdating.remove(tid) }
+            do {
+                _ = try await client.call(name: "task_set_urgent", args: ["task_id": tid, "urgent": !task.urgent])
+                await refresh()
+            } catch let error as HubError {
+                switch error {
+                case .toolError(let message), .badResponse(let message): urgentErrors[tid] = message
+                }
+            } catch { urgentErrors[tid] = "加急状态未能更新，请检查连接后重试" }
+        }
+    }
 
     func cancelTask(_ tid: Int) {
         act("已取消任务 #\(tid)") { try await $0.call(name: "task_cancel", args: ["task_id": tid]) }

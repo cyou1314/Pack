@@ -122,6 +122,11 @@ enum DesignTokens {
     static let chatReceiptFont = Font.system(size: 11)
     static let boardInset: CGFloat = 16
     static let boardGap: CGFloat = 12
+    static let urgentBackground = Color(hex: 0xD03C40)
+    static let urgentText = Color.white
+    static let urgentFont = Font.system(size: 11, weight: .semibold)
+    static let urgentHorizontal: CGFloat = 8
+    static let urgentVertical: CGFloat = 3
     static let boardCardInset: CGFloat = 10
     static let boardCardGap: CGFloat = 8
     static let boardLine: CGFloat = 1
