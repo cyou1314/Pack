@@ -90,6 +90,7 @@ private struct MemberAvatarView: View {
     let member: MemberInfo?
     var size: CGFloat = 34
     var showStatus = true
+    var working = false
 
     private var designedImage: NSImage? {
         guard (name == "dispatcher" || name == "absent"),
@@ -111,12 +112,31 @@ private struct MemberAvatarView: View {
                 }
             }.frame(width: size, height: size).clipShape(Circle())
             if showStatus {
-                Circle().fill(member?.isOnline == true ? Color.green : Color.gray)
-                    .frame(width: max(8, size * 0.27), height: max(8, size * 0.27))
+                ZStack {
+                    if working { ActiveStatusPulse() }
+                    Circle().fill(working ? DesignTokens.blue : (member?.isOnline == true ? Color.green : Color.gray))
+                }.frame(width: max(8, size * 0.27), height: max(8, size * 0.27))
                     .overlay(Circle().stroke(PackStyle.canvas, lineWidth: 2))
                     .offset(x: 1, y: 1)
             }
         }.frame(width: size, height: size)
+    }
+}
+
+private final class PulseModel: ObservableObject {
+    @Published var expanded = false
+}
+
+private struct ActiveStatusPulse: View {
+    @StateObject private var model = PulseModel()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        Circle().fill(DesignTokens.blue.opacity(DesignTokens.activePulseOpacity))
+            .scaleEffect(model.expanded ? DesignTokens.activePulseMax : DesignTokens.activePulseMin)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(DesignTokens.activePulseAnimation) { model.expanded = true }
+            }
     }
 }
 
@@ -191,9 +211,12 @@ struct ContentView: View {
                         case "settings": SettingsView(state: state)
                         case "members": MemberDirectory(state: state)
                         default: RoomView(state: state)
+                            .id(state.currentRoom)
+                            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
                         }
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .animation(DesignTokens.animStd, value: state.currentRoom)
                 if state.selection == "room" {
                     Composer(state: state)
                         .disabled(!state.connected)
@@ -230,6 +253,7 @@ struct ContentView: View {
 
 private struct Sidebar: View {
     @ObservedObject var state: AppState
+    @Namespace private var quotaMotion
     private var member: MemberInfo? { state.members.first { $0.name == "absent" } }
     private func toggle() { withAnimation(DesignTokens.animStd) { state.showSidebar.toggle() } }
     private func select(_ key: String) {
@@ -247,7 +271,7 @@ private struct Sidebar: View {
         Button { select(key) } label: {
             HStack(spacing: DesignTokens.shellGap) {
                 Image(systemName: icon).frame(width: DesignTokens.shellIcon)
-                if state.showSidebar { Text(title); Spacer(minLength: 0) }
+                if state.showSidebar { Text(title).transition(.opacity); Spacer(minLength: 0) }
                 if key == "room" && !state.showSidebar && state.hasUnreadRooms {
                     Circle().fill(DesignTokens.blue).frame(width: DesignTokens.radiusSmall, height: DesignTokens.radiusSmall)
                 }
@@ -325,11 +349,12 @@ private struct Sidebar: View {
                         ForEach(state.members) { item in
                             Button { state.toggleMember(item.name) } label: {
                                 HStack(spacing: DesignTokens.shellGap) {
-                                    MemberAvatarView(name: item.name, member: item, size: DesignTokens.shellAvatar)
+                                    MemberAvatarView(name: item.name, member: item, size: DesignTokens.shellAvatar, working: state.tasks.contains { $0.assignee == item.name && ["claimed", "working"].contains($0.status) }).id(state.avatarRevision)
                                     Text(item.name).font(DesignTokens.fontUI).lineLimit(1)
                                     Spacer(minLength: 0)
                                     Text(state.memberStatus(item)).font(DesignTokens.fontSmall).foregroundStyle(item.quotaExhausted ? DesignTokens.danger : DesignTokens.subText)
                                 }.frame(height: DesignTokens.shellRow).contentShape(Rectangle())
+                                    .background(state.claimingMembers.contains(item.name) ? DesignTokens.blue.opacity(DesignTokens.shellSelectionOpacity) : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
                             }.buttonStyle(.plain)
                         }
                     }
@@ -360,11 +385,13 @@ private struct Sidebar: View {
                     .foregroundStyle((member?.quotaIsStale ?? true) ? DesignTokens.quotaStaleText : DesignTokens.ink)
                     .padding(DesignTokens.shellInset)
                     .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+                    .matchedGeometryEffect(id: "quota", in: quotaMotion)
             } else {
-                QuotaRingView(usedPct: member?.quotaWeekUsedPct, stale: member?.quotaIsStale ?? true, size: DesignTokens.shellQuota).help("周额度剩余")
+                QuotaRingView(usedPct: member?.quotaWeekUsedPct, stale: member?.quotaIsStale ?? true, size: DesignTokens.shellQuota)
+                    .matchedGeometryEffect(id: "quota", in: quotaMotion).help("周额度剩余")
             }
             HStack(spacing: DesignTokens.shellGap) {
-                MemberAvatarView(name: "owner", member: state.members.first { $0.name == "owner" }, size: DesignTokens.shellAvatar, showStatus: false)
+                MemberAvatarView(name: "owner", member: state.members.first { $0.name == "owner" }, size: DesignTokens.shellAvatar, showStatus: false).id(state.avatarRevision)
                 if state.showSidebar { Text("群主").font(DesignTokens.fontUI); Spacer(minLength: 0) }
                 Circle().fill(state.connected ? DesignTokens.okGreen : DesignTokens.faintText)
                     .frame(width: DesignTokens.connectionDotSize, height: DesignTokens.connectionDotSize)
@@ -430,6 +457,7 @@ private struct RoomView: View {
                         HStack { Rectangle().fill(DesignTokens.hairline).frame(height: DesignTokens.boardLine); Text("未读消息").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText); Rectangle().fill(DesignTokens.hairline).frame(height: DesignTokens.boardLine) }
                     }
                     MessageOperations(state: state, message: message)
+                        .transition(.opacity.combined(with: .offset(y: DesignTokens.motionOffset)))
                         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(state.highlightedMessageId == message.id ? DesignTokens.blue : Color.clear, lineWidth: DesignTokens.boardHighlightLine).allowsHitTesting(false))
                         .id(message.id)
                 }
@@ -495,7 +523,7 @@ private struct MessageActionButtons: View {
                 Button { state.editMessage(message) } label: { Image(systemName: "pencil") }.help("编辑")
                 Button { state.deleteMessage(message) } label: { Image(systemName: "trash") }.foregroundStyle(DesignTokens.danger).help("删除")
             }
-        }.font(DesignTokens.fontSmall).buttonStyle(.plain).transition(.opacity)
+        }.font(DesignTokens.fontSmall).buttonStyle(.plain).transition(.opacity.combined(with: .offset(x: -DesignTokens.motionOffset)))
     }
 }
 
@@ -522,7 +550,7 @@ private struct MessageRow: View {
             DeliveryCard(state: state, task: t)
         } else {
             HStack(alignment: .top, spacing: DesignTokens.chatRowSpacing) {
-                if isOwner { Spacer(minLength: 0) } else { MemberAvatarView(name: message.author, member: member, size: DesignTokens.chatAvatar, showStatus: false) }
+                if isOwner { Spacer(minLength: 0) } else { MemberAvatarView(name: message.author, member: member, size: DesignTokens.chatAvatar, showStatus: false).id(state.avatarRevision) }
                 VStack(alignment: isOwner ? .trailing : .leading, spacing: DesignTokens.chatMetadataSpacing) {
                     if !isOwner { Text(message.author).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
                     if let reply = decoded.reply { ReplyQuoteView(reply: reply) }
@@ -557,6 +585,7 @@ private struct MessageRow: View {
                     if isOwner {
                         Text(acknowledged ? "✓✓ 已认领" : "✓✓ 已送达")
                             .font(DesignTokens.chatReceiptFont).foregroundStyle(acknowledged ? DesignTokens.blue : DesignTokens.subText)
+                            .contentTransition(.opacity).animation(DesignTokens.animFast, value: acknowledged)
                     }
                 }.frame(maxWidth: DesignTokens.chatBubbleWidth, alignment: isOwner ? .trailing : .leading)
                 if !isOwner { Spacer(minLength: 0) }
@@ -599,7 +628,7 @@ private struct Composer: View {
                                 state.completeMention(member)
                             } label: {
                                 HStack(spacing: DesignTokens.shellGap) {
-                                    MemberAvatarView(name: member.name, member: member, size: DesignTokens.mentionCandidateAvatar, showStatus: false)
+                                    MemberAvatarView(name: member.name, member: member, size: DesignTokens.mentionCandidateAvatar, showStatus: false).id(state.avatarRevision)
                                     Text(member.name).font(DesignTokens.fontUI)
                                     Spacer()
                                     Text(state.mentionStatus(member)).font(DesignTokens.fontSmall)
@@ -608,10 +637,11 @@ private struct Composer: View {
                             }.buttonStyle(.plain)
                         }
                     }.background(Color(nsColor: .controlBackgroundColor))
+                        .transition(.opacity.combined(with: .offset(y: DesignTokens.motionOffset)))
                 }
                 MentionTextEditor(state: state)
             HStack(spacing: DesignTokens.composerSpacing) {
-                Button { state.showAddMenu.toggle() } label: {
+                Button { withAnimation(DesignTokens.animFast) { state.showAddMenu.toggle() } } label: {
                     Image(systemName: "plus").font(DesignTokens.fontTitle).foregroundStyle(.white)
                         .frame(width: DesignTokens.menuButtonSize, height: DesignTokens.menuButtonSize)
                         .background(DesignTokens.ink, in: Circle())
@@ -629,6 +659,7 @@ private struct Composer: View {
                         .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine))
                         .shadow(color: .black.opacity(DesignTokens.shellSelectionOpacity), radius: DesignTokens.composerMenuShadow)
                         .offset(y: -DesignTokens.menuButtonSize - DesignTokens.shellGap)
+                        .transition(.opacity.combined(with: .scale(scale: DesignTokens.menuEntranceScale, anchor: .bottomLeading)))
                     }
                 }
                 .zIndex(1)
@@ -658,7 +689,8 @@ private struct Composer: View {
                     .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
                 Button("移除所选文件") { state.attachments = [] }.font(DesignTokens.fontSmall)
             }
-        }.fixedSize(horizontal: false, vertical: true)
+        }.animation(DesignTokens.animFast, value: state.mentionPopupVisible)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(DesignTokens.composerPadding).background {
             RoundedRectangle(cornerRadius: DesignTokens.composerRadius).fill(PackStyle.surface)
                 .overlay(RoundedRectangle(cornerRadius: DesignTokens.composerRadius).stroke(PackStyle.line))
@@ -675,6 +707,8 @@ private struct Composer: View {
                 if arrow { Image(systemName: "chevron.right").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.faintText) }
             }.font(DesignTokens.fontUI).frame(height: DesignTokens.composerMenuRow).contentShape(Rectangle())
         }.buttonStyle(.plain)
+            .background(state.hoveredMenuItem == title ? DesignTokens.blue.opacity(DesignTokens.shellSelectionOpacity) : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.radiusSmall))
+            .onHover { inside in state.hoveredMenuItem = inside ? title : nil }
     }
     private func chooseFiles(imagesOnly: Bool) {
         let picker = NSOpenPanel()
@@ -829,7 +863,8 @@ private struct ApprovalCard: View {
                 Text("已结束 · 未找到决议记录").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             }
             if let note = state.decisionErrors[task.id] { Text(note).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger) }
-        }.padding(DesignTokens.detailPadding)
+        }.animation(DesignTokens.animStd, value: pending)
+            .padding(DesignTokens.detailPadding)
             .background(DesignTokens.approvalBackground, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
             .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.approvalBorder, lineWidth: DesignTokens.boardLine))
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -930,6 +965,7 @@ private struct ArtifactPreview: View {
 
 private struct TaskBoard: View {
     @ObservedObject var state: AppState
+    @Namespace private var boardMotion
     private let groups: [(String, [String])] = [
         ("待认领", ["open", "released"]), ("进行中", ["claimed", "working", "blocked"]),
         ("待验收", ["review"]), ("已完成", ["done"])
@@ -956,7 +992,11 @@ private struct TaskBoard: View {
                             HStack { Text(title).font(DesignTokens.fontTitle); Text("\(items.count)").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText); Spacer(minLength: 0) }
                             ScrollView(.vertical) {
                                 LazyVStack(spacing: DesignTokens.boardGap) {
-                                    ForEach(items) { task in BoardTaskCard(state: state, task: task) }
+                                    ForEach(items) { task in
+                                        BoardTaskCard(state: state, task: task)
+                                            .matchedGeometryEffect(id: task.id, in: boardMotion)
+                                            .transition(.opacity.combined(with: .offset(y: -DesignTokens.motionOffset)))
+                                    }
                                 }.frame(maxWidth: .infinity)
                             }
                         }.frame(width: width, height: geometry.size.height, alignment: .top)
@@ -998,7 +1038,7 @@ private struct BoardTaskCard: View {
             Rectangle().fill(DesignTokens.hairline).frame(height: DesignTokens.boardLine)
             HStack(spacing: DesignTokens.boardCardGap) {
                 if let name = task.assignee {
-                    MemberAvatarView(name: name, member: member, size: DesignTokens.boardAvatar, showStatus: false)
+                    MemberAvatarView(name: name, member: member, size: DesignTokens.boardAvatar, showStatus: false).id(state.avatarRevision)
                     Text(name).lineLimit(1)
                 } else { Text("未指派") }
                 Spacer(minLength: 0)
@@ -1133,7 +1173,7 @@ private struct MemberDirectory: View {
                     }) { member in
                         Button { state.toggleMember(member.name) } label: {
                             HStack(spacing: DesignTokens.memberGap) {
-                                MemberAvatarView(name: member.name, member: member, size: DesignTokens.memberListAvatar)
+                                MemberAvatarView(name: member.name, member: member, size: DesignTokens.memberListAvatar).id(state.avatarRevision)
                                 VStack(alignment: .leading, spacing: DesignTokens.memberListTextSpacing) {
                                     Text(member.name).font(DesignTokens.fontTitle)
                                     Text(rowStatus(member)).font(DesignTokens.fontSmall)
@@ -1172,7 +1212,7 @@ private struct MemberDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: DesignTokens.memberGap) {
                 HStack {
-                    MemberAvatarView(name: member.name, member: member, size: DesignTokens.memberAvatarLarge)
+                    MemberAvatarView(name: member.name, member: member, size: DesignTokens.memberAvatarLarge).id(state.avatarRevision)
                     VStack(alignment: .leading) { Text(member.name).font(DesignTokens.fontTitle); Text(state.memberStatus(member)).font(DesignTokens.fontSmall) }
                     Spacer()
                     Button { state.selectedMemberName = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("关闭成员详情")

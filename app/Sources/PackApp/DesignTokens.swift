@@ -31,8 +31,16 @@ enum DesignTokens {
     static let fontTitle = Font.system(size: 13, weight: .semibold)
 
     // 动效（定稿 §8：只动变化处，150–250ms）
-    static let animFast = Animation.easeInOut(duration: 0.18)
-    static let animStd = Animation.easeInOut(duration: 0.22)
+    static let animFast = Animation.easeOut(duration: 0.18)
+    static let animStd = Animation.easeOut(duration: 0.22)
+
+    static let motionOffset: CGFloat = 6
+    static let menuEntranceScale: CGFloat = 0.92
+    static let activePulseAnimation = Animation.easeOut(duration: 1.0).repeatForever(autoreverses: true)
+    static let activePulseMin: CGFloat = 1.0
+    static let activePulseMax: CGFloat = 1.6
+    static let activePulseOpacity: Double = 0.24
+    static let memberClaimHighlightNanoseconds: UInt64 = 1_000_000_000
 
     // 布局
     static let railWidth: CGFloat = 56              // 收起态图标条
@@ -128,7 +136,7 @@ enum DesignTokens {
     static let approvalButtonVertical: CGFloat = 6
     static let detailSpacing: CGFloat = 8
     static let detailPadding: CGFloat = 12
-    static let detailAnimation = Animation.easeInOut(duration: 0.2)
+    static let detailAnimation = Animation.easeOut(duration: 0.2)
     static let replySnapshotLimit = 240
     static let replyBarWidth: CGFloat = 3
     static let replyPadding: CGFloat = 8

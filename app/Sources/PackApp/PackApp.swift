@@ -50,6 +50,9 @@ final class AppState: ObservableObject {
     @Published var memberSkills: [AssignedSkill] = []
     @Published var memberSkillsStatus = ""
     @Published var showAvatarPicker = false
+    @Published var avatarRevision = 0
+    @Published var claimingMembers: Set<String> = []
+    @Published var hoveredMenuItem: String?
     @Published var avatarTargetName = ""
     @Published var avatarSaving = false
     @Published var avatarSaveError = ""
@@ -183,16 +186,19 @@ final class AppState: ObservableObject {
             }
             guard let arr = msgRes["messages"] as? [[String: Any]] else { throw HubError.badResponse("missing messages") }
             do {
-                messages = arr.map {
+                let parsedMessages = arr.map {
                     RoomMessage(id: intVal($0["id"]), author: ($0["author"] as? String) ?? "?",
                                 kind: ($0["kind"] as? String) ?? "chat", body: ($0["body"] as? String) ?? "",
                                 taskId: optIntVal($0["task_id"]), createdAt: doubleVal($0["created_at"]),
                                 deleted: boolVal($0["deleted"]), edited: boolVal($0["edited"]))
                 }
+                if roomLoading { messages = parsedMessages }
+                else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
             }
             if let arr = taskRes["tasks"] as? [[String: Any]] {
                 let roomTaskIds = Set(messages.compactMap(\.taskId))
-                tasks = arr.filter { roomTaskIds.contains(intVal($0["id"])) }.map {
+                let previousTasks = tasks
+                let updatedTasks = arr.filter { roomTaskIds.contains(intVal($0["id"])) }.map {
                     PackTask(id: intVal($0["id"]), title: ($0["title"] as? String) ?? "",
                              body: ($0["body"] as? String) ?? "", status: ($0["status"] as? String) ?? "",
                              assignee: optStringVal($0["assignee"]), attempts: intVal($0["attempts"]),
@@ -204,6 +210,22 @@ final class AppState: ObservableObject {
                              schedAt: optDoubleVal($0["sched_at"]),
                              createdBy: optStringVal($0["created_by"]), reviewNote: optStringVal($0["review_note"]))
                 }
+                if !roomLoading {
+                    let claimed = Set(updatedTasks.compactMap { task -> String? in
+                        guard ["claimed", "working"].contains(task.status),
+                              let previous = previousTasks.first(where: { $0.id == task.id }),
+                              ["open", "released"].contains(previous.status) else { return nil }
+                        return task.assignee
+                    })
+                    if !claimed.isEmpty {
+                        withAnimation(DesignTokens.animFast) { claimingMembers.formUnion(claimed) }
+                        Task {
+                            try? await Task.sleep(nanoseconds: DesignTokens.memberClaimHighlightNanoseconds)
+                            withAnimation(DesignTokens.animFast) { claimingMembers.subtract(claimed) }
+                        }
+                    }
+                    withAnimation(DesignTokens.animStd) { tasks = updatedTasks }
+                } else { tasks = updatedTasks }
             }
             if let arr = memRes["members"] as? [[String: Any]] {
                 members = arr.map {
@@ -429,6 +451,7 @@ final class AppState: ObservableObject {
         var customNames = Set(UserDefaults.standard.stringArray(forKey: "pack.customAvatarNames") ?? [])
         customNames.remove(avatarTargetName)
         UserDefaults.standard.set(Array(customNames), forKey: "pack.customAvatarNames")
+        avatarRevision += 1
         showAvatarPicker = false
     }
 
@@ -445,6 +468,7 @@ final class AppState: ObservableObject {
                 var customNames = Set(UserDefaults.standard.stringArray(forKey: "pack.customAvatarNames") ?? [])
                 customNames.insert(name)
                 UserDefaults.standard.set(Array(customNames), forKey: "pack.customAvatarNames")
+                avatarRevision += 1
                 showAvatarPicker = false
                 await refresh()
             } catch let error as HubError {

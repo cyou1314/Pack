@@ -30,6 +30,7 @@ struct QuotaRingView: View {
                 AnnularSector(fraction: rem / 100)
                     .fill(LinearGradient(colors: [tierColor.opacity(DesignTokens.quotaGradientOpacity), tierColor], startPoint: .topLeading, endPoint: .bottomTrailing))
                 Text("\(Int(rem.rounded()))%")
+                    .contentTransition(.numericText())
                     .font(.system(size: size * 0.30, weight: .semibold))
                     .foregroundColor(stale ? DesignTokens.faintText : DesignTokens.ink)
             } else {
@@ -39,13 +40,18 @@ struct QuotaRingView: View {
             }
         }
         .frame(width: size, height: size)
+        .animation(DesignTokens.animStd, value: usedPct)
     }
 }
 
 /// 环形扇区：外弧顺时针、内弧逆时针拼成的封闭扇环，自顶部起画，
 /// fraction 为占比（1 = 整圈）。端点天然平头。
 struct AnnularSector: Shape {
-    let fraction: Double
+    var fraction: Double
+    var animatableData: Double {
+        get { fraction }
+        set { fraction = newValue }
+    }
 
     func path(in rect: CGRect) -> Path {
         var p = Path()
