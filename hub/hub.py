@@ -2311,7 +2311,7 @@ def build_server():
         return {"members": out}
 
     @mcp.tool
-    def task_list(status: str = "", assignee_name: str = "") -> dict:
+    def task_list(status: str = "", assignee_name: str = "", offset: int = 0) -> dict:
         """列任务（可按状态/被指派人过滤）。运行时靠它找指派给自己成员的活。
         每行带 fail_class（最近失败类别）、next_claim_at（下次可认领时间，
         epoch 秒）与 backoff_remaining_sec（退避剩余秒数，0=可认领），
@@ -2335,7 +2335,11 @@ def build_server():
         if assignee_name:
             q += " AND mb.name=?"
             args.append(assignee_name)
-        q += " ORDER BY t.urgent DESC, t.id ASC LIMIT 100"
+        # staging42 / P2：排序口径不变（urgent 置顶 + id 升序，定稿 §15.3），
+        # 只加 offset 分页参数，调用方（如 App 任务板）可翻页拉全量
+        offset = max(0, int(offset))
+        q += " ORDER BY t.urgent DESC, t.id ASC LIMIT 100 OFFSET ?"
+        args.append(offset)
         rows = conn.execute(q, args).fetchall()
         conn.close()
         out = []
