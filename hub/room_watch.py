@@ -149,20 +149,86 @@ def save_state(st):
     os.replace(tmp, STATE)
 
 
+
+async def _post_best_effort(c, room, body, tag):
+    """确认/提示回帖：尽力而为。回帖失败只记日志，不让外层把已提交的
+    开卡动作整条重试（会重复开卡）。"""
+    try:
+        await c.call_tool("room_post", {"room": room, "body": body})
+    except Exception as e:
+        log(f"confirm post failed ({tag}): {e!r}")
+
+
+async def _handle_message(c, room, m, targets, tpl_names):
+    """处理一条 owner chat 消息（模板直发 / @ 转卡 / 歧义与未知回复）。
+    提交动作（template_fire / task_create）成功后回帖一律走
+    _post_best_effort；提交动作本身抛错则原样上抛，由 run() 的
+    失败计数决定重试或放弃（W4）。"""
+    body = strip_reply_metadata(m["body"])
+    tc = parse_template_command(body, tpl_names)
+    if tc is not None:
+        if tc[0] == "hit":
+            _, tname, arg = tc
+            try:
+                r = parse(await c.call_tool("template_fire", {
+                    "name": tname, "arg": arg, "room": room}))
+            except Exception as e:
+                await _post_best_effort(c, room,
+                    f"模板「{tname}」没开成卡：{e}。补上参数再发一次。", "tpl-fail")
+                log(f"template fire failed msg {m['id']} ({room}) tpl={tname}: {e!r}")
+                return
+            await _post_best_effort(c, room,
+                f"已按模板「{tname}」开卡 #{r['task_id']} → @{r['assignee']}", "tpl-ok")
+            log(f"template-fired msg {m['id']} ({room}) -> task {r['task_id']} tpl={tname}")
+        elif tc[0] == "ambiguous":
+            await _post_best_effort(c, room,
+                f"「模板：{tc[1]}」对上了 {len(tc[2])} 个模板（{'、'.join(tc[2])}），写全名我再开卡。", "tpl-amb")
+            log(f"ambiguous template in msg {m['id']} ({room}): {tc[1]} -> {tc[2]}")
+        else:
+            avail = "、".join(tpl_names) if tpl_names else "（暂无模板）"
+            await _post_best_effort(c, room,
+                f"没有叫「{tc[1]}」的模板。现有模板：{avail}。", "tpl-unknown")
+            log(f"unknown template in msg {m['id']} ({room}): {tc[1]}")
+        return
+    kind, name, span, cands = resolve_mention(body, targets)
+    if kind == "ambiguous":
+        token = body[span[0] + 1:span[1]]
+        await _post_best_effort(c, room,
+            f"「@{token}」对上了 {len(cands)} 个成员（{'、'.join('@' + n for n in cands)}），写全名我再转任务。", "mention-amb")
+        log(f"ambiguous mention in msg {m['id']} ({room}): @{token} -> {cands}")
+        return
+    if kind != "hit":
+        return
+    cleaned = (body[:span[0]] + body[span[1]:]).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    task_body = cleaned if cleaned else body
+    title = task_body[:40]
+    r = parse(await c.call_tool("task_create", {
+        "room": room, "title": title, "body": task_body, "assignee_name": name}))
+    tid = r["task_id"]
+    await _post_best_effort(c, room, f"已转任务 #{tid} → @{name}", "mention-ok")
+    log(f"converted msg {m['id']} ({room}) -> task {tid} for {name}")
+
+
+MAX_MSG_FAILURES = 5  # 同一条消息连续处理失败上限，超过记日志放弃（防毒消息堵死整房）
+
+
 async def run():
     st = load_state()
     since = st["rooms"]
+    fail_counts = {}
     transport = StreamableHttpTransport(URL, headers={"Authorization": "Bearer " + TOKEN})
     async with Client(transport) as c:
-        members = [m["name"] for m in parse(await c.call_tool("member_list", {}))["members"]]
-        targets = [n for n in members if n not in ("owner", "dispatcher")]
-        log(f"watch start targets={targets} rooms={list(since)}")
+        log(f"watch start rooms={list(since)}")
         while True:
             try:
-                # 每轮经 room_list 刷新房间集合，新房间自动纳入
+                # 每轮刷新房间、模板与成员名单（W3：成员名单不再只在启动时
+                # 读一次，新成员入群 / 改名后下一轮即生效）
                 rooms = parse(await c.call_tool("room_list", {}))["rooms"]
                 tpl_names = [t["name"] for t in
                              parse(await c.call_tool("template_list", {}))["templates"]]
+                members = [m["name"] for m in parse(await c.call_tool("member_list", {}))["members"]]
+                targets = [n for n in members if n not in ("owner", "dispatcher")]
                 for rm in rooms:
                     room = rm["name"]
                     if room not in since:
@@ -174,59 +240,24 @@ async def run():
                     msgs = parse(await c.call_tool(
                         "room_read_new", {"room": room, "since_id": since[room], "limit": 50}))["messages"]
                     for m in msgs:
+                        # W4：游标只在消息处理成功（或本就不需处理）后才推进；
+                        # 处理抛错时不推进、下一轮重试，同条连续失败
+                        # MAX_MSG_FAILURES 次后记日志放弃并越过，防整房堵死。
+                        try:
+                            if m["kind"] == "chat" and m["author"] == "owner":
+                                await _handle_message(c, room, m, targets, tpl_names)
+                        except Exception as e:
+                            key = (room, m["id"])
+                            fail_counts[key] = fail_counts.get(key, 0) + 1
+                            if fail_counts[key] < MAX_MSG_FAILURES:
+                                log(f"msg {m['id']} ({room}) failed "
+                                    f"{fail_counts[key]}/{MAX_MSG_FAILURES}, will retry: {e!r}")
+                                break
+                            log(f"msg {m['id']} ({room}) giving up after "
+                                f"{fail_counts[key]} failures: {e!r}")
+                            fail_counts.pop(key, None)
                         since[room] = max(since[room], m["id"])
                         save_state(st)
-                        if m["kind"] != "chat" or m["author"] != "owner":
-                            continue
-                        body = strip_reply_metadata(m["body"])
-                        tc = parse_template_command(body, tpl_names)
-                        if tc is not None:
-                            if tc[0] == "hit":
-                                _, tname, arg = tc
-                                try:
-                                    r = parse(await c.call_tool("template_fire", {
-                                        "name": tname, "arg": arg, "room": room}))
-                                    await c.call_tool("room_post", {
-                                        "room": room,
-                                        "body": f"已按模板「{tname}」开卡 #{r['task_id']} → @{r['assignee']}"})
-                                    log(f"template-fired msg {m['id']} ({room}) -> task {r['task_id']} tpl={tname}")
-                                except Exception as e:
-                                    await c.call_tool("room_post", {
-                                        "room": room,
-                                        "body": f"模板「{tname}」没开成卡：{e}。补上参数再发一次。"})
-                                    log(f"template fire failed msg {m['id']} ({room}) tpl={tname}: {e!r}")
-                            elif tc[0] == "ambiguous":
-                                await c.call_tool("room_post", {
-                                    "room": room,
-                                    "body": f"「模板：{tc[1]}」对上了 {len(tc[2])} 个模板（{'、'.join(tc[2])}），写全名我再开卡。"})
-                                log(f"ambiguous template in msg {m['id']} ({room}): {tc[1]} -> {tc[2]}")
-                            else:
-                                avail = "、".join(tpl_names) if tpl_names else "（暂无模板）"
-                                await c.call_tool("room_post", {
-                                    "room": room,
-                                    "body": f"没有叫「{tc[1]}」的模板。现有模板：{avail}。"})
-                                log(f"unknown template in msg {m['id']} ({room}): {tc[1]}")
-                            continue
-                        kind, name, span, cands = resolve_mention(body, targets)
-                        if kind == "ambiguous":
-                            token = body[span[0] + 1:span[1]]
-                            await c.call_tool("room_post", {
-                                "room": room,
-                                "body": f"「@{token}」对上了 {len(cands)} 个成员（{'、'.join('@' + n for n in cands)}），写全名我再转任务。"})
-                            log(f"ambiguous mention in msg {m['id']} ({room}): @{token} -> {cands}")
-                            continue
-                        if kind != "hit":
-                            continue
-                        cleaned = (body[:span[0]] + body[span[1]:]).strip()
-                        cleaned = re.sub(r"\s+", " ", cleaned)
-                        task_body = cleaned if cleaned else body
-                        title = task_body[:40]
-                        r = parse(await c.call_tool("task_create", {
-                            "room": room, "title": title, "body": task_body, "assignee_name": name}))
-                        tid = r["task_id"]
-                        await c.call_tool("room_post", {
-                            "room": room, "body": f"已转任务 #{tid} → @{name}"})
-                        log(f"converted msg {m['id']} ({room}) -> task {tid} for {name}")
             except Exception as e:
                 log(f"poll error: {e!r}")
             await anyio.sleep(POLL_SEC)
