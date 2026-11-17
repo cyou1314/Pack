@@ -93,7 +93,7 @@ struct MemberInfo: Identifiable {
 
     var isOnline: Bool {
         guard let hb = lastHeartbeat else { return false }
-        return Date().timeIntervalSince1970 - hb < 90
+        return Date().timeIntervalSince1970 - hb < DesignTokens.memberOnlineSeconds
     }
 
     /// 周额度剩余 %（环心数字口径，定稿 §4）；无数据为 nil。

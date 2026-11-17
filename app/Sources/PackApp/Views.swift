@@ -1068,8 +1068,12 @@ private struct SettingsView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 GroupBox("批准默认模式") {
-                    Toggle("新任务默认需要批准", isOn: $state.approvalDefault).onChange(of: state.approvalDefault) { value in state.newNeedsApproval = value }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
+                        Toggle("新任务默认需要批准", isOn: $state.approvalDefault).onChange(of: state.approvalDefault) { value in state.newNeedsApproval = value }
+                        Text(state.notificationStatus).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                        Text("通知与 Dock 数字基于当前房间已加载的待批准和待验收项目；离线通知基于已加载成员。")
+                            .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 GroupBox("成员巡逻间隔") {
                     VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
@@ -1088,7 +1092,7 @@ private struct SettingsView: View {
                     }.font(DesignTokens.fontSmall).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }.padding(DesignTokens.settingsInset).frame(maxWidth: DesignTokens.settingsWidth, alignment: .leading).frame(maxWidth: .infinity)
-        }
+        }.task { await PackNotifications.shared.refreshStatus() }
     }
 }
 

@@ -21,6 +21,7 @@ final class AppState: ObservableObject {
     @Published var summaryExpanded = true
     @Published var showAddMenu = false
     @Published var showSearch = false
+    @Published var notificationStatus = "正在检查系统通知状态"
     @Published var selection: String? = "room"
     @Published var selectedTaskId: Int?
     @Published var boardFilter: String = "全部"
@@ -115,9 +116,12 @@ final class AppState: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var roomGeneration = 0
     private var unreadTask: Task<Void, Never>?
+    private var notificationDiff = NotificationDiff()
+    private var pendingNotification: (kind: String, room: String, id: Int?, member: String?)?
 
     func start() {
         guard pollTask == nil else { return }
+        PackNotifications.shared.start(state: self)
         draftMessage = roomDrafts[currentRoom] ?? ""
         newNeedsApproval = approvalDefault
         guard let cfg = PackConfig.load() else {
@@ -203,6 +207,11 @@ final class AppState: ObservableObject {
             connected = true
             connectionFailed = false
             connectionNote = "已连接"
+            processNotificationSnapshot(room: room)
+            if let target = pendingNotification, target.room == room {
+                pendingNotification = nil
+                navigateNotification(kind: target.kind, id: target.id, member: target.member)
+            }
             let snapshot = rooms
             if unreadTask == nil {
                 unreadTask = Task { [weak self] in
@@ -217,6 +226,53 @@ final class AppState: ObservableObject {
             connected = false
             connectionFailed = true
             connectionNote = "连接中断，重试中"
+        }
+    }
+
+    private func processNotificationSnapshot(room: String) {
+        let approvals = pendingApprovals
+        let reviews = tasks.filter { $0.status == "review" }
+        let heartbeats = Dictionary(uniqueKeysWithValues: members.compactMap { member -> (String, Double)? in
+            guard member.role == "member", member.name != "owner", let heartbeat = member.lastHeartbeat else { return nil }
+            return (member.name, heartbeat)
+        })
+        let changes = notificationDiff.changes(room: room, approvals: Set(approvals.map(\.id)), reviews: Set(reviews.map(\.id)), heartbeats: heartbeats,
+                                               now: Date().timeIntervalSince1970, onlineSeconds: DesignTokens.memberOnlineSeconds, offlineSeconds: DesignTokens.offlineAlertSeconds)
+        let badge = approvals.count + reviews.count
+        NSApp.dockTile.badgeLabel = badge > 0 ? String(badge) : nil
+        for message in approvals where changes.approvals.contains(message.id) {
+            let task = tasks.first { $0.id == message.taskId }
+            PackNotifications.shared.send(kind: "approval", room: room, id: message.id, title: "待批准", body: "\(message.author) · \(task?.title ?? message.body) · 到期时间未知")
+        }
+        for task in reviews where changes.reviews.contains(task.id) {
+            PackNotifications.shared.send(kind: "review", room: room, id: task.id, title: "交活待验收", body: "\(task.assignee ?? "成员") · #\(task.id) \(task.title)")
+        }
+        for member in changes.offline.sorted() {
+            PackNotifications.shared.send(kind: "offline", room: room, member: member, title: "成员已离线", body: "\(member) 已超过 10 分钟没有心跳")
+        }
+    }
+
+    func openNotification(kind: String, room: String, id: Int?, member: String?) {
+        if kind == "offline" { navigateNotification(kind: kind, id: id, member: member); return }
+        guard !room.isEmpty else { return }
+        if room != currentRoom || roomLoading {
+            pendingNotification = (kind, room, id, member)
+            if room != currentRoom { selectRoom(room) } else { Task { await refresh() } }
+        } else { navigateNotification(kind: kind, id: id, member: member) }
+    }
+
+    private func navigateNotification(kind: String, id: Int?, member: String?) {
+        switch kind {
+        case "approval":
+            if let id, messages.contains(where: { $0.id == id }) { selection = "room"; highlightedMessageId = id }
+            else { selection = "approvals" }
+        case "review":
+            if let id, tasks.contains(where: { $0.id == id }) { openTaskDetail(id) }
+            else { selection = "tasks"; selectedTaskId = nil }
+        case "offline":
+            selection = "members"
+            selectedMemberName = member.flatMap { name in members.contains(where: { $0.name == name }) ? name : nil }
+        default: break
         }
     }
 

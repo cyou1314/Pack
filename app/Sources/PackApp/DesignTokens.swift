@@ -164,6 +164,7 @@ enum DesignTokens {
     static let settingsInset: CGFloat = 20
     static let settingsGap: CGFloat = 12
     static let settingsFieldWidth: CGFloat = 400
+    static let memberOnlineSeconds: TimeInterval = 90
     static let offlineAlertSeconds: TimeInterval = 600
     static let longMessageLines = 6
     static let longMessageThreshold = 260
