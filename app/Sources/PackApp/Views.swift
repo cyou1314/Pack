@@ -1052,27 +1052,35 @@ private struct OnboardingView: View {
 
 private struct MemberDirectory: View {
     @ObservedObject var state: AppState
+    private func rowStatus(_ member: MemberInfo) -> String {
+        if state.pendingMembers.contains(member.name) && member.lastHeartbeat == nil { return state.memberStatus(member) }
+        guard member.isOnline else {
+            guard let heartbeat = member.lastHeartbeat else { return "离线 · 暂无记录" }
+            let minutes = Int(max(0, Date().timeIntervalSince1970 - heartbeat) / 60)
+            return "离线 · \(minutes) 分钟前还在"
+        }
+        return state.memberStatus(member)
+    }
     var body: some View {
         HStack(alignment: .top, spacing: DesignTokens.memberGap) {
             ScrollView {
-                LazyVStack(spacing: DesignTokens.memberGap) {
+                LazyVStack(spacing: DesignTokens.memberListRowSpacing) {
                     ForEach(state.members.sorted { a, b in
                         let aa = a.isOnline && !a.quotaExhausted; let bb = b.isOnline && !b.quotaExhausted
                         return aa == bb ? a.name < b.name : aa && !bb
                     }) { member in
                         Button { state.toggleMember(member.name) } label: {
                             HStack(spacing: DesignTokens.memberGap) {
-                                MemberAvatarView(name: member.name, member: member, size: DesignTokens.memberAvatarMedium)
-                                    .grayscale(member.isOnline ? 0 : 1)
-                                VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
+                                MemberAvatarView(name: member.name, member: member, size: DesignTokens.memberListAvatar)
+                                VStack(alignment: .leading, spacing: DesignTokens.memberListTextSpacing) {
                                     Text(member.name).font(DesignTokens.fontTitle)
-                                    Text(state.memberStatus(member)).font(DesignTokens.fontSmall)
+                                    Text(rowStatus(member)).font(DesignTokens.fontSmall)
                                         .foregroundStyle(member.quotaExhausted ? DesignTokens.danger : DesignTokens.subText)
                                 }
                                 Spacer()
-                            }.padding(DesignTokens.memberInset).frame(maxWidth: .infinity, alignment: .leading)
-                                .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
-                                .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine))
+                            }.padding(.horizontal, DesignTokens.shellInset)
+                                .frame(maxWidth: .infinity, minHeight: DesignTokens.memberListRowHeight, alignment: .leading)
+                                .contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
                     Button("＋ 添加成员") { state.memberActionError = ""; state.showAddMember = true }.buttonStyle(.plain).foregroundStyle(DesignTokens.blue)
@@ -1088,6 +1096,16 @@ private struct MemberDirectory: View {
 private struct MemberDetail: View {
     @ObservedObject var state: AppState
     let member: MemberInfo
+    private var recentTasks: [PackTask] {
+        Array(state.tasks.filter { $0.assignee == member.name && ["done", "review"].contains($0.status) }
+            .sorted { $0.updatedAt > $1.updatedAt }.prefix(DesignTokens.memberRecentLimit))
+    }
+    private func duration(_ task: PackTask) -> String {
+        if state.memberRunsFailed.contains(task.id) { return "用时读取失败" }
+        guard let seconds = state.memberRunDurations[task.id] else { return state.memberRunsLoading ? "用时读取中" : "用时暂无记录" }
+        let value = Int(seconds)
+        return "最近执行 \(value / 60) 分 \(value % 60) 秒"
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DesignTokens.memberGap) {
@@ -1097,7 +1115,8 @@ private struct MemberDetail: View {
                     Spacer()
                     Button { state.selectedMemberName = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("关闭成员详情")
                 }
-                Text("最近心跳：\(member.lastHeartbeat.map { Date(timeIntervalSince1970: $0).formatted() } ?? "暂无")").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                Text("最近心跳：\(member.lastHeartbeat.map { Date(timeIntervalSince1970: $0).formatted() } ?? "暂无记录") · 本周已交活：暂无完整统计")
+                    .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                 Divider()
                 HStack { QuotaRingView(usedPct: member.quotaWeekUsedPct, stale: member.quotaIsStale); VStack(alignment: .leading) {
                     Text("周额度").font(DesignTokens.fontTitle)
@@ -1115,10 +1134,9 @@ private struct MemberDetail: View {
                 if active.isEmpty { Text("暂无在跑任务").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
                 ForEach(active) { task in Text("#\(task.id) \(task.title)").font(DesignTokens.fontSmall) }
                 Text("最近交活（当前房间）").font(DesignTokens.fontTitle)
-                let delivered = state.tasks.filter { $0.assignee == member.name && ["done", "review"].contains($0.status) }.sorted { $0.updatedAt > $1.updatedAt }
-                if delivered.isEmpty { Text("暂无交活").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
-                ForEach(Array(delivered.prefix(3))) { task in
-                    Text("#\(task.id) \(task.title) · \(task.envelope?.verdict ?? task.statusLabel) · 产物 \(task.envelope?.artifacts.count ?? 0)").font(DesignTokens.fontSmall)
+                if recentTasks.isEmpty { Text("暂无交活").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
+                ForEach(recentTasks) { task in
+                    Text("#\(task.id) \(task.title) · \(task.envelope?.verdict ?? task.statusLabel) · \(duration(task)) · 产物 \(task.envelope?.artifacts.count ?? 0)").font(DesignTokens.fontSmall)
                 }
                 Text("已装技能：中枢未提供按成员查询接口").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                 if member.role == "member" && member.name != "owner" {
@@ -1128,6 +1146,9 @@ private struct MemberDetail: View {
                 }
             }.padding(DesignTokens.memberInset)
         }.background(DesignTokens.bubbleAI)
+            .task(id: member.name + ":" + recentTasks.map { "\($0.id)-\($0.updatedAt)" }.joined(separator: ",")) {
+                await state.loadMemberRunDurations(member.name, taskIds: recentTasks.map(\.id))
+            }
     }
 }
 

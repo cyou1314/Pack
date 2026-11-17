@@ -121,6 +121,11 @@ enum DesignTokens {
     static let roomDialogWidth: CGFloat = 400
     static let memberAvatarLarge: CGFloat = 64
     static let memberAvatarMedium: CGFloat = 42
+    static let memberListAvatar: CGFloat = 34
+    static let memberListRowHeight: CGFloat = 54
+    static let memberListRowSpacing: CGFloat = 4
+    static let memberListTextSpacing: CGFloat = 2
+    static let memberRecentLimit = 3
     static let memberPanelWidth: CGFloat = 360
     static let memberLoginWidth: CGFloat = 500
     static let memberLoginHeight: CGFloat = 360

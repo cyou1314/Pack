@@ -40,6 +40,9 @@ final class AppState: ObservableObject {
     @Published var roomDialogName = ""
     @Published var roomRenameFrom: String?
     @Published var roomDialogError = ""
+    @Published var memberRunDurations: [Int: TimeInterval] = [:]
+    @Published var memberRunsLoading = false
+    @Published var memberRunsFailed: Set<Int> = []
     @Published var selectedMemberName: String?
     @Published var showAddMember = false
     @Published var memberNameInput = ""
@@ -217,6 +220,28 @@ final class AppState: ObservableObject {
     func toggleMember(_ name: String) {
         selectedMemberName = selectedMemberName == name ? nil : name
         selection = "members"
+    }
+
+    func loadMemberRunDurations(_ name: String, taskIds: [Int]) async {
+        memberRunDurations = [:]; memberRunsFailed = []
+        guard let client else { memberRunsFailed = Set(taskIds); memberRunsLoading = false; return }
+        memberRunsLoading = true
+        for id in taskIds {
+            guard !Task.isCancelled, selectedMemberName == name else { return }
+            do {
+                let result = try await client.call(name: "task_audit", args: ["task_id": id])
+                guard !Task.isCancelled, selectedMemberName == name else { return }
+                let runs = (result["runs"] as? [[String: Any]]) ?? []
+                if let run = runs.last(where: { ($0["member"] as? String) == name && ($0["status"] as? String) == "closed" && optDoubleVal($0["started_at"]) != nil && optDoubleVal($0["ended_at"]) != nil }),
+                   let start = optDoubleVal(run["started_at"]), let end = optDoubleVal(run["ended_at"]), end >= start {
+                    memberRunDurations[id] = end - start
+                }
+            } catch {
+                guard !Task.isCancelled, selectedMemberName == name else { return }
+                memberRunsFailed.insert(id)
+            }
+        }
+        if selectedMemberName == name { memberRunsLoading = false }
     }
 
     func memberStatus(_ member: MemberInfo) -> String {
