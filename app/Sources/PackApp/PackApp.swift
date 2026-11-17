@@ -25,6 +25,8 @@ final class AppState: ObservableObject {
     @Published var reviewInputTaskId: Int?
     @Published var reviewInput: String = ""
     @Published var reviewNotes: [Int: String] = [:]
+    @Published var taskEvents: [[String: Any]] = []
+    @Published var taskEventsTruncated = false
     @Published var taskRuns: [[String: Any]] = []
     @Published var taskTransfers: [[String: Any]] = []
     @Published var detailLoadNote: String = ""
@@ -363,16 +365,26 @@ final class AppState: ObservableObject {
 
     /// approval_request messages whose task is still waiting and has not
     /// been approved or rejected by the dispatcher afterwards.
+    func approvalDecision(for request: RoomMessage) -> RoomMessage? {
+        guard let tid = request.taskId else { return nil }
+        for item in messages where item.id > request.id {
+            if item.kind == "approval_request" && item.taskId == tid { return nil }
+            guard item.author == "dispatcher" else { continue }
+            for prefix in ["批准 任务#\(tid)", "拒绝 任务#\(tid)"] where item.body.hasPrefix(prefix) {
+                let tail = item.body.dropFirst(prefix.count)
+                if tail.first?.isNumber != true { return item }
+            }
+        }
+        return nil
+    }
+
     var pendingApprovals: [RoomMessage] {
         messages.filter { m in
-            guard m.kind == "approval_request", let tid = m.taskId else { return false }
-            guard let t = tasks.first(where: { $0.id == tid }),
-                  t.status == "claimed" || t.status == "working" else { return false }
-            let decided = messages.contains { x in
-                x.id > m.id && x.author == "dispatcher" &&
-                (x.body.hasPrefix("批准 任务#\(tid)") || x.body.hasPrefix("拒绝 任务#\(tid)"))
-            }
-            return !decided
+            guard m.kind == "approval_request", let tid = m.taskId,
+                  let task = tasks.first(where: { $0.id == tid }),
+                  task.status == "claimed" || task.status == "working" else { return false }
+            let newerRequest = messages.contains { $0.id > m.id && $0.kind == "approval_request" && $0.taskId == tid }
+            return !newerRequest && approvalDecision(for: m) == nil
         }
     }
 
@@ -512,21 +524,26 @@ final class AppState: ObservableObject {
         }
     }
 
-    func toggleChatTask(_ tid: Int) {
-        withAnimation(DesignTokens.detailAnimation) { expandedChatTaskId = expandedChatTaskId == tid ? nil : tid }
-        guard expandedChatTaskId == tid, let client else { return }
-        taskRuns = []; taskTransfers = []; detailLoadNote = "加载执行和转交记录…"
+    func openTaskDetail(_ tid: Int) {
+        selectedTaskId = tid
+        selection = "tasks"
+        taskEvents = []; taskRuns = []; taskTransfers = []; taskEventsTruncated = false
+        detailLoadNote = "正在读取任务记录…"
+        guard let client else { detailLoadNote = "记录暂时无法读取"; return }
         Task {
             do {
-                let runs = try await client.call(name: "run_list", args: ["task_id": tid])
-                let transfers = try await client.call(name: "task_transfers_list", args: ["task_id": tid])
-                guard expandedChatTaskId == tid else { return }
-                taskRuns = (runs["runs"] as? [[String: Any]]) ?? []
-                taskTransfers = (transfers["transfers"] as? [[String: Any]]) ?? []
-                detailLoadNote = ""
-            } catch { if expandedChatTaskId == tid { detailLoadNote = "记录暂时无法读取，请稍后重试" } }
+                let audit = try await client.call(name: "task_audit", args: ["task_id": tid])
+                guard selectedTaskId == tid else { return }
+                taskEvents = (audit["events"] as? [[String: Any]]) ?? []
+                taskEventsTruncated = boolVal(audit["events_truncated"])
+                taskRuns = (audit["runs"] as? [[String: Any]]) ?? []
+                taskTransfers = (audit["transfers"] as? [[String: Any]]) ?? []
+                detailLoadNote = taskEventsTruncated ? "审计记录仅显示前 200 条" : ""
+            } catch { if selectedTaskId == tid { detailLoadNote = "记录暂时无法读取，请重新打开任务重试" } }
         }
     }
+
+    func toggleChatTask(_ tid: Int) { openTaskDetail(tid) }
 
     func cancelTask(_ tid: Int) {
         act("已取消任务 #\(tid)") { try await $0.call(name: "task_cancel", args: ["task_id": tid]) }

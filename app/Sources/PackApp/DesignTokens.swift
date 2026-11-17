@@ -90,6 +90,10 @@ enum DesignTokens {
     static let boardTabHeight: CGFloat = 32
     static let boardHighlightOpacity: Double = 0.12
     static let boardHighlightLine: CGFloat = 2
+    static let approvalBackground = Color(hex: 0xFFF6E7)
+    static let approvalBorder = Color(hex: 0xE6C17C)
+    static let approvalButtonHorizontal: CGFloat = 10
+    static let approvalButtonVertical: CGFloat = 6
     static let detailSpacing: CGFloat = 8
     static let detailPadding: CGFloat = 12
     static let detailAnimation = Animation.easeInOut(duration: 0.2)

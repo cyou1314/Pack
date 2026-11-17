@@ -346,6 +346,7 @@ private struct CenterHeader: View {
 
 private struct RoomView: View {
     @ObservedObject var state: AppState
+    private var visibleMessages: [RoomMessage] { state.messages.filter { $0.kind != "task_card" && $0.kind != "report" } }
     var body: some View {
         VStack(spacing: 0) {
         if let summary = state.roomSummary {
@@ -360,11 +361,11 @@ private struct RoomView: View {
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(spacing: DesignTokens.chatSpacing) {
-                if state.messages.isEmpty {
+                if visibleMessages.isEmpty {
                     EmptyPanel(icon: "bubble.left.and.bubble.right", title: state.connected ? "还没有消息，开始一次协作吧" : "暂时无法加载群聊", subtitle: state.connected ? "派发任务，或先了解当前成员。" : "中枢连接中断，正在自动重试。", first: "派第一张活", second: "查看成员", action1: { state.showCreateTask = true }, action2: { state.selection = "members" })
                 }
-                ForEach(state.messages) { message in
-                    if let boundary = state.unreadBoundary, state.messages.first(where: { $0.id > boundary })?.id == message.id {
+                ForEach(visibleMessages) { message in
+                    if let boundary = state.unreadBoundary, visibleMessages.first(where: { $0.id > boundary })?.id == message.id {
                         HStack { Rectangle().fill(DesignTokens.hairline).frame(height: DesignTokens.boardLine); Text("未读消息").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText); Rectangle().fill(DesignTokens.hairline).frame(height: DesignTokens.boardLine) }
                     }
                     MessageOperations(state: state, message: message)
@@ -653,15 +654,18 @@ private struct ChatTaskDetail: View {
             Divider()
             Text("执行者：\(task.assignee ?? "未指派") · 尝试次数：\(task.attempts)").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             if let lease = task.leaseExpires { Text("租约到期：\(Date(timeIntervalSince1970: lease).formatted())").font(DesignTokens.fontSmall) }
-            Text("执行记录").font(DesignTokens.fontTitle)
             Text("五步时间线").font(DesignTokens.fontTitle)
-            Text("认领：中枢未返回认领时间").font(DesignTokens.fontSmall)
-            Text(state.taskRuns.isEmpty ? "执行：暂无运行记录" : "执行：\(state.taskRuns.count) 条运行记录").font(DesignTokens.fontSmall)
-            Text(task.envelope != nil || task.result != nil ? "交活：已提交" : "交活：暂无记录").font(DesignTokens.fontSmall)
-            Text(task.status == "done" ? "验收：已关单" : "验收：\(task.statusLabel)").font(DesignTokens.fontSmall)
-            Text(state.taskTransfers.isEmpty ? "转交：暂无记录" : "转交：\(state.taskTransfers.count) 条记录").font(DesignTokens.fontSmall)
+            ForEach([("创建", "task_create"), ("认领", "task_claim"), ("执行", "run_start"), ("交活", "task_complete"), ("验收", "task_review")], id: \.1) { label, action in
+                let event = state.taskEvents.last { ($0["action"] as? String) == action }
+                let stamp = event.flatMap { optDoubleVal($0["ts"]) }
+                HStack {
+                    Text(label).font(DesignTokens.fontUI)
+                    Spacer()
+                    if let stamp { Text(Date(timeIntervalSince1970: stamp).formatted()).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
+                    else { Text(state.detailLoadNote.isEmpty ? "暂无记录" : "未确认").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
+                }
+            }
             if !state.detailLoadNote.isEmpty { Text(state.detailLoadNote).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
-            else if state.taskRuns.isEmpty { Text("暂无执行记录").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
             ForEach(Array(state.taskRuns.enumerated()), id: \.offset) { _, run in
                 let start = doubleVal(run["started_at"]); let end = optDoubleVal(run["ended_at"])
                 Text("\((run["member"] as? String) ?? "成员") · 第 \(intVal(run["fence"])) 次 · \((run["outcome"] as? String) ?? (run["status"] as? String) ?? "未知")" + (end.map { " · \(Int(max(0, $0 - start))) 秒" } ?? " · 进行中"))
@@ -681,8 +685,10 @@ private struct ChatTaskDetail: View {
             ForEach(Array(state.taskTransfers.enumerated()), id: \.offset) { _, transfer in
                 Text("\((transfer["from_member"] as? String) ?? "?") → \((transfer["to_member"] as? String) ?? "?") · \((transfer["status"] as? String) ?? "?") · \((transfer["reason"] as? String) ?? "")").font(DesignTokens.fontSmall).textSelection(.enabled)
             }
-            Text("审计入口：中枢未提供查询接口").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
-            Button("在任务板打开") { state.selection = "tasks" }.buttonStyle(.plain).foregroundStyle(DesignTokens.blue)
+            Text("审计记录").font(DesignTokens.fontTitle)
+            ForEach(Array(state.taskEvents.enumerated()), id: \.offset) { _, event in
+                Text("\((event["action"] as? String) ?? "事件") · \((event["actor"] as? String) ?? "") · \((event["detail"] as? String) ?? "")").font(DesignTokens.fontSmall).textSelection(.enabled)
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -693,22 +699,28 @@ private struct ApprovalCard: View {
     let task: PackTask
     var pending: Bool { state.pendingApprovals.contains { $0.id == message.id } }
     var reason: Binding<String> { Binding(get: { state.rejectReasons[task.id] ?? "" }, set: { state.rejectReasons[task.id] = $0 }) }
+    private var decision: RoomMessage? { state.approvalDecision(for: message) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack { Label("需要你的批准", systemImage: "exclamationmark.shield.fill").font(.system(size: 12, weight: .bold)).foregroundStyle(PackStyle.amber); Spacer(); Pill(title: pending ? "待批准" : "已处理", color: pending ? PackStyle.amber : .secondary) }
-            Text("#\(task.id) \(task.title)").font(.system(size: 13, weight: .semibold))
-            if !task.body.isEmpty { Text(task.body).font(.system(size: 12)).textSelection(.enabled) }
-            Text("请求者：\(message.author) · \(message.body)").font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
+        VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
             if pending {
-                TextField("拒绝原因（可选）", text: reason).textFieldStyle(.roundedBorder).font(.system(size: 12))
-                HStack {
-                    Button("批准执行") { state.approveTask(task.id) }.buttonStyle(.borderedProminent).tint(PackStyle.amber)
-                    Button("拒绝", role: .destructive) { state.rejectTask(task.id) }.buttonStyle(.bordered)
-                    Spacer()
-                    Button("查看详情") { state.selectedTaskId = task.id; state.selection = "tasks" }.buttonStyle(.plain).foregroundStyle(PackStyle.accent)
-                }.font(.system(size: 11, weight: .semibold))
+                Text("待批准 · 任务 #\(task.id)").font(DesignTokens.fontTitle).foregroundStyle(DesignTokens.amber)
+                Text(task.title).font(DesignTokens.fontTitle)
+                Text(message.body).font(DesignTokens.fontSmall).textSelection(.enabled)
+                TextField("拒绝原因（可选）", text: reason).textFieldStyle(.roundedBorder).font(DesignTokens.fontSmall)
+                HStack(spacing: DesignTokens.detailSpacing) {
+                    Button("仅这一次") { state.approveTask(task.id) }.buttonStyle(.borderedProminent).tint(DesignTokens.blue)
+                    Button("总是允许") {}.buttonStyle(.bordered).disabled(true).help("持久规则尚未接入")
+                    Button("拒绝") { state.rejectTask(task.id) }.buttonStyle(.bordered).foregroundStyle(DesignTokens.danger)
+                }.font(DesignTokens.fontSmall)
+            } else if let decision {
+                Text(decision.body.hasPrefix("批准") ? (decision.body.contains("规则库") ? "✓ 已批准 · 规则自动通过" : "✓ 已批准 · 仅这一次") : "已拒绝").font(DesignTokens.fontSmall)
+            } else {
+                Text("已结束 · 未找到决议记录").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             }
-        }.padding(16).card(PackStyle.amber.opacity(0.48))
+        }.padding(DesignTokens.detailPadding)
+            .background(DesignTokens.approvalBackground, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.approvalBorder, lineWidth: DesignTokens.boardLine))
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -857,7 +869,6 @@ private struct BoardTaskCard: View {
     @ObservedObject var state: AppState
     let task: PackTask
     private var member: MemberInfo? { state.members.first { $0.name == task.assignee } }
-    private var message: RoomMessage? { state.messages.first { $0.taskId == task.id && $0.kind == "task_card" } }
     private var tag: String? {
         guard task.title.hasPrefix("["), let end = task.title.firstIndex(of: "]") else { return nil }
         return String(task.title[...end])
@@ -885,26 +896,12 @@ private struct BoardTaskCard: View {
             if ["claimed", "working"].contains(task.status) {
                 Rectangle().fill(DesignTokens.hairline).frame(height: DesignTokens.boardProgressHeight)
             }
-            if task.status == "review" {
-                HStack {
-                    Button("通过") { state.reviewTask(task.id, approve: true) }.buttonStyle(.borderedProminent).tint(DesignTokens.ink)
-                    Button("打回") {
-                        if let report = state.messages.first(where: { $0.taskId == task.id && $0.kind == "report" }) {
-                            state.reviewInput = ""; state.reviewInputTaskId = task.id
-                            state.highlightedMessageId = report.id; state.selection = "room"
-                        }
-                    }.buttonStyle(.plain)
-                }.font(DesignTokens.fontSmall)
-            }
+
         }.padding(DesignTokens.boardCardInset)
             .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.boardCardRadius))
             .overlay(RoundedRectangle(cornerRadius: DesignTokens.boardCardRadius).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine))
             .contentShape(Rectangle())
-            .onTapGesture {
-                guard let message else { return }
-                state.highlightedMessageId = message.id
-                state.selection = "room"
-            }.help(message == nil ? "未找到对应任务消息" : "在对话中查看")
+            .onTapGesture { state.openTaskDetail(task.id) }.help("查看任务详情")
     }
 }
 
@@ -932,9 +929,8 @@ private struct ApprovalsView: View {
                 Text("交活待验收 · \(reviews.count)").font(DesignTokens.fontTitle)
                 if reviews.isEmpty { Text("暂无待验收").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
                 ForEach(reviews) { task in
-                    let message = state.messages.last { $0.taskId == task.id && $0.kind == "report" }
-                    Button { if let message { jump(message) } } label: { Label("#\(task.id) \(task.title)", systemImage: "doc.text").frame(maxWidth: .infinity, alignment: .leading) }
-                        .buttonStyle(.plain).disabled(message == nil).help(message == nil ? "当前消息窗口没有对应交活卡" : "在对话中查看")
+                    Button { state.openTaskDetail(task.id) } label: { Label("#\(task.id) \(task.title)", systemImage: "doc.text").frame(maxWidth: .infinity, alignment: .leading) }
+                        .buttonStyle(.plain)
                         .padding(DesignTokens.memberInset).overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline))
                 }
                 Text("成员掉线超过 10 分钟 · \(offline.count)").font(DesignTokens.fontTitle)
@@ -1119,16 +1115,29 @@ private struct MemberLoginShell: View {
 private struct TaskDetail: View {
     @ObservedObject var state: AppState
     let task: PackTask
+    @FocusState private var reasonFocused: Bool
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack { Text("任务 #\(task.id)").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary); Spacer(); Pill(title: task.statusLabel, color: PackStyle.status(task.status)) }
-            Text(task.title).font(.system(size: 16, weight: .semibold))
-            if let name = task.assignee { HStack(spacing: 8) { MemberAvatarView(name: name, member: state.members.first { $0.name == name }, size: 26); Text(name).font(.system(size: 12)) } }
-            if !task.body.isEmpty { Text("任务说明").font(.system(size: 11, weight: .semibold)); Text(task.body).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled) }
-            if let result = task.result { Text("成果").font(.system(size: 11, weight: .semibold)); Text(result).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8)) }
-            if task.status == "review" { Button("验收关单") { state.reviewTask(task.id, approve: true) }.buttonStyle(.borderedProminent); Button("打回重做") { state.reviewTask(task.id, approve: false) }.buttonStyle(.bordered) }
+        VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
+            HStack { Text("任务 #\(task.id) · \(task.title)").font(DesignTokens.fontTitle); Spacer(); Text(task.statusLabel).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
+            if !task.body.isEmpty { Text(task.body).font(DesignTokens.fontUI).textSelection(.enabled) }
+            ChatTaskDetail(state: state, task: task)
+            if let artifacts = task.envelope?.artifacts, !artifacts.isEmpty {
+                ArtifactGroup(state: state, taskId: task.id, artifacts: artifacts)
+            }
+            if task.status == "review" {
+                if state.reviewInputTaskId == task.id {
+                    TextField("填写打回理由，回车提交", text: $state.reviewInput)
+                        .focused($reasonFocused).onSubmit { state.reviewTask(task.id, approve: false, note: state.reviewInput) }
+                        .onExitCommand { state.reviewInputTaskId = nil; state.reviewInput = "" }
+                } else {
+                    HStack {
+                        Button("通过") { state.reviewTask(task.id, approve: true) }.buttonStyle(.borderedProminent).tint(DesignTokens.ink)
+                        Button("打回") { state.reviewInput = ""; state.reviewInputTaskId = task.id; reasonFocused = true }.buttonStyle(.plain)
+                    }.font(DesignTokens.fontSmall)
+                }
+            }
             if ["open", "claimed", "working"].contains(task.status) { Button("取消任务", role: .destructive) { state.cancelTask(task.id) }.buttonStyle(.bordered) }
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(14).card()
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(DesignTokens.detailPadding).card()
     }
 }
 
