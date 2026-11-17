@@ -924,9 +924,12 @@ def sweep_once():
             recv = conn.execute("SELECT id FROM members WHERE name=?",
                                 (x["to_member"],)).fetchone()
             if recv and t["assignee"] == recv["id"]:
+                snd = conn.execute("SELECT id, removed_at FROM members WHERE name=?",
+                                   (x["from_member"],)).fetchone()
+                back_to = snd["id"] if (snd and not snd["removed_at"]) else None
                 cur = conn.execute(
-                    "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND claim_token IS NULL AND status IN ('claimed','working')",
-                    (now, t["id"]))
+                    "UPDATE tasks SET status='open', assignee=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND claim_token IS NULL AND status IN ('claimed','working')",
+                    (back_to, now, t["id"]))
                 requeued = cur.rowcount == 1
         audit(conn, "sweeper", "transfer_expired",
               f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
@@ -950,7 +953,9 @@ def sweep_once():
             audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
         else:
             nca = now + _backoff_seconds("transient", t["attempts"])
-            cur = conn.execute("UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=?, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
+            # RT1（staging37）：回池保留原指派（成员已移除才解指派），
+            # 否则运行时按名轮询看不见、重试链断裂。
+            cur = conn.execute("UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=?, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
                                (nca, now, t["id"], now))
             if cur.rowcount != 1:
                 continue
@@ -966,7 +971,7 @@ def sweep_once():
             if holder_name:
                 with _lock:
                     t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
-                    if (t2 and t2["status"] == "open" and t2["assignee"] is None
+                    if (t2 and t2["status"] == "open" and (t2["assignee"] is None or t2["assignee"] == t["assignee"])
                             and t2["claim_token"] is None):
                         try:
                             _auto_relay(conn, t2, holder_name, "掉线失联")
@@ -2051,7 +2056,7 @@ def build_server():
             fc = t["fail_class"] or "unknown"
             nca = now + _backoff_seconds(fc, t["attempts"])
             conn.execute(
-                "UPDATE tasks SET status='open', assignee=NULL, review_note=?, next_claim_at=?, updated_at=? WHERE id=?",
+                "UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, review_note=?, next_claim_at=?, updated_at=? WHERE id=?",
                 (note, nca, now, task_id))
             audit(conn, me["name"], "task_review_backoff", f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
         audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
@@ -2179,7 +2184,10 @@ def build_server():
         next_claim_at；clear_backoff=True 则不设退避、立刻可认领（等价于
         放回与清退避一步完成）。fail_class 保留供复盘。
         尝试上限是硬顶：attempts 已达 MAX_ATTEMPTS 的任务拒绝放回，
-        须新建任务或 cancel，不许靠人工放回绕过 3 次上限。"""
+        须新建任务或 cancel，不许靠人工放回绕过 3 次上限。
+        RT1（staging37）：放回保留原指派（指派成员已被移除时才解指派）——
+        运行时按 assignee_name 轮询 open 列表，清指派会让重试链断裂
+        （2026-11-17 活群验收 #26 实证）。"""
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
@@ -2199,7 +2207,7 @@ def build_server():
         now = _now()
         nca = None if clear_backoff else now + _backoff_seconds(fc, t["attempts"])
         conn.execute(
-            "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, next_claim_at=?, updated_at=? WHERE id=?",
+            "UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, claim_token=NULL, lease_expires=NULL, next_claim_at=?, updated_at=? WHERE id=?",
             (nca, now, task_id))
         audit(conn, me["name"], "task_release",
               f"task {task_id} fail_class={fc} next_claim_at={nca if nca is None else round(nca)}")
