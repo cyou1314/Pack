@@ -2131,7 +2131,7 @@ def build_server():
 
     @mcp.tool
     def task_complete(task_id: int, claim_token: str, result: str,
-                      envelope: dict | None = None) -> dict:
+                      envelope: dict | None = None, attachment_ids: str = "") -> dict:
         """持有人交活：状态转 review，等调度员验收关单。
         可选 envelope（结构化交活信封，合成清单第 2 项）：
           {verdict: "done"|"partial"|"failed"（必填）, summary: 一句话（必填，
@@ -2140,7 +2140,10 @@ def build_server():
            {ran, evidence}, known_issues: [..], followups: [..]}。
         带信封时先按 schema 校验，不过整笔打回（错误为 JSON 载荷
         {"error":"invalid_envelope","problems":[...]}）、任务状态不变；
-        不带信封照旧交纯文本 result（老执行体不受影响）。"""
+        不带信封照旧交纯文本 result（老执行体不受影响）。
+        可选 attachment_ids（JSON 数组字符串，口径同 room_post）：把调用者
+        本人上传的、同房间未绑定附件（≤4）绑到本次交活的 report 消息上，
+        与状态更新同事务，任一不合规整笔回滚、任务保持 working。"""
         me = authenticate()
         require(me)
         conn = db()
@@ -2167,14 +2170,43 @@ def build_server():
             _close_run(conn, task_id, "completed", me["name"])
             _desktop_release_for_task(conn, task_id, me["name"], "complete")
             t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
                 (t["room_id"], me["id"], f"交活 任务#{task_id}: {stored}", task_id, now))
+            mid = cur.lastrowid
+            n_att = 0
+            if attachment_ids:
+                # 交活绑附件（staging46）：与 room_post 同口径、同事务；
+                # 任一不合规整笔回滚（状态更新与 report 均不落库）。
+                try:
+                    ids = json.loads(attachment_ids)
+                except Exception:
+                    conn.rollback()
+                    conn.close()
+                    raise ValueError("attachment_ids must be a JSON array of ids")
+                if (not isinstance(ids, list) or not ids or len(ids) > 4
+                        or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
+                        or len(set(ids)) != len(ids)):
+                    conn.rollback()
+                    conn.close()
+                    raise ValueError("attachment_ids must be 1-4 unique integer ids")
+                for aid in ids:
+                    cur2 = conn.execute(
+                        "UPDATE attachments SET message_id=? WHERE id=? AND message_id IS NULL AND room_id=? AND uploader_id=?",
+                        (mid, aid, t["room_id"], me["id"]))
+                    if cur2.rowcount != 1:
+                        conn.rollback()
+                        conn.close()
+                        raise ValueError(f"attachment {aid} cannot be bound")
+                n_att = len(ids)
             audit(conn, me["name"], "task_complete",
-                  f"task {task_id}" + (f" verdict={env['verdict']}" if env else ""))
+                  f"task {task_id}" + (f" verdict={env['verdict']}" if env else "")
+                  + (f" attachments={n_att}" if n_att else ""))
             conn.commit()
             conn.close()
             out = {"task_id": task_id, "status": "review"}
+            if n_att:
+                out["attachments"] = n_att
             if env:
                 out["verdict"] = env["verdict"]
                 out["envelope"] = env
