@@ -47,6 +47,7 @@
   python hub.py init     # 首次初始化：建库、建默认房间、生成调度员 token 到 .dispatcher_token (0600)
   python hub.py serve    # 起服务 127.0.0.1:8794 /mcp
 """
+import base64
 import hashlib
 import json
 import os
@@ -61,6 +62,10 @@ import urllib.parse
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE, "pack.db")
 PORT = int(os.environ.get("PACK_HUB_PORT", "8794"))
+ATTACH_DIR = os.path.join(BASE, "attachments")
+ATTACH_MAX_BYTES = 10 * 1024 * 1024
+ATTACH_ROOM_QUOTA = 500 * 1024 * 1024
+ATTACH_MIME_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
 LEASE_SECONDS = int(os.environ.get("PACK_LEASE_SECONDS", "1800"))
 MAX_ATTEMPTS = 3
 TRANSFER_CAP = 3  # 规格 §4.8/§4.7：同一任务转交链（接力）上限，含转交在内
@@ -179,12 +184,40 @@ CREATE INDEX IF NOT EXISTS idx_skillver ON skill_versions(skill_id, version DESC
 CREATE TABLE IF NOT EXISTS member_skills(
   member_id INTEGER NOT NULL, skill_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (member_id, skill_id));
+CREATE TABLE IF NOT EXISTS attachments(
+  id INTEGER PRIMARY KEY, sha256 TEXT NOT NULL, mime TEXT NOT NULL,
+  size INTEGER NOT NULL, original_name TEXT NOT NULL DEFAULT '',
+  uploader_id INTEGER NOT NULL, room_id INTEGER NOT NULL,
+  message_id INTEGER, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_attach_msg ON attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_attach_room ON attachments(room_id, id);
 """
 
 
 def audit(conn, actor, action, detail=""):
     conn.execute("INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
                  (time.time(), actor, action, detail))
+
+
+# ---------------- 附件通道（staging39 / D18） ----------------
+# v1 只收图片：内容寻址存储（sha256 分片目录、天然去重），元数据进
+# attachments 表；上传时魔数与声明 mime 双验；绑定走 room_post 的
+# attachment_ids（JSON 数组字符串），同事务落库、只能绑自己的、未绑的。
+
+def _sniff_image_mime(data: bytes):
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _attach_path(sha256: str, mime: str) -> str:
+    return os.path.join(ATTACH_DIR, sha256[:2], sha256 + "." + ATTACH_MIME_EXT[mime])
 
 
 # ---------------- Run 层防重跑（SPEC 附录 G.1 第 4 条） ----------------
@@ -1375,7 +1408,7 @@ def build_server():
         return out
 
     @mcp.tool
-    def room_post(room: str, body: str, kind: str = "chat") -> dict:
+    def room_post(room: str, body: str, kind: str = "chat", attachment_ids: str = "") -> dict:
         """在房间发一条消息。kind: chat/system/report/approval_request。
         完整性守卫：task_card 只能由 task_create 内部落库、decision 只能由
         规则引擎/审查内部落库或调度员客户端代发——成员经 room_post 伪造
@@ -1412,6 +1445,29 @@ def build_server():
             "INSERT INTO messages(room_id,author_id,kind,body,created_at) VALUES(?,?,?,?,?)",
             (r["id"], me["id"], kind, body, time.time()))
         mid = cur.lastrowid
+        if attachment_ids:
+            # 附件绑定（staging39）：与消息同事务；只能绑自己上传的、同房间、
+            # 尚未绑定的附件，≤4 个；任一不合规整笔回滚（消息也不落库）。
+            try:
+                ids = json.loads(attachment_ids)
+            except Exception:
+                conn.rollback()
+                conn.close()
+                raise ValueError("attachment_ids must be a JSON array of ids")
+            if (not isinstance(ids, list) or not ids or len(ids) > 4
+                    or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
+                    or len(set(ids)) != len(ids)):
+                conn.rollback()
+                conn.close()
+                raise ValueError("attachment_ids must be 1-4 unique integer ids")
+            for aid in ids:
+                cur2 = conn.execute(
+                    "UPDATE attachments SET message_id=? WHERE id=? AND message_id IS NULL AND room_id=? AND uploader_id=?",
+                    (mid, aid, r["id"], me["id"]))
+                if cur2.rowcount != 1:
+                    conn.rollback()
+                    conn.close()
+                    raise ValueError(f"attachment {aid} cannot be bound")
         extra = {}
         if kind == "approval_request":
             extra = _approval_gate(conn, r["id"], mid, body, poster=me)
@@ -1588,6 +1644,15 @@ def build_server():
                FROM messages m JOIN members mb ON mb.id=m.author_id
                WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?""",
             (r["id"], since_id, limit)).fetchall()
+        amap = {}
+        if rows:
+            mids = [x["id"] for x in rows]
+            q = ("SELECT id, message_id, mime, size, original_name FROM attachments "
+                 "WHERE message_id IN (%s) ORDER BY id" % ",".join("?" * len(mids)))
+            for a in conn.execute(q, mids).fetchall():
+                amap.setdefault(a["message_id"], []).append(
+                    {"id": a["id"], "mime": a["mime"], "size": a["size"],
+                     "filename": a["original_name"]})
         conn.close()
         out = []
         for x in rows:
@@ -1599,8 +1664,114 @@ def build_server():
                 "body": DELETED_PLACEHOLDER if deleted else x["body"],
                 "task_id": x["task_id"], "created_at": x["created_at"],
                 "deleted": deleted, "edited": bool(x["edited_at"]),
+                "attachments": amap.get(x["id"], []),
             })
         return {"messages": out}
+
+    @mcp.tool
+    def attachment_put(room: str, filename: str, mime: str, data_base64: str) -> dict:
+        """上传一张图片附件（staging39 / D18，v1 只收图片）。mime 须为
+        image/png、image/jpeg、image/webp、image/gif 之一，且与文件魔数
+        一致；单文件 ≤10MB；同房间附件总量软顶 500MB。文件按 sha256 内容
+        寻址存储、相同内容只存一份。返回 attachment_id，之后用 room_post 的
+        attachment_ids 把它绑到一条消息上（只能绑自己的、未绑定的）。"""
+        me = authenticate()
+        require(me)
+        if mime not in ATTACH_MIME_EXT:
+            raise ValueError(f"unsupported mime: {mime}")
+        if len(data_base64) > (ATTACH_MAX_BYTES * 4 // 3) + 1024:
+            raise ValueError("attachment too large")
+        try:
+            data = base64.b64decode(data_base64, validate=True)
+        except Exception:
+            raise ValueError("invalid base64")
+        if not data:
+            raise ValueError("empty attachment")
+        if len(data) > ATTACH_MAX_BYTES:
+            raise ValueError("attachment too large")
+        if _sniff_image_mime(data) != mime:
+            raise ValueError("mime does not match file content")
+        sha = hashlib.sha256(data).hexdigest()
+        name = (filename or "").replace("/", "_").replace("\\", "_")[:120]
+        with _lock:
+            conn = db()
+            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+            if not r:
+                conn.close()
+                raise ValueError(f"no such room: {room}")
+            total = conn.execute(
+                "SELECT COALESCE(SUM(size),0) AS s FROM attachments WHERE room_id=?",
+                (r["id"],)).fetchone()["s"]
+            if total + len(data) > ATTACH_ROOM_QUOTA:
+                conn.close()
+                raise ValueError("room attachment quota exceeded")
+            path = _attach_path(sha, mime)
+            if not os.path.exists(path):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                tmp = path + f".tmp-{os.getpid()}"
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, path)
+            cur = conn.execute(
+                "INSERT INTO attachments(sha256,mime,size,original_name,uploader_id,room_id,message_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)",
+                (sha, mime, len(data), name, me["id"], r["id"], time.time()))
+            aid = cur.lastrowid
+            audit(conn, me["name"], "attachment_put",
+                  f"attachment {aid} room {room} size {len(data)}")
+            conn.commit()
+            conn.close()
+        return {"attachment_id": aid, "sha256": sha, "size": len(data), "mime": mime}
+
+    @mcp.tool
+    def attachment_get(attachment_id: int) -> dict:
+        """取一张附件图片的本体（base64）。任何在册成员可取（房间不做
+        成员级隔离，与消息读取同口径）；不存在或文件丢失时报错。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        row = conn.execute("SELECT * FROM attachments WHERE id=?",
+                           (attachment_id,)).fetchone()
+        if not row:
+            conn.close()
+            raise ValueError(f"no such attachment: {attachment_id}")
+        path = _attach_path(row["sha256"], row["mime"])
+        if not os.path.exists(path):
+            conn.close()
+            raise ValueError("attachment file missing")
+        with open(path, "rb") as f:
+            data = f.read()
+        audit(conn, me["name"], "attachment_get", f"attachment {attachment_id}")
+        conn.commit()
+        conn.close()
+        return {"attachment_id": attachment_id, "mime": row["mime"],
+                "size": row["size"], "filename": row["original_name"],
+                "data_base64": base64.b64encode(data).decode()}
+
+    @mcp.tool
+    def attachment_list(room: str, message_id: int = 0) -> dict:
+        """列房间附件元数据（不含本体）；message_id>0 时只列该消息的。"""
+        me = authenticate()
+        require(me)
+        conn = db()
+        r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+        if not r:
+            conn.close()
+            raise ValueError(f"no such room: {room}")
+        q = ("SELECT a.id, a.message_id, a.mime, a.size, a.original_name, "
+             "a.created_at, mb.name AS uploader FROM attachments a "
+             "JOIN members mb ON mb.id=a.uploader_id WHERE a.room_id=?")
+        args = [r["id"]]
+        if message_id:
+            q += " AND a.message_id=?"
+            args.append(message_id)
+        q += " ORDER BY a.id ASC"
+        rows = conn.execute(q, args).fetchall()
+        conn.close()
+        return {"attachments": [
+            {"id": x["id"], "message_id": x["message_id"], "mime": x["mime"],
+             "size": x["size"], "filename": x["original_name"],
+             "uploader": x["uploader"], "created_at": x["created_at"]}
+            for x in rows]}
 
     @mcp.tool
     def message_delete(message_id: int) -> dict:
