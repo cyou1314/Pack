@@ -55,7 +55,13 @@ enum DesignTokens {
     static let connectionBannerBackground = Color(hex: 0xFFF6E7)
     static let connectionBannerVertical: CGFloat = 8
     static let connectionDisabledOpacity: Double = 0.55
-    static let summaryItemSpacing: CGFloat = 3
+    static let summaryItemSpacing: CGFloat = 8
+    static let summaryGroupSpacing: CGFloat = 12
+    static let summaryLabelWidth: CGFloat = 64
+    static let summaryTagHorizontal: CGFloat = 8
+    static let summaryTagVertical: CGFloat = 4
+    static let summaryTagOpacity: Double = 0.10
+    static let summaryAvatarSize: CGFloat = 24
     static let summaryIconFont = Font.system(size: 10, weight: .semibold)
     static let summarySectionFont = Font.system(size: 11, weight: .semibold)
     static let shellSurface = Color(nsColor: .textBackgroundColor)

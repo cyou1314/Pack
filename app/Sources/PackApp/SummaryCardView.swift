@@ -17,18 +17,34 @@ struct SummaryCardView: View {
         VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
                 Button(action: onToggle) {
                     HStack(spacing: DesignTokens.shellGap) {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(DesignTokens.summaryIconFont)
-                            .foregroundColor(DesignTokens.subText)
+                        if expanded {
+                            if let url = Bundle.main.url(forResource: "dispatcher", withExtension: "webp", subdirectory: "avatars"),
+                               let avatar = NSImage(contentsOf: url) {
+                                Image(nsImage: avatar).resizable().scaledToFill()
+                                    .frame(width: DesignTokens.summaryAvatarSize, height: DesignTokens.summaryAvatarSize)
+                                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusSmall))
+                            }
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(DesignTokens.summaryIconFont)
+                                .foregroundColor(DesignTokens.subText)
+                        }
                         Text("房间摘要")
                             .font(DesignTokens.fontTitle)
                             .foregroundColor(DesignTokens.ink)
-                        if !expanded {
+                        if expanded {
+                            tag("钉在顶部", color: DesignTokens.blue)
+                        } else {
                             Text("待拍板 \(summary.pending.count)")
                                 .font(DesignTokens.fontSmall)
                                 .foregroundColor(DesignTokens.subText)
                         }
                         Spacer()
+                        if expanded {
+                            Text(summary.updatedAt.map { "调度员维护 · \(Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .shortened)) 更新" } ?? "调度员维护 · 更新时间暂无")
+                                .font(DesignTokens.fontSmall)
+                                .foregroundColor(DesignTokens.subText)
+                        }
                     }
                     .contentShape(Rectangle())
                 }
@@ -36,9 +52,11 @@ struct SummaryCardView: View {
 
                 if expanded {
                     if isEmpty { Text("暂无摘要").font(DesignTokens.fontSmall).foregroundColor(DesignTokens.subText) }
-                    section(title: "已定", items: summary.decided)
-                    section(title: "进行中", items: summary.inProgress)
-                    section(title: "待拍板", items: summary.pending)
+                    VStack(alignment: .leading, spacing: DesignTokens.summaryGroupSpacing) {
+                        section(title: "已定", items: summary.decided, color: DesignTokens.okGreen)
+                        section(title: "进行中", items: summary.inProgress, color: DesignTokens.blue)
+                        section(title: "待拍板", items: summary.pending, color: DesignTokens.amber)
+                    }
                 }
             }
             .padding(DesignTokens.detailPadding)
@@ -50,20 +68,30 @@ struct SummaryCardView: View {
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
     }
 
+    private func tag(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(DesignTokens.summarySectionFont)
+            .foregroundColor(color)
+            .padding(.horizontal, DesignTokens.summaryTagHorizontal)
+            .padding(.vertical, DesignTokens.summaryTagVertical)
+            .background(color.opacity(DesignTokens.summaryTagOpacity), in: Capsule())
+    }
+
     @ViewBuilder
-    private func section(title: String, items: [String]) -> some View {
+    private func section(title: String, items: [String], color: Color) -> some View {
         if !items.isEmpty {
-            VStack(alignment: .leading, spacing: DesignTokens.summaryItemSpacing) {
-                Text(title)
-                    .font(DesignTokens.summarySectionFont)
-                    .foregroundColor(DesignTokens.ink)
-                ForEach(items, id: \.self) { item in
-                    HStack(alignment: .top, spacing: DesignTokens.shellGap) {
-                        Text("·").foregroundColor(DesignTokens.subText)
-                        Text(item)
-                            .font(DesignTokens.fontUI)
-                            .foregroundColor(DesignTokens.ink)
-                            .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: DesignTokens.shellGap) {
+                tag(title, color: color)
+                    .frame(width: DesignTokens.summaryLabelWidth, alignment: .leading)
+                VStack(alignment: .leading, spacing: DesignTokens.summaryItemSpacing) {
+                    ForEach(items, id: \.self) { item in
+                        HStack(alignment: .top, spacing: DesignTokens.shellGap) {
+                            Text("·").foregroundColor(DesignTokens.subText)
+                            Text(item)
+                                .font(DesignTokens.fontUI)
+                                .foregroundColor(DesignTokens.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
