@@ -897,6 +897,16 @@ def _desktop_release_for_task(conn, task_id, actor, reason):
     return False
 
 
+def _week_start_cst(now=None):
+    """本周一 00:00（UTC+8，无夏令时）的 epoch 秒。"""
+    import datetime as _dt
+    tz = _dt.timezone(_dt.timedelta(hours=8))
+    cur = _dt.datetime.fromtimestamp(now if now is not None else time.time(), tz)
+    monday = (cur - _dt.timedelta(days=cur.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return monday.timestamp()
+
+
 def sweep_once():
     now = _now()
     conn = db()
@@ -2089,15 +2099,23 @@ def build_server():
 
     @mcp.tool
     def member_list() -> dict:
-        """List room members with role/profile and last heartbeat (epoch seconds)."""
+        """List room members with role/profile and last heartbeat (epoch seconds).
+        每人另带 week_done：本周（周一 00:00 起，UTC+8）已交活数——status=done
+        且 updated_at 落在本周内的任务计数（staging38，D12：App 成员详情
+        「本周已交活」的数据源；task_list 有条数上限算不出全局口径）。"""
         me = authenticate()
         require(me)
         conn = db()
         rows = conn.execute(
-            "SELECT name, role, profile, created_at, last_heartbeat, avatar,"
+            "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
             " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at"
             " FROM members WHERE removed_at IS NULL ORDER BY id"
         ).fetchall()
+        wk = _week_start_cst()
+        counts = {r["assignee"]: r["n"] for r in conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks"
+            " WHERE status='done' AND assignee IS NOT NULL AND updated_at>=?"
+            " GROUP BY assignee", (wk,)).fetchall()}
         out = []
         for r in rows:
             d = dict(r)
@@ -2105,6 +2123,7 @@ def build_server():
                 d["avatar"] = json.loads(d["avatar"]) if d.get("avatar") else avatar_for(d["name"])
             except Exception:
                 d["avatar"] = avatar_for(d["name"])
+            d["week_done"] = counts.get(d["id"], 0)
             out.append(d)
         return {"members": out}
 
