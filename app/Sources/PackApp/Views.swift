@@ -864,14 +864,16 @@ private struct ApprovalCard: View {
                 TextField("拒绝原因（可选）", text: reason).textFieldStyle(.roundedBorder).font(DesignTokens.fontSmall)
                 HStack(spacing: DesignTokens.detailSpacing) {
                     Button("仅这一次") { state.approveTask(task.id) }.buttonStyle(.borderedProminent).tint(DesignTokens.blue)
-                    Button("总是允许") {}.buttonStyle(.bordered).disabled(true).help("持久规则尚未接入")
+                    Button("总是允许") { state.approveAlways(task, requestID: message.id) }.buttonStyle(.bordered)
                     Button("拒绝") { state.rejectTask(task.id) }.buttonStyle(.bordered).foregroundStyle(DesignTokens.danger)
                 }.font(DesignTokens.fontSmall).disabled(state.decisionsPending.contains(task.id))
             } else if let decision {
-                Text(decision.body.hasPrefix("批准") ? (decision.body.contains("规则库") ? "✓ 已批准 · 规则自动通过" : "✓ 已批准 · 仅这一次") : "已拒绝").font(DesignTokens.fontSmall)
+                Text(decision.body.hasPrefix("批准") ? (decision.body.contains("规则库") ? "✓ 已批准 · 规则自动通过" : (state.alwaysRuleSucceeded.contains(message.id) ? "✓ 已批准 · 总是允许" : "✓ 已批准 · 仅这一次")) : "已拒绝").font(DesignTokens.fontSmall)
             } else {
                 Text("已结束 · 未找到决议记录").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             }
+            if state.alwaysRuleInFlight.contains(message.id) { Text("正在保存总是允许规则…").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
+            if let note = state.alwaysRuleErrors[message.id] { Text(note).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger) }
             if let note = state.decisionErrors[task.id] { Text(note).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger) }
         }.animation(DesignTokens.animStd, value: pending)
             .padding(DesignTokens.detailPadding)
@@ -1230,7 +1232,7 @@ private struct MemberDetail: View {
                     Spacer()
                     Button { state.selectedMemberName = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("关闭成员详情")
                 }
-                Text("最近心跳：\(member.lastHeartbeat.map { Date(timeIntervalSince1970: $0).formatted() } ?? "暂无记录") · 本周已交活：暂无完整统计")
+                Text("最近心跳：\(member.lastHeartbeat.map { Date(timeIntervalSince1970: $0).formatted() } ?? "暂无记录") · 本周已交活：\(member.weekDone.map(String.init) ?? "暂无完整统计")")
                     .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                 Divider()
                 HStack { QuotaRingView(usedPct: member.quotaWeekUsedPct, stale: member.quotaIsStale); VStack(alignment: .leading) {

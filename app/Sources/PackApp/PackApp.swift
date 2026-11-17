@@ -62,6 +62,17 @@ final class AppState: ObservableObject {
     @Published var editAvatarBackground = "cream"
     @Published var decisionsPending: Set<Int> = []
     @Published var decisionErrors: [Int: String] = [:]
+    @Published var alwaysRuleInFlight: Set<Int> = []
+    @Published var alwaysRuleErrors: [Int: String] = Dictionary(uniqueKeysWithValues:
+        (UserDefaults.standard.dictionary(forKey: "pack.alwaysRuleErrors") ?? [:]).compactMap { key, value in
+            guard let id = Int(key), let text = value as? String else { return nil }
+            return (id, text)
+        }) {
+        didSet { UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: alwaysRuleErrors.map { (String($0.key), $0.value) }), forKey: "pack.alwaysRuleErrors") }
+    }
+    @Published var alwaysRuleSucceeded = Set(UserDefaults.standard.array(forKey: "pack.alwaysRuleSucceeded") as? [Int] ?? []) {
+        didSet { UserDefaults.standard.set(Array(alwaysRuleSucceeded), forKey: "pack.alwaysRuleSucceeded") }
+    }
     @Published var memberRunsFailed: Set<Int> = []
     @Published var selectedMemberName: String?
     @Published var showAddMember = false
@@ -251,7 +262,8 @@ final class AppState: ObservableObject {
                                quotaWeekUsedPct: optDoubleVal($0["quota_week_used_pct"]),
                                quotaWeekResetAt: optDoubleVal($0["quota_week_reset_at"]),
                                quotaExtraLeft: optIntVal($0["quota_extra_left"]),
-                               quotaUpdatedAt: optDoubleVal($0["quota_updated_at"]))
+                               quotaUpdatedAt: optDoubleVal($0["quota_updated_at"]),
+                               weekDone: ($0["week_done"] as? NSNumber)?.intValue)
                 }
             }
             roomLoading = false
@@ -881,21 +893,46 @@ final class AppState: ObservableObject {
     }
 
     func approveTask(_ tid: Int) { decideTask(tid, approve: true) }
+    func approveAlways(_ task: PackTask, requestID: Int) {
+        decideTask(task.id, approve: true, always: (requestID, task.title, task.assignee))
+    }
     func rejectTask(_ tid: Int) { decideTask(tid, approve: false) }
 
-    private func decideTask(_ tid: Int, approve: Bool) {
+    private func decideTask(_ tid: Int, approve: Bool, always: (requestID: Int, title: String, assignee: String?)? = nil) {
         guard !decisionsPending.contains(tid), let client else { return }
         decisionsPending.insert(tid)
         decisionErrors[tid] = nil
+        if let always {
+            alwaysRuleInFlight.insert(always.requestID)
+            alwaysRuleErrors[always.requestID] = nil
+            alwaysRuleSucceeded.remove(always.requestID)
+        }
         let room = currentRoom
         decisionRooms[tid] = room
         let reason = (rejectReasons[tid] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let body = approve ? "批准 任务#\(tid)（群主已在 App 批准）" : "拒绝 任务#\(tid)" + (reason.isEmpty ? "" : "：\(reason)")
         Task {
+            defer { if let always { alwaysRuleInFlight.remove(always.requestID) } }
             var posted = false
             do {
                 _ = try await client.call(name: "room_post", args: ["room": room, "body": body, "kind": "decision"])
                 posted = true
+                if let always {
+                    if let target = always.assignee?.trimmingCharacters(in: .whitespacesAndNewlines), !target.isEmpty {
+                        let pattern = try? NSRegularExpression(pattern: #"\[[A-Za-z0-9_-]+\]"#)
+                        let range = NSRange(always.title.startIndex..., in: always.title)
+                        let match = pattern?.firstMatch(in: always.title, range: range)
+                        let action = match.flatMap { Range($0.range, in: always.title) }.map { String(always.title[$0]) } ?? ""
+                        do {
+                            _ = try await client.call(name: "rule_upsert", args: ["action": action, "target": target, "effect": "allow", "source": "app-always"])
+                            alwaysRuleSucceeded.insert(always.requestID)
+                        } catch {
+                            alwaysRuleErrors[always.requestID] = "本次已批准，但总是允许规则保存未确认，请检查规则后重试。"
+                        }
+                    } else {
+                        alwaysRuleErrors[always.requestID] = "本次已批准，但任务没有指派成员，未保存总是允许规则。"
+                    }
+                }
                 if !approve { _ = try await client.call(name: "task_cancel", args: ["task_id": tid]) }
                 lastActionNote = approve ? "已批准任务 #\(tid)" : "已拒绝并取消任务 #\(tid)"
                 await refresh()

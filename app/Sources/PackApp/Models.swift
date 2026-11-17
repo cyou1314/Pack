@@ -97,6 +97,7 @@ struct MemberInfo: Identifiable {
     var quotaWeekResetAt: Double? = nil
     var quotaExtraLeft: Int? = nil
     var quotaUpdatedAt: Double? = nil
+    var weekDone: Int? = nil
 
     var isOnline: Bool {
         guard let hb = lastHeartbeat else { return false }
