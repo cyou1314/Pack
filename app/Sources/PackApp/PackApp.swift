@@ -159,6 +159,8 @@ final class AppState: ObservableObject {
     private var consecutiveRefreshFailures = 0
     private let hubDiscoveryInterval: TimeInterval = 60
     private let hubDiscoveryTimeout: TimeInterval = 5
+    private let taskListPageSize = 100
+    private let taskListMaxPages = 10
     private var roomGeneration = 0
     private var unreadTask: Task<Void, Never>?
     private var notificationDiff = NotificationDiff()
@@ -205,7 +207,7 @@ final class AppState: ObservableObject {
             let roomRes = try await client.call(name: "room_list")
             let msgRes = try await client.call(name: "room_read_new",
                                                args: ["room": room, "since_id": 0, "limit": 200])
-            let taskRes = try await client.call(name: "task_list")
+            let taskRows = try await loadTaskPages(client)
             let memRes = try await client.call(name: "member_list")
             let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
             guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
@@ -232,7 +234,8 @@ final class AppState: ObservableObject {
                 if roomLoading { messages = parsedMessages }
                 else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
             }
-            if let arr = taskRes["tasks"] as? [[String: Any]] {
+            do {
+                let arr = taskRows
                 let roomTaskIds = Set(messages.compactMap(\.taskId))
                 let previousTasks = tasks
                 let updatedTasks = arr.filter { roomTaskIds.contains(intVal($0["id"])) }.map {
@@ -307,8 +310,19 @@ final class AppState: ObservableObject {
             connectionFailed = true
             connectionNote = "连接中断，重试中"
             consecutiveRefreshFailures += 1
-            if consecutiveRefreshFailures >= 2, await followPublishedHubURL() { await refresh() }
+            if consecutiveRefreshFailures >= 2, await followPublishedHubURL(rebuildOnFailure: true) { await refresh() }
         }
+    }
+
+    private func loadTaskPages(_ client: HubClient) async throws -> [[String: Any]] {
+        var rows: [[String: Any]] = []
+        for page in 0..<taskListMaxPages {
+            let result = try await client.call(name: "task_list", args: ["offset": page * taskListPageSize])
+            guard let batch = result["tasks"] as? [[String: Any]] else { throw HubError.badResponse("missing tasks") }
+            rows.append(contentsOf: batch)
+            if batch.count < taskListPageSize { break }
+        }
+        return rows
     }
 
     private func processNotificationSnapshot(room: String) {
@@ -437,37 +451,59 @@ final class AppState: ObservableObject {
             _ = try FileManager.default.replaceItemAt(path, withItemAt: temporary)
             if manual { manualHubURLSaved = true }
             storedHubURL = text
-            clientGeneration += 1
             cfg.hubUrl = text
-            client = HubClient(cfg: cfg)
-            if let token = cfg.ownerToken, !token.isEmpty {
-                var ownerCfg = cfg; ownerCfg.token = token; ownerClient = HubClient(cfg: ownerCfg)
-            } else { ownerClient = nil }
+            installHubClients(cfg)
             settingsHubURL = text
             if manual { settingsMessage = "地址已保存，正在连接" }
             return true
         } catch { return fail("保存失败，请检查本机配置后重试") }
     }
 
-    private func followPublishedHubURL() async -> Bool {
-        guard !manualHubURLSaved, !discoveryInProgress else { return false }
+    private func installHubClients(_ cfg: PackConfig) {
+        clientGeneration += 1
+        client = HubClient(cfg: cfg)
+        if let token = cfg.ownerToken, !token.isEmpty {
+            var ownerCfg = cfg; ownerCfg.token = token; ownerClient = HubClient(cfg: ownerCfg)
+        } else { ownerClient = nil }
+    }
+
+    private func rebuildHubClients() -> Bool {
+        let loaded = PackConfig.load()
+        credentialStatus = loaded.credentialStatus
+        guard var cfg = loaded.config else { return false }
+        cfg.hubUrl = storedHubURL
+        installHubClients(cfg)
+        return true
+    }
+
+    private func followPublishedHubURL(rebuildOnFailure: Bool = false) async -> Bool {
+        guard !discoveryInProgress, rebuildOnFailure || !manualHubURLSaved else { return false }
         let now = ProcessInfo.processInfo.systemUptime
         if let last = lastHubDiscoveryUptime, now - last < hubDiscoveryInterval { return false }
         lastHubDiscoveryUptime = now
         discoveryInProgress = true
         defer { discoveryInProgress = false }
-        guard let source = URL(string: "https://raw.githubusercontent.com/cyou1314/Pack/main/runtime/hub-url.txt") else { return false }
+        if manualHubURLSaved { return rebuildOnFailure && rebuildHubClients() }
+        let generation = clientGeneration
+        guard let source = URL(string: "https://raw.githubusercontent.com/cyou1314/Pack/main/runtime/hub-url.txt") else {
+            return rebuildOnFailure && rebuildHubClients()
+        }
         var request = URLRequest(url: source, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: hubDiscoveryTimeout)
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard !manualHubURLSaved, let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let parts = URLComponents(string: value), parts.scheme?.lowercased() == "https",
-                  let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
-                  parts.query == nil, parts.fragment == nil, value != storedHubURL else { return false }
-            return persistHubURL(value, manual: false)
-        } catch { return false }
+            // A manual save or another client change while the request was in flight wins.
+            guard generation == clientGeneration, !manualHubURLSaved else { return false }
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               let parts = URLComponents(string: value), parts.scheme?.lowercased() == "https",
+               let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
+               parts.query == nil, parts.fragment == nil, value != storedHubURL,
+               persistHubURL(value, manual: false) { return true }
+        } catch {
+            guard generation == clientGeneration, !manualHubURLSaved else { return false }
+        }
+        return rebuildOnFailure && generation == clientGeneration && rebuildHubClients()
     }
 
     func toggleMember(_ name: String) {
