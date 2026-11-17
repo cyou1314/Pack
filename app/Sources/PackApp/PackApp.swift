@@ -20,6 +20,7 @@ final class AppState: ObservableObject {
     @Published var unreadCounts: [String: Int] = [:]
     @Published var summaryExpanded = true
     @Published var showAddMenu = false
+    @Published var showSearch = false
     @Published var selection: String? = "room"
     @Published var selectedTaskId: Int?
     @Published var boardFilter: String = "全部"

@@ -201,6 +201,11 @@ struct ContentView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(PackStyle.canvas)
         }
         .background(PackStyle.canvas)
+        .background {
+            Button("搜索") { state.showSearch = true }.keyboardShortcut("k", modifiers: .command)
+                .frame(width: DesignTokens.searchShortcutHiddenSize, height: DesignTokens.searchShortcutHiddenSize).opacity(DesignTokens.searchShortcutHiddenOpacity)
+        }
+        .sheet(isPresented: $state.showSearch) { SearchPanel(state: state) }
         .sheet(isPresented: $state.showCreateTask) { CreateTaskView(state: state) }
         .sheet(isPresented: $state.showRoomDialog) { RoomNameDialog(state: state) }
         .sheet(isPresented: $state.showAddMember) { AddMemberView(state: state) }
@@ -275,6 +280,12 @@ private struct Sidebar: View {
                 }.font(DesignTokens.fontUI).frame(maxWidth: .infinity, minHeight: DesignTokens.shellRow)
                     .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
             }.buttonStyle(.plain).help("新对话")
+            if state.showSidebar {
+                Button { state.showSearch = true } label: {
+                    HStack(spacing: DesignTokens.shellGap) { Image(systemName: "magnifyingglass"); Text("搜索"); Spacer(); Text("⌘K").foregroundStyle(DesignTokens.subText) }
+                        .font(DesignTokens.fontUI).frame(maxWidth: .infinity, minHeight: DesignTokens.shellRow).contentShape(Rectangle())
+                }.buttonStyle(.plain).help("搜索")
+            }
             row("approvals", "收件箱", "tray")
             row("room", "对话", "bubble.left.and.bubble.right")
             row("tasks", "任务板", "square.grid.2x2")

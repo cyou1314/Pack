@@ -149,6 +149,17 @@ enum DesignTokens {
     static let memberGap: CGFloat = 12
     static let memberInset: CGFloat = 16
     static let memberIconRatio: CGFloat = 0.52
+    static let searchShortcutHiddenSize: CGFloat = 0
+    static let searchShortcutHiddenOpacity: Double = 0
+    static let searchWidth: CGFloat = 600
+    static let searchHeight: CGFloat = 500
+    static let searchInset: CGFloat = 16
+    static let searchRowInset: CGFloat = 10
+    static let searchGap: CGFloat = 8
+    static let searchHighlightOpacity: Double = 0.10
+    static let searchSnippetLines = 2
+    static let searchSnippetContext = 60
+    static let searchFlashNanoseconds: UInt64 = 2_000_000_000
     static let settingsWidth: CGFloat = 680
     static let settingsInset: CGFloat = 20
     static let settingsGap: CGFloat = 12
