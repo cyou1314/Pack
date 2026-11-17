@@ -84,14 +84,16 @@ def resolve_mention(body, targets):
     kind=hit：name 为命中的成员、span 为 @ 提及在 body 中的起止；
     kind=ambiguous：candidates 为前缀对上的多个成员；
     kind=none：没有指向成员的 @。
-    顺序：先全名精确匹配（与旧行为一致）；再逐个看 @token，
-    大小写不敏感的精确/唯一前缀算命中，前缀对上多个则歧义。"""
-    for name in targets:
-        mm = re.search(r"[@\uFF20]" + re.escape(name) + r"(?![A-Za-z0-9_-])", body)
-        if mm:
-            return ("hit", name, (mm.start(), mm.end()), None)
+    单遍从左向右扫 @token：每个 token 先大小写不敏感精确匹配、
+    再唯一前缀匹配；第一个能解出的 token 即命中，歧义 token 即报
+    歧义——保证「指派给第一个被 @ 的成员」按正文顺序成立。
+    staging30 修两处（第 2 轮深查 W1/W2，2026-11-17 合并入现行版）：
+    - W1：旧实现先全量精确匹配（按 targets 列表顺序）再扫前缀，
+      "@scout @absent" 会错派给 absent；现改为正文顺序单遍扫描；
+    - W2：@ 前须为行首或非 [A-Za-z0-9_.-/] 字符，邮箱/URL 里的
+      "foo@absent.com"、"x.com/@absent" 不再误触发（旧实现会命中）。"""
     lowered = {n.lower(): n for n in targets}
-    for tm in re.finditer(r"[@\uFF20]([A-Za-z0-9_-]+)", body):
+    for tm in re.finditer(r"(?<![A-Za-z0-9_.\-/])[@\uFF20]([A-Za-z0-9_-]+)", body):
         token = tm.group(1)
         low = token.lower()
         if low in lowered:
