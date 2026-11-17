@@ -3,6 +3,7 @@ import Foundation
 struct PackConfig {
     var hubUrl: String
     var token: String
+    var ownerToken: String?
 
     static func load() -> PackConfig? {
         let path = FileManager.default.homeDirectoryForCurrentUser
@@ -11,7 +12,7 @@ struct PackConfig {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let url = obj["hubUrl"] as? String,
               let token = obj["token"] as? String else { return nil }
-        return PackConfig(hubUrl: url, token: token)
+        return PackConfig(hubUrl: url, token: token, ownerToken: obj["ownerToken"] as? String)
     }
 }
 
@@ -32,9 +33,13 @@ actor HubClient {
 
     init(cfg: PackConfig) { self.cfg = cfg }
 
+    func discoverBeforeSending() async { await discoverHubUrl() }
+
     private func post(body: [String: Any], isNotification: Bool) async throws -> (Data, HTTPURLResponse) {
         guard let url = URL(string: cfg.hubUrl) else { throw HubError.badResponse("bad hub url") }
         var req = URLRequest(url: url)
+        req.timeoutInterval = 20
+        req.setValue("close", forHTTPHeaderField: "Connection")
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
@@ -56,8 +61,8 @@ actor HubClient {
         // Streamable HTTP may answer with SSE framing; take the data: line if so.
         var payload = data
         if let text = String(data: data, encoding: .utf8), text.contains("data:") {
-            for line in text.split(separator: "\n") where line.hasPrefix("data:") {
-                payload = Data(line.dropFirst(5).utf8)
+            for line in text.components(separatedBy: .newlines) where line.hasPrefix("data:") {
+                payload = Data(line.dropFirst(5).trimmingCharacters(in: .whitespaces).utf8)
             }
         }
         guard let obj = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
@@ -107,8 +112,9 @@ actor HubClient {
                 sessionId = nil
                 return try await callOnce(name: name, args: args)
             }
+            NSLog("Pack App hub call %@ failed: %@", name, String(describing: error))
             failStreak += 1
-            if failStreak >= 3 {
+            if failStreak >= 1 {
                 failStreak = 0
                 await discoverHubUrl()
             }
@@ -116,15 +122,27 @@ actor HubClient {
         }
     }
 
-    /// The hub publishes its current tunnel URL to the repo; fetch and adopt it.
+    /// Fetch the published repository file without the rate-limited API.
     private func discoverHubUrl() async {
-        var req = URLRequest(url: URL(string: "https://api.github.com/repos/cyou1314/Pack/contents/runtime/hub-url.txt")!)
-        req.setValue("application/vnd.github.raw", forHTTPHeaderField: "Accept")
+        let source = "https://raw.githubusercontent.com/cyou1314/Pack/refs/heads/main/runtime/hub-url.txt?pack=\(Int(Date().timeIntervalSince1970))"
+        guard let sourceURL = URL(string: source) else { return }
+        var req = URLRequest(url: sourceURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         req.setValue("pack-app", forHTTPHeaderField: "User-Agent")
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let url = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              url.hasPrefix("https://"), url != cfg.hubUrl else { return }
-        cfg.hubUrl = url
-        sessionId = nil
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let url = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let parsed = URL(string: url), parsed.scheme == "https", parsed.host != nil else {
+                NSLog("Pack App hub discovery returned an invalid response")
+                return
+            }
+            if url != cfg.hubUrl {
+                NSLog("Pack App discovered updated hub URL")
+                cfg.hubUrl = url
+                sessionId = nil
+            }
+        } catch { NSLog("Pack App hub discovery failed: %@", error.localizedDescription) }
     }
+
 }

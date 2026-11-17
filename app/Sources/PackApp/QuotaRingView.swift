@@ -28,8 +28,8 @@ struct QuotaRingView: View {
         ZStack {
             if let rem = remaining {
                 AnnularSector(fraction: rem / 100)
-                    .fill(tierColor)
-                Text("\(Int(rem.rounded()))")
+                    .fill(LinearGradient(colors: [tierColor.opacity(DesignTokens.quotaGradientOpacity), tierColor], startPoint: .topLeading, endPoint: .bottomTrailing))
+                Text("\(Int(rem.rounded()))%")
                     .font(.system(size: size * 0.30, weight: .semibold))
                     .foregroundColor(stale ? DesignTokens.faintText : DesignTokens.ink)
             } else {

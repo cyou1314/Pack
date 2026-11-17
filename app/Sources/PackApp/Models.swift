@@ -41,6 +41,8 @@ struct PackTask: Identifiable {
     var failClass: String? = nil
     var nextClaimAt: Double? = nil
     var schedAt: Double? = nil
+    var createdBy: String? = nil
+    var reviewNote: String? = nil
 
     var isScheduled: Bool { schedAt != nil }
     var isRelayPending: Bool { status == "claimed" && leaseExpires == nil }
