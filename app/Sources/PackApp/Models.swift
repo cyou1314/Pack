@@ -1,4 +1,21 @@
 import Foundation
+import AppKit
+
+struct MessageAttachment: Identifiable {
+    let id: Int
+    let mime: String
+    let size: Int
+    let filename: String
+}
+
+struct PendingAttachment: Identifiable {
+    let id: UUID
+    let url: URL
+    var uploadedID: Int?
+    var preview: NSImage?
+    var error: String?
+    var uploading = true
+}
 
 struct RoomMessage: Identifiable {
     let id: Int
@@ -10,6 +27,7 @@ struct RoomMessage: Identifiable {
     // 中枢增量（消息软删/编辑）已返回 deleted/edited；解析预写，呈现随 B1-5。
     var deleted: Bool = false
     var edited: Bool = false
+    var attachments: [MessageAttachment] = []
 }
 
 /// 结构化交活信封（中枢 task_complete 的 envelope，task_list 以 JSON 文本

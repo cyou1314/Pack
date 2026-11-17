@@ -91,7 +91,12 @@ final class AppState: ObservableObject {
     @Published var catalogItems: [[String: Any]] = []
     @Published var catalogNote = ""
     @Published var catalogArgument = ""
-    @Published var attachments: [URL] = []
+    @Published var attachmentsByRoom: [String: [PendingAttachment]] = [:]
+    @Published var attachmentNoticeByRoom: [String: String] = [:]
+    @Published var attachmentImages: [Int: NSImage] = [:]
+    @Published var attachmentFailures: Set<Int> = []
+    private var attachmentLoading: Set<Int> = []
+    var attachments: [PendingAttachment] { attachmentsByRoom[currentRoom] ?? [] }
     @Published var artifactPreviewURL: URL?
     @Published var showArtifactPreview = false
     @Published var selectedArtifacts: [Int: Int] = [:]
@@ -215,7 +220,11 @@ final class AppState: ObservableObject {
                     RoomMessage(id: intVal($0["id"]), author: ($0["author"] as? String) ?? "?",
                                 kind: ($0["kind"] as? String) ?? "chat", body: ($0["body"] as? String) ?? "",
                                 taskId: optIntVal($0["task_id"]), createdAt: doubleVal($0["created_at"]),
-                                deleted: boolVal($0["deleted"]), edited: boolVal($0["edited"]))
+                                deleted: boolVal($0["deleted"]), edited: boolVal($0["edited"]),
+                                attachments: (($0["attachments"] as? [[String: Any]]) ?? []).compactMap { item in
+                                    guard let id = optIntVal(item["id"]), id > 0, let mime = item["mime"] as? String else { return nil }
+                                    return MessageAttachment(id: id, mime: mime, size: intVal(item["size"]), filename: (item["filename"] as? String) ?? "图片")
+                                })
                 }
                 if roomLoading { messages = parsedMessages }
                 else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
@@ -746,15 +755,83 @@ final class AppState: ObservableObject {
         }
     }
 
-    func sendDraft() {
-        guard attachments.isEmpty else { lastActionNote = "中枢不支持附件上传，请先移除所选文件"; return }
-        let body = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty else { return }
-        guard let ownerClient else {
-            lastActionNote = "操作失败：缺少 owner 凭证"
-            return
-        }
+    func addAttachments(_ urls: [URL]) {
         let room = currentRoom
+        guard let ownerClient else { attachmentNoticeByRoom[room] = "缺少 owner 凭证，无法上传图片。"; return }
+        let available = max(0, AttachmentLimits.maxCount - (attachmentsByRoom[room]?.count ?? 0))
+        guard available > 0 else { attachmentNoticeByRoom[room] = "每条消息最多添加 4 张图片。"; return }
+        attachmentNoticeByRoom[room] = urls.count > available ? "每条消息最多添加 4 张图片，多余图片未添加。" : nil
+        for url in urls.prefix(available) {
+            let item = PendingAttachment(id: UUID(), url: url)
+            attachmentsByRoom[room, default: []].append(item)
+            uploadAttachment(item.id, room: room, client: ownerClient)
+        }
+    }
+
+    func removeAttachment(_ id: UUID) {
+        attachmentsByRoom[currentRoom]?.removeAll { $0.id == id }
+    }
+
+    func retryAttachment(_ id: UUID) {
+        guard let ownerClient else { attachmentNoticeByRoom[currentRoom] = "缺少 owner 凭证，无法上传图片。"; return }
+        let room = currentRoom
+        guard let index = attachmentsByRoom[room]?.firstIndex(where: { $0.id == id }) else { return }
+        attachmentsByRoom[room]?[index].uploading = true
+        attachmentsByRoom[room]?[index].error = nil
+        uploadAttachment(id, room: room, client: ownerClient)
+    }
+
+    private func uploadAttachment(_ id: UUID, room: String, client: HubClient) {
+        guard let url = attachmentsByRoom[room]?.first(where: { $0.id == id })?.url else { return }
+        Task {
+            do {
+                let prepared = try await Task.detached { try AttachmentImage.prepare(url) }.value
+                guard let previewIndex = attachmentsByRoom[room]?.firstIndex(where: { $0.id == id }) else { return }
+                attachmentsByRoom[room]?[previewIndex].preview = NSImage(data: prepared.data)
+                let result = try await client.call(name: "attachment_put", args: ["room": room, "filename": prepared.filename,
+                    "mime": prepared.mime, "data_base64": prepared.data.base64EncodedString()])
+                guard let attachmentID = optIntVal(result["attachment_id"]), attachmentID > 0 else { throw HubError.badResponse("上传结果缺少附件编号") }
+                guard let index = attachmentsByRoom[room]?.firstIndex(where: { $0.id == id }) else { return }
+                attachmentsByRoom[room]?[index].uploadedID = attachmentID
+                attachmentsByRoom[room]?[index].preview = NSImage(data: prepared.data)
+                attachmentsByRoom[room]?[index].uploading = false
+            } catch {
+                guard let index = attachmentsByRoom[room]?.firstIndex(where: { $0.id == id }) else { return }
+                attachmentsByRoom[room]?[index].uploading = false
+                if let error = error as? HubError {
+                    switch error { case .badResponse(let message), .toolError(let message): attachmentsByRoom[room]?[index].error = message }
+                } else { attachmentsByRoom[room]?[index].error = error.localizedDescription }
+            }
+        }
+    }
+
+    func loadMessageAttachment(_ id: Int, retry: Bool = false) async {
+        if retry { attachmentFailures.remove(id) }
+        guard attachmentImages[id] == nil, !attachmentFailures.contains(id), !attachmentLoading.contains(id) else { return }
+        guard let client else { attachmentFailures.insert(id); return }
+        attachmentLoading.insert(id)
+        defer { attachmentLoading.remove(id) }
+        do {
+            let result = try await client.call(name: "attachment_get", args: ["attachment_id": id])
+            guard let encoded = result["data_base64"] as? String, let data = Data(base64Encoded: encoded),
+                  data.count <= AttachmentLimits.maxBytes, let image = NSImage(data: data) else { throw HubError.badResponse("图片数据不可用") }
+            if attachmentImages.count >= AttachmentLimits.imageCacheCount, let key = attachmentImages.keys.first { attachmentImages.removeValue(forKey: key) }
+            attachmentImages[id] = image
+        } catch { attachmentFailures.insert(id) }
+    }
+
+    func sendDraft() {
+        let room = currentRoom
+        let selected = attachmentsByRoom[room] ?? []
+        guard sendingMessage == nil else { return }
+        guard selected.allSatisfy({ !$0.uploading && $0.uploadedID != nil }) else {
+            attachmentNoticeByRoom[room] = "请等待图片上传，或移除／重试上传失败的图片。"; return
+        }
+        let body = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty || !selected.isEmpty else { return }
+        guard let ownerClient else { lastActionNote = "操作失败：缺少 owner 凭证"; return }
+        let ids = selected.compactMap(\.uploadedID)
+        let selectedIDs = Set(selected.map(\.id))
         let reply = replyByRoom.removeValue(forKey: room)
         let wireBody = ReplyCodec.encode(body, reply: reply)
         draftMessage = ""
@@ -764,19 +841,23 @@ final class AppState: ObservableObject {
         Task {
             do {
                 await ownerClient.discoverBeforeSending()
-                _ = try await ownerClient.call(name: "room_post", args: ["room": room, "body": wireBody, "kind": "chat"])
-                sendingReply = nil
-                sendingMessage = nil
-                sendingRoom = nil
+                var args: [String: Any] = ["room": room, "body": wireBody, "kind": "chat"]
+                if !ids.isEmpty {
+                    let json = try JSONSerialization.data(withJSONObject: ids)
+                    args["attachment_ids"] = String(decoding: json, as: UTF8.self)
+                }
+                _ = try await ownerClient.call(name: "room_post", args: args)
+                attachmentsByRoom[room]?.removeAll { selectedIDs.contains($0.id) }
+                attachmentNoticeByRoom[room] = nil
+                sendingReply = nil; sendingMessage = nil; sendingRoom = nil
                 lastActionNote = "已发送"
                 await refresh()
             } catch {
-                sendingReply = nil
-                sendingMessage = nil
-                sendingRoom = nil
+                sendingReply = nil; sendingMessage = nil; sendingRoom = nil
                 if replyByRoom[room] == nil { replyByRoom[room] = reply }
                 if currentRoom == room && draftMessage.isEmpty { draftMessage = body }
                 else if (roomDrafts[room] ?? "").isEmpty { roomDrafts[room] = body; UserDefaults.standard.set(roomDrafts, forKey: "pack.roomDrafts") }
+                attachmentNoticeByRoom[room] = "发送结果未确认，请先查看对话；草稿和图片已保留。"
                 lastActionNote = "操作未完成，请检查连接后重试"
             }
         }
@@ -842,7 +923,7 @@ final class AppState: ObservableObject {
 
     private func createTaskFromDraft() {
         guard !inlineTaskSending else { return }
-        guard attachments.isEmpty else { inlineTaskError = "中枢暂不支持附件上传，请先移除所选文件"; return }
+        guard attachments.isEmpty else { inlineTaskError = "派活暂不支持图片，请先移除所选图片或关闭派活。"; return }
         let original = draftMessage
         guard !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let client else { inlineTaskError = "中枢未连接，草稿已保留"; return }

@@ -182,6 +182,11 @@ enum DesignTokens {
     static let longMessageLines = 6
     static let longMessageThreshold = 260
     static let menuButtonSize: CGFloat = 30
+    static let attachmentChipSize: CGFloat = 52
+    static let attachmentChipButtonSize: CGFloat = 18
+    static let attachmentImageMaxWidth: CGFloat = 300
+    static let attachmentImageMaxHeight: CGFloat = 220
+    static let attachmentPlaceholderHeight: CGFloat = 90
     static let artifactPreviewSize: CGFloat = 180
     static let memberAccessoryRatio: CGFloat = 0.22
     static let avatarBackgrounds: [String: Color] = ["cream": Color(hex: 0xF7EEDC), "mint": Color(hex: 0xDBEFE4), "sky": Color(hex: 0xDDECF8), "peach": Color(hex: 0xF8E2D9), "lavender": Color(hex: 0xEAE1F4), "sand": Color(hex: 0xEDE4D3)]

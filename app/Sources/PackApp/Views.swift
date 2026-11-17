@@ -563,6 +563,7 @@ private struct MessageRow: View {
                     if !isOwner { Text(message.author).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
                     if let reply = decoded.reply { ReplyQuoteView(reply: reply) }
                     // 长消息折叠位：保留完整正文，待 B1-8 接入展开状态与阈值。
+                    if !decoded.body.isEmpty || state.editingMessageId == message.id || message.deleted {
                     HStack(alignment: .center, spacing: DesignTokens.messageActionSpacing) {
                     Group {
                         if state.editingMessageId == message.id {
@@ -584,6 +585,15 @@ private struct MessageRow: View {
                             MessageActionButtons(state: state, message: message)
                         }
                     }
+                    }
+                    if !message.deleted && !message.attachments.isEmpty {
+                        HStack(spacing: DesignTokens.messageActionSpacing) {
+                            MessageAttachmentGroup(state: state, attachments: message.attachments)
+                            if decoded.body.isEmpty && state.hoveredMessageId == message.id {
+                                MessageActionButtons(state: state, message: message)
+                            }
+                        }
+                    }
                     if message.edited && !message.deleted { Text("已编辑").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
                     if decoded.body.count > DesignTokens.longMessageThreshold || decoded.body.filter({ $0 == "\n" }).count >= DesignTokens.longMessageLines {
                         Button(state.expandedMessages.contains(message.id) ? "收起" : "展开全文") {
@@ -599,6 +609,33 @@ private struct MessageRow: View {
                 if !isOwner { Spacer(minLength: 0) }
             }
         }
+    }
+}
+
+private struct MessageAttachmentGroup: View {
+    @ObservedObject var state: AppState
+    let attachments: [MessageAttachment]
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: DesignTokens.attachmentPlaceholderHeight, maximum: DesignTokens.attachmentImageMaxWidth), spacing: DesignTokens.detailSpacing)], spacing: DesignTokens.detailSpacing) {
+            ForEach(attachments) { attachment in
+                Group {
+                    if let image = state.attachmentImages[attachment.id] {
+                        Image(nsImage: image).resizable().scaledToFit()
+                            .frame(maxWidth: DesignTokens.attachmentImageMaxWidth, maxHeight: DesignTokens.attachmentImageMaxHeight)
+                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+                            .accessibilityLabel(attachment.filename)
+                    } else if state.attachmentFailures.contains(attachment.id) {
+                        Button("图片加载失败 · 重试") { Task { await state.loadMessageAttachment(attachment.id, retry: true) } }
+                            .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                            .frame(maxWidth: .infinity, minHeight: DesignTokens.attachmentPlaceholderHeight)
+                            .background(DesignTokens.bubbleAI, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+                    } else {
+                        ProgressView().frame(maxWidth: .infinity, minHeight: DesignTokens.attachmentPlaceholderHeight)
+                            .background(DesignTokens.bubbleAI, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+                    }
+                }.task(id: "\(attachment.id)-\(state.attachmentImages[attachment.id] == nil)") { await state.loadMessageAttachment(attachment.id) }
+            }
+        }.frame(maxWidth: DesignTokens.attachmentImageMaxWidth, alignment: .leading)
     }
 }
 
@@ -648,6 +685,26 @@ private struct Composer: View {
                         .transition(.opacity.combined(with: .offset(y: DesignTokens.motionOffset)))
                 }
                 MentionTextEditor(state: state)
+                if !state.attachments.isEmpty {
+                    HStack(spacing: DesignTokens.composerSpacing) {
+                        ForEach(state.attachments) { item in
+                            VStack(spacing: DesignTokens.memberListTextSpacing) {
+                                ZStack(alignment: .topTrailing) {
+                                    Group {
+                                        if let image = item.preview { Image(nsImage: image).resizable().scaledToFill() }
+                                        else { Image(systemName: "photo").foregroundStyle(DesignTokens.subText) }
+                                    }.frame(width: DesignTokens.attachmentChipSize, height: DesignTokens.attachmentChipSize)
+                                        .background(DesignTokens.bubbleAI).clipped().clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusSmall))
+                                    Button { state.removeAttachment(item.id) } label: { Image(systemName: "xmark.circle.fill") }
+                                        .buttonStyle(.plain).frame(width: DesignTokens.attachmentChipButtonSize, height: DesignTokens.attachmentChipButtonSize)
+                                        .disabled(state.sendingMessage != nil).help("移除图片")
+                                }
+                                if item.uploading { Text("上传中…").font(DesignTokens.fontSmall) }
+                                else if item.error != nil { Button("上传失败 · 重试") { state.retryAttachment(item.id) }.font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger) }
+                            }.help(item.error ?? item.url.lastPathComponent)
+                        }
+                    }
+                }
             HStack(spacing: DesignTokens.composerSpacing) {
                 Button { withAnimation(DesignTokens.animFast) { state.showAddMenu.toggle() } } label: {
                     Image(systemName: "plus").font(DesignTokens.fontTitle).foregroundStyle(.white)
@@ -688,16 +745,18 @@ private struct Composer: View {
                         .frame(width: DesignTokens.composerSend, height: DesignTokens.composerSend)
                         .background(DesignTokens.blue, in: Circle())
                 }.buttonStyle(.plain)
-                    .disabled(state.showInlineTask && (state.inlineTaskSending || state.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.attachments.isEmpty))
+                    .disabled(state.sendingMessage != nil || (state.showInlineTask && (state.inlineTaskSending || state.draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !state.attachments.isEmpty)))
                     .help(state.showInlineTask ? "建卡派活" : "发送")
             }
             if !state.inlineTaskError.isEmpty {
                 Text(state.inlineTaskError).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
             }
-            if !state.attachments.isEmpty {
-                Text("已选择 \(state.attachments.count) 个本地文件；中枢暂不支持附件上传，请移除后发送。")
+            if let notice = state.attachmentNoticeByRoom[state.currentRoom] {
+                Text(notice).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
+            }
+            if state.showInlineTask && !state.attachments.isEmpty {
+                Text("派活暂不支持图片，请先移除图片或关闭派活。")
                     .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
-                Button("移除所选文件") { state.attachments = [] }.font(DesignTokens.fontSmall)
             }
         }.animation(DesignTokens.animFast, value: state.mentionPopupVisible)
             .fixedSize(horizontal: false, vertical: true)
@@ -725,7 +784,7 @@ private struct Composer: View {
         picker.allowsMultipleSelection = true
         picker.canChooseDirectories = false
         if imagesOnly { picker.allowedContentTypes = [.image] }
-        picker.begin { result in if result == .OK { state.attachments = picker.urls } }
+        picker.begin { result in if result == .OK { state.addAttachments(picker.urls) } }
     }
 }
 
@@ -1363,6 +1422,9 @@ private struct TaskDetail: View {
             }
             if !task.body.isEmpty { Text(task.body).font(DesignTokens.fontUI).textSelection(.enabled) }
             ChatTaskDetail(state: state, task: task)
+            ForEach(state.messages.filter { $0.kind == "report" && $0.taskId == task.id && !$0.deleted && !$0.attachments.isEmpty }) { report in
+                MessageAttachmentGroup(state: state, attachments: report.attachments)
+            }
             if let artifacts = task.envelope?.artifacts, !artifacts.isEmpty {
                 ArtifactGroup(state: state, taskId: task.id, artifacts: artifacts)
             }
