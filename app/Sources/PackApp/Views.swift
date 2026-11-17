@@ -92,7 +92,8 @@ private struct MemberAvatarView: View {
     var showStatus = true
 
     private var designedImage: NSImage? {
-        guard name == "dispatcher" || name == "absent",
+        guard (name == "dispatcher" || name == "absent"),
+              !(UserDefaults.standard.stringArray(forKey: "pack.customAvatarNames") ?? []).contains(name),
               let url = Bundle.main.url(forResource: name, withExtension: "webp", subdirectory: "avatars") else { return nil }
         return NSImage(contentsOf: url)
     }
@@ -209,6 +210,7 @@ struct ContentView: View {
         .sheet(isPresented: $state.showCreateTask) { CreateTaskView(state: state) }
         .sheet(isPresented: $state.showRoomDialog) { RoomNameDialog(state: state) }
         .sheet(isPresented: $state.showAddMember) { AddMemberView(state: state) }
+        .sheet(isPresented: $state.showAvatarPicker) { AvatarPickerView(state: state) }
         .sheet(isPresented: $state.showMemberLogin) { MemberLoginShell(state: state) }
         .sheet(isPresented: $state.showCatalog) { CatalogView(state: state) }
         .sheet(isPresented: $state.showArtifactPreview) { ArtifactPreview(state: state) }
@@ -820,12 +822,13 @@ private struct ApprovalCard: View {
                     Button("仅这一次") { state.approveTask(task.id) }.buttonStyle(.borderedProminent).tint(DesignTokens.blue)
                     Button("总是允许") {}.buttonStyle(.bordered).disabled(true).help("持久规则尚未接入")
                     Button("拒绝") { state.rejectTask(task.id) }.buttonStyle(.bordered).foregroundStyle(DesignTokens.danger)
-                }.font(DesignTokens.fontSmall)
+                }.font(DesignTokens.fontSmall).disabled(state.decisionsPending.contains(task.id))
             } else if let decision {
                 Text(decision.body.hasPrefix("批准") ? (decision.body.contains("规则库") ? "✓ 已批准 · 规则自动通过" : "✓ 已批准 · 仅这一次") : "已拒绝").font(DesignTokens.fontSmall)
             } else {
                 Text("已结束 · 未找到决议记录").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             }
+            if let note = state.decisionErrors[task.id] { Text(note).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger) }
         }.padding(DesignTokens.detailPadding)
             .background(DesignTokens.approvalBackground, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
             .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.approvalBorder, lineWidth: DesignTokens.boardLine))
@@ -1197,17 +1200,48 @@ private struct MemberDetail: View {
                 ForEach(recentTasks) { task in
                     Text("#\(task.id) \(task.title) · \(task.envelope?.verdict ?? task.statusLabel) · \(duration(task)) · 产物 \(task.envelope?.artifacts.count ?? 0)").font(DesignTokens.fontSmall)
                 }
-                Text("已装技能：中枢未提供按成员查询接口").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
-                if member.role == "member" && member.name != "owner" {
-                    Button("成员本人登录 / 重新登录") { state.showMemberLogin = true }.buttonStyle(.bordered)
-                    Button("更换头像（接口待接入）") {}.disabled(true)
-                    Button("移除成员") { state.showRemoveMember = true }.foregroundStyle(DesignTokens.danger)
+                Text("已装技能").font(DesignTokens.fontTitle)
+                if !state.memberSkillsStatus.isEmpty { Text(state.memberSkillsStatus).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
+                ForEach(state.memberSkills) { skill in
+                    Text("\(skill.name) · v\(skill.version)").font(DesignTokens.fontSmall)
+                }
+                if member.name != "owner" {
+                    if member.role == "member" { Button("成员本人登录 / 重新登录") { state.showMemberLogin = true }.buttonStyle(.bordered) }
+                    Button("更换头像") { state.openAvatarPicker(member) }.buttonStyle(.bordered)
+                    if member.role == "member" { Button("移除成员") { state.showRemoveMember = true }.foregroundStyle(DesignTokens.danger) }
                 }
             }.padding(DesignTokens.memberInset)
         }.background(DesignTokens.bubbleAI)
+            .task(id: member.name) { await state.loadMemberSkills(member.name) }
             .task(id: member.name + ":" + recentTasks.map { "\($0.id)-\($0.updatedAt)" }.joined(separator: ",")) {
                 await state.loadMemberRunDurations(member.name, taskIds: recentTasks.map(\.id))
             }
+    }
+}
+
+private struct AvatarPickerView: View {
+    @ObservedObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.memberGap) {
+            Text("更换头像 · \(state.avatarTargetName)").font(DesignTokens.fontTitle)
+            ParameterAvatar(species: state.editAvatarSpecies,
+                            color: DesignTokens.avatarPalettes[state.editAvatarPalette] ?? DesignTokens.ink,
+                            background: DesignTokens.avatarBackgrounds[state.editAvatarBackground] ?? DesignTokens.bubbleAI,
+                            accessory: state.editAvatarAccessory)
+                .frame(width: DesignTokens.memberAvatarLarge, height: DesignTokens.memberAvatarLarge)
+            Picker("动物", selection: $state.editAvatarSpecies) { ForEach(["fox", "owl", "wolf", "cat", "panda", "marten", "bear", "rabbit", "deer", "raccoon", "tiger", "penguin"], id: \.self) { Text($0).tag($0) } }
+            Picker("配色", selection: $state.editAvatarPalette) { ForEach(["orange", "violet", "ocean", "forest", "rose", "amber", "teal", "indigo", "crimson", "slate"], id: \.self) { Text($0).tag($0) } }
+            Picker("配饰", selection: $state.editAvatarAccessory) { ForEach(["none", "star-clip", "glasses", "headset", "scarf", "cap"], id: \.self) { Text($0).tag($0) } }
+            Picker("底色", selection: $state.editAvatarBackground) { ForEach(["cream", "mint", "sky", "peach", "lavender", "sand"], id: \.self) { Text($0).tag($0) } }
+            Text("组合占用与有效性由中枢检查；占用时请选择其他组合。")
+                .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            if !state.avatarSaveError.isEmpty { Text(state.avatarSaveError).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger).textSelection(.enabled) }
+            HStack {
+                Spacer()
+                Button("取消") { state.showAvatarPicker = false }.disabled(state.avatarSaving)
+                Button(state.avatarSaving ? "保存中…" : "保存") { state.saveMemberAvatar() }.buttonStyle(.borderedProminent).disabled(state.avatarSaving)
+            }
+        }.padding(DesignTokens.chatInset).frame(width: DesignTokens.memberLoginWidth)
     }
 }
 

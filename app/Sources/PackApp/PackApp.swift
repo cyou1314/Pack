@@ -47,6 +47,18 @@ final class AppState: ObservableObject {
     @Published var roomDialogError = ""
     @Published var memberRunDurations: [Int: TimeInterval] = [:]
     @Published var memberRunsLoading = false
+    @Published var memberSkills: [AssignedSkill] = []
+    @Published var memberSkillsStatus = ""
+    @Published var showAvatarPicker = false
+    @Published var avatarTargetName = ""
+    @Published var avatarSaving = false
+    @Published var avatarSaveError = ""
+    @Published var editAvatarSpecies = "fox"
+    @Published var editAvatarPalette = "orange"
+    @Published var editAvatarAccessory = "none"
+    @Published var editAvatarBackground = "cream"
+    @Published var decisionsPending: Set<Int> = []
+    @Published var decisionErrors: [Int: String] = [:]
     @Published var memberRunsFailed: Set<Int> = []
     @Published var selectedMemberName: String?
     @Published var showAddMember = false
@@ -117,6 +129,7 @@ final class AppState: ObservableObject {
     private var roomGeneration = 0
     private var unreadTask: Task<Void, Never>?
     private var notificationDiff = NotificationDiff()
+    private var decisionRooms: [Int: String] = [:]
     private var pendingNotification: (kind: String, room: String, id: Int?, member: String?)?
 
     func start() {
@@ -207,6 +220,10 @@ final class AppState: ObservableObject {
             connected = true
             connectionFailed = false
             connectionNote = "已连接"
+            for (taskId, decisionRoom) in decisionRooms where decisionRoom == room && tasks.contains(where: { $0.id == taskId }) && !pendingApprovals.contains(where: { $0.taskId == taskId }) {
+                decisionsPending.remove(taskId)
+                decisionRooms.removeValue(forKey: taskId)
+            }
             processNotificationSnapshot(room: room)
             if let target = pendingNotification, target.room == room {
                 pendingNotification = nil
@@ -242,7 +259,7 @@ final class AppState: ObservableObject {
         NSApp.dockTile.badgeLabel = badge > 0 ? String(badge) : nil
         for message in approvals where changes.approvals.contains(message.id) {
             let task = tasks.first { $0.id == message.taskId }
-            PackNotifications.shared.send(kind: "approval", room: room, id: message.id, title: "待批准", body: "\(message.author) · \(task?.title ?? message.body) · 到期时间未知")
+            PackNotifications.shared.send(kind: "approval", room: room, id: message.id, title: "待批准", body: "\(message.author) · \(task?.title ?? message.body)")
         }
         for task in reviews where changes.reviews.contains(task.id) {
             PackNotifications.shared.send(kind: "review", room: room, id: task.id, title: "交活待验收", body: "\(task.assignee ?? "成员") · #\(task.id) \(task.title)")
@@ -370,6 +387,61 @@ final class AppState: ObservableObject {
             }
         }
         if selectedMemberName == name { memberRunsLoading = false }
+    }
+
+    func loadMemberSkills(_ name: String) async {
+        memberSkills = []; memberSkillsStatus = "正在读取技能…"
+        guard let client else { memberSkillsStatus = "技能读取失败：中枢未连接"; return }
+        do {
+            let response = try await client.call(name: "skill_list")
+            guard !Task.isCancelled, selectedMemberName == name else { return }
+            guard let skills = response["skills"] as? [[String: Any]], skills.allSatisfy({ $0["assignees"] is [[String: Any]] }) else {
+                memberSkillsStatus = "技能读取失败：中枢未返回指派信息"; return
+            }
+            memberSkills = skills.compactMap { skill in
+                guard let assignments = skill["assignees"] as? [[String: Any]],
+                      assignments.contains(where: { ($0["member"] as? String) == name && boolVal($0["enabled"]) }),
+                      let skillName = skill["name"] as? String else { return nil }
+                let version = skill["version"].map { String(describing: $0) } ?? "未知版本"
+                return AssignedSkill(name: skillName, version: version)
+            }
+            memberSkillsStatus = memberSkills.isEmpty ? "暂无已启用技能" : ""
+        } catch {
+            if !Task.isCancelled && selectedMemberName == name { memberSkillsStatus = "技能读取失败，请稍后重试" }
+        }
+    }
+
+    func openAvatarPicker(_ member: MemberInfo) {
+        avatarTargetName = member.name
+        editAvatarSpecies = member.avatar?.species ?? "fox"
+        editAvatarPalette = member.avatar?.palette ?? "orange"
+        editAvatarAccessory = member.avatar?.accessory ?? "none"
+        editAvatarBackground = member.avatar?.bg ?? "cream"
+        avatarSaveError = ""
+        showAvatarPicker = true
+    }
+
+    func saveMemberAvatar() {
+        guard !avatarSaving, let client else { return }
+        let name = avatarTargetName
+        let combo = ["species": editAvatarSpecies, "palette": editAvatarPalette, "accessory": editAvatarAccessory, "bg": editAvatarBackground]
+        guard let bytes = try? JSONSerialization.data(withJSONObject: combo, options: [.sortedKeys]) else { avatarSaveError = "头像组合无法编码"; return }
+        avatarSaving = true; avatarSaveError = ""
+        Task {
+            defer { avatarSaving = false }
+            do {
+                _ = try await client.call(name: "member_avatar_set", args: ["name": name, "avatar_combo": String(decoding: bytes, as: UTF8.self)])
+                var customNames = Set(UserDefaults.standard.stringArray(forKey: "pack.customAvatarNames") ?? [])
+                customNames.insert(name)
+                UserDefaults.standard.set(Array(customNames), forKey: "pack.customAvatarNames")
+                showAvatarPicker = false
+                await refresh()
+            } catch let error as HubError {
+                switch error {
+                case .toolError(let message), .badResponse(let message): avatarSaveError = message
+                }
+            } catch { avatarSaveError = error.localizedDescription }
+        }
     }
 
     func memberStatus(_ member: MemberInfo) -> String {
@@ -712,23 +784,37 @@ final class AppState: ObservableObject {
                                           args: ["room": room, "title": title, "body": body, "assignee_name": assignee]) }
     }
 
-    func approveTask(_ tid: Int) {
-        let room = currentRoom
-        act("已批准任务 #\(tid)") { c in
-            _ = try await c.call(name: "room_post",
-                                 args: ["room": room, "body": "批准 任务#\(tid)（群主已在 App 批准）", "kind": "decision"])
-            return try await c.call(name: "room_read_new", args: ["room": room, "since_id": 0, "limit": 1])
-        }
-    }
+    func approveTask(_ tid: Int) { decideTask(tid, approve: true) }
+    func rejectTask(_ tid: Int) { decideTask(tid, approve: false) }
 
-    func rejectTask(_ tid: Int) {
+    private func decideTask(_ tid: Int, approve: Bool) {
+        guard !decisionsPending.contains(tid), let client else { return }
+        decisionsPending.insert(tid)
+        decisionErrors[tid] = nil
         let room = currentRoom
+        decisionRooms[tid] = room
         let reason = (rejectReasons[tid] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let suffix = reason.isEmpty ? "" : "：\(reason)"
-        act("已拒绝并取消任务 #\(tid)") { c in
-            _ = try await c.call(name: "room_post",
-                                  args: ["room": room, "body": "拒绝 任务#\(tid)\(suffix)", "kind": "decision"])
-            return try await c.call(name: "task_cancel", args: ["task_id": tid])
+        let body = approve ? "批准 任务#\(tid)（群主已在 App 批准）" : "拒绝 任务#\(tid)" + (reason.isEmpty ? "" : "：\(reason)")
+        Task {
+            var posted = false
+            do {
+                _ = try await client.call(name: "room_post", args: ["room": room, "body": body, "kind": "decision"])
+                posted = true
+                if !approve { _ = try await client.call(name: "task_cancel", args: ["task_id": tid]) }
+                lastActionNote = approve ? "已批准任务 #\(tid)" : "已拒绝并取消任务 #\(tid)"
+                await refresh()
+                if room == currentRoom && connected && !pendingApprovals.contains(where: { $0.taskId == tid }) {
+                    decisionsPending.remove(tid); decisionRooms.removeValue(forKey: tid)
+                } else {
+                    decisionErrors[tid] = "决议已发送，正在等待状态确认"
+                }
+            } catch {
+                decisionErrors[tid] = posted && !approve ? "拒绝已发送，取消任务未确认，请检查任务状态" : "决议结果未确认，请检查房间记录后再操作"
+                await refresh()
+                if room == currentRoom && connected && !pendingApprovals.contains(where: { $0.taskId == tid }) {
+                    decisionsPending.remove(tid); decisionRooms.removeValue(forKey: tid)
+                }
+            }
         }
     }
 

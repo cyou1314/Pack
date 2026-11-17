@@ -77,6 +77,12 @@ struct AvatarInfo {
     var combo: String? = nil
 }
 
+struct AssignedSkill: Identifiable {
+    var id: String { name }
+    let name: String
+    let version: String
+}
+
 struct MemberInfo: Identifiable {
     var id: String { name }
     let name: String
