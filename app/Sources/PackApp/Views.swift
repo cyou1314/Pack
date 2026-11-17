@@ -424,21 +424,19 @@ private struct RoomView: View {
 private struct MessageOperations: View {
     @ObservedObject var state: AppState
     let message: RoomMessage
-    private var canModify: Bool { message.author == "owner" && message.kind == "chat" && !message.deleted }
+    private var usesBubble: Bool {
+        if message.kind == "system" { return false }
+        if ["approval_request", "task_card", "report"].contains(message.kind),
+           let task = state.tasks.first(where: { $0.id == message.taskId }) {
+            return message.kind == "report" && task.result == nil && task.envelope == nil
+        }
+        return true
+    }
     var body: some View {
         HStack(alignment: .center, spacing: DesignTokens.messageActionSpacing) {
             MessageRow(state: state, message: message)
-            if state.hoveredMessageId == message.id {
-                HStack(spacing: DesignTokens.messageActionSpacing) {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(message.deleted ? "（已删除）" : message.body, forType: .string)
-                    } label: { Image(systemName: "doc.on.doc") }.help("复制")
-                    if canModify {
-                        Button { state.editMessage(message) } label: { Image(systemName: "pencil") }.help("编辑")
-                        Button { state.deleteMessage(message) } label: { Image(systemName: "trash") }.foregroundStyle(DesignTokens.danger).help("删除")
-                    }
-                }.font(DesignTokens.fontSmall).buttonStyle(.plain).transition(.opacity)
+            if !usesBubble && state.hoveredMessageId == message.id {
+                MessageActionButtons(state: state, message: message)
             }
         }.onHover { inside in
             withAnimation(DesignTokens.animFast) {
@@ -446,6 +444,24 @@ private struct MessageOperations: View {
                 else if state.hoveredMessageId == message.id { state.hoveredMessageId = nil }
             }
         }
+    }
+}
+
+private struct MessageActionButtons: View {
+    @ObservedObject var state: AppState
+    let message: RoomMessage
+    private var canModify: Bool { message.author == "owner" && message.kind == "chat" && !message.deleted }
+    var body: some View {
+        HStack(spacing: DesignTokens.messageActionSpacing) {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message.deleted ? "（已删除）" : message.body, forType: .string)
+            } label: { Image(systemName: "doc.on.doc") }.help("复制")
+            if canModify {
+                Button { state.editMessage(message) } label: { Image(systemName: "pencil") }.help("编辑")
+                Button { state.deleteMessage(message) } label: { Image(systemName: "trash") }.foregroundStyle(DesignTokens.danger).help("删除")
+            }
+        }.font(DesignTokens.fontSmall).buttonStyle(.plain).transition(.opacity)
     }
 }
 
@@ -475,6 +491,7 @@ private struct MessageRow: View {
                 VStack(alignment: isOwner ? .trailing : .leading, spacing: DesignTokens.chatMetadataSpacing) {
                     if !isOwner { Text(message.author).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
                     // 长消息折叠位：保留完整正文，待 B1-8 接入展开状态与阈值。
+                    HStack(alignment: .center, spacing: DesignTokens.messageActionSpacing) {
                     Group {
                         if state.editingMessageId == message.id {
                             TextField("编辑消息", text: $state.editingMessageText)
@@ -491,6 +508,10 @@ private struct MessageRow: View {
                         .padding(.horizontal, DesignTokens.chatBubbleHorizontal).padding(.vertical, DesignTokens.chatBubbleVertical)
                         .background(isOwner ? DesignTokens.ink : DesignTokens.bubbleAI, in: RoundedRectangle(cornerRadius: DesignTokens.radiusBubble))
                         .fixedSize(horizontal: false, vertical: true)
+                        if state.hoveredMessageId == message.id {
+                            MessageActionButtons(state: state, message: message)
+                        }
+                    }
                     if message.edited && !message.deleted { Text("已编辑").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
                     if message.body.count > DesignTokens.longMessageThreshold || message.body.filter({ $0 == "\n" }).count >= DesignTokens.longMessageLines {
                         Button(state.expandedMessages.contains(message.id) ? "收起" : "展开全文") {
