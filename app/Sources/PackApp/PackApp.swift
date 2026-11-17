@@ -76,6 +76,8 @@ final class AppState: ObservableObject {
             UserDefaults.standard.set(roomDrafts, forKey: "pack.roomDrafts")
         }
     }
+    @Published var replyByRoom: [String: ReplySnapshot] = [:]
+    @Published var sendingReply: ReplySnapshot?
     @Published var sendingMessage: String?
     @Published var sendingRoom: String?
     /// Draft text at the moment the user dismissed the @-mention popup
@@ -518,20 +520,26 @@ final class AppState: ObservableObject {
             return
         }
         let room = currentRoom
+        let reply = replyByRoom.removeValue(forKey: room)
+        let wireBody = ReplyCodec.encode(body, reply: reply)
         draftMessage = ""
         sendingRoom = room
         sendingMessage = body
+        sendingReply = reply
         Task {
             do {
                 await ownerClient.discoverBeforeSending()
-                _ = try await ownerClient.call(name: "room_post", args: ["room": room, "body": body, "kind": "chat"])
+                _ = try await ownerClient.call(name: "room_post", args: ["room": room, "body": wireBody, "kind": "chat"])
+                sendingReply = nil
                 sendingMessage = nil
                 sendingRoom = nil
                 lastActionNote = "已发送"
                 await refresh()
             } catch {
+                sendingReply = nil
                 sendingMessage = nil
                 sendingRoom = nil
+                if replyByRoom[room] == nil { replyByRoom[room] = reply }
                 if currentRoom == room && draftMessage.isEmpty { draftMessage = body }
                 else if (roomDrafts[room] ?? "").isEmpty { roomDrafts[room] = body; UserDefaults.standard.set(roomDrafts, forKey: "pack.roomDrafts") }
                 lastActionNote = "操作未完成，请检查连接后重试"
@@ -539,18 +547,27 @@ final class AppState: ObservableObject {
         }
     }
 
+    func replyTo(_ message: RoomMessage) {
+        let visible = message.deleted ? "（已删除）" : ReplyCodec.decode(message.body).body
+        let snapshot = String(visible.prefix(DesignTokens.replySnapshotLimit))
+        replyByRoom[currentRoom] = ReplySnapshot(author: message.author, text: snapshot)
+        selection = "room"
+        composerFocusRequest += 1
+    }
+
     func editMessage(_ message: RoomMessage) {
         guard message.author == "owner", message.kind == "chat", !message.deleted else { return }
         editingMessageId = message.id
-        editingMessageText = message.body
+        editingMessageText = ReplyCodec.decode(message.body).body
     }
 
     func saveMessageEdit(_ message: RoomMessage) {
         let text = editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard message.author == "owner", message.kind == "chat", !message.deleted, !text.isEmpty, let ownerClient else { return }
+        let wireText = ReplyCodec.encode(text, reply: ReplyCodec.decode(message.body).reply)
         Task {
             do {
-                _ = try await ownerClient.call(name: "message_edit", args: ["message_id": message.id, "new_body": text])
+                _ = try await ownerClient.call(name: "message_edit", args: ["message_id": message.id, "new_body": wireText])
                 editingMessageId = nil; editingMessageText = ""
                 await refresh()
             } catch { lastActionNote = "操作未完成，请检查连接后重试" }
@@ -582,7 +599,10 @@ final class AppState: ObservableObject {
     }
 
     func submitComposer() {
-        if showInlineTask { createTaskFromDraft() } else { sendDraft() }
+        if showInlineTask {
+            guard replyByRoom[currentRoom] == nil else { inlineTaskError = "回复消息请先关闭派活"; return }
+            createTaskFromDraft()
+        } else { sendDraft() }
     }
 
     private func createTaskFromDraft() {

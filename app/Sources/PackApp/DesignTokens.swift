@@ -129,6 +129,10 @@ enum DesignTokens {
     static let detailSpacing: CGFloat = 8
     static let detailPadding: CGFloat = 12
     static let detailAnimation = Animation.easeInOut(duration: 0.2)
+    static let replySnapshotLimit = 240
+    static let replyBarWidth: CGFloat = 3
+    static let replyPadding: CGFloat = 8
+    static let replyBackgroundOpacity: Double = 0.08
     static let messageActionSpacing: CGFloat = 8
     static let messageActionIcon: CGFloat = 16
     static let roomDialogWidth: CGFloat = 400

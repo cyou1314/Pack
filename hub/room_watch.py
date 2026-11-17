@@ -23,6 +23,8 @@
 pack-main 的进度迁移，不重处理 pack-main 历史。
 """
 import anyio
+import base64
+import binascii
 import json
 import os
 import re
@@ -54,6 +56,27 @@ def parse(r):
     if getattr(r, "content", None):
         return json.loads(r.content[0].text)
     return r
+
+
+_REPLY_SUFFIX = re.compile(r"\n\n\[pack-reply-v1:([A-Za-z0-9_-]+)\]\Z")
+
+
+def strip_reply_metadata(body):
+    """Only remove a valid App reply snapshot; preserve ordinary or malformed text."""
+    if not isinstance(body, str):
+        return body
+    match = _REPLY_SUFFIX.search(body)
+    if not match:
+        return body
+    token = match.group(1)
+    try:
+        raw = base64.b64decode(token + "=" * (-len(token) % 4), altchars=b"-_", validate=True)
+        reply = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return body
+    if not isinstance(reply, dict) or not isinstance(reply.get("author"), str) or not reply["author"] or not isinstance(reply.get("text"), str):
+        return body
+    return body[:match.start()]
 
 
 def resolve_mention(body, targets):
@@ -153,7 +176,7 @@ async def run():
                         save_state(st)
                         if m["kind"] != "chat" or m["author"] != "owner":
                             continue
-                        body = m["body"]
+                        body = strip_reply_metadata(m["body"])
                         tc = parse_template_command(body, tpl_names)
                         if tc is not None:
                             if tc[0] == "hit":

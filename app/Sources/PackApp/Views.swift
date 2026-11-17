@@ -422,6 +422,7 @@ private struct RoomView: View {
                 }
                 if let pending = state.sendingMessage, state.sendingRoom == state.currentRoom {
                     HStack { Spacer(minLength: 0); VStack(alignment: .trailing, spacing: DesignTokens.chatMetadataSpacing) {
+                        if let reply = state.sendingReply { ReplyQuoteView(reply: reply) }
                         Text(pending).font(DesignTokens.fontUI).foregroundStyle(.white)
                             .padding(.horizontal, DesignTokens.chatBubbleHorizontal).padding(.vertical, DesignTokens.chatBubbleVertical)
                             .background(DesignTokens.ink, in: RoundedRectangle(cornerRadius: DesignTokens.radiusBubble))
@@ -474,8 +475,9 @@ private struct MessageActionButtons: View {
         HStack(spacing: DesignTokens.messageActionSpacing) {
             Button {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(message.deleted ? "（已删除）" : message.body, forType: .string)
+                NSPasteboard.general.setString(message.deleted ? "（已删除）" : ReplyCodec.decode(message.body).body, forType: .string)
             } label: { Image(systemName: "doc.on.doc") }.help("复制")
+            Button { state.replyTo(message) } label: { Image(systemName: "arrowshape.turn.up.left") }.help("回复")
             if canModify {
                 Button { state.editMessage(message) } label: { Image(systemName: "pencil") }.help("编辑")
                 Button { state.deleteMessage(message) } label: { Image(systemName: "trash") }.foregroundStyle(DesignTokens.danger).help("删除")
@@ -491,6 +493,7 @@ private struct MessageRow: View {
     var task: PackTask? { state.tasks.first { $0.id == message.taskId } }
     var member: MemberInfo? { state.members.first { $0.name == message.author } }
     var isOwner: Bool { message.author == "owner" }
+    private var decoded: (body: String, reply: ReplySnapshot?) { message.deleted ? ("（已删除）", nil) : ReplyCodec.decode(message.body) }
     var acknowledged: Bool {
         guard let index = state.messages.firstIndex(where: { $0.id == message.id }) else { return false }
         return state.messages.dropFirst(index + 1).contains { $0.kind == "task_card" || $0.author == "dispatcher" }
@@ -509,6 +512,7 @@ private struct MessageRow: View {
                 if isOwner { Spacer(minLength: 0) } else { MemberAvatarView(name: message.author, member: member, size: DesignTokens.chatAvatar, showStatus: false) }
                 VStack(alignment: isOwner ? .trailing : .leading, spacing: DesignTokens.chatMetadataSpacing) {
                     if !isOwner { Text(message.author).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
+                    if let reply = decoded.reply { ReplyQuoteView(reply: reply) }
                     // 长消息折叠位：保留完整正文，待 B1-8 接入展开状态与阈值。
                     HStack(alignment: .center, spacing: DesignTokens.messageActionSpacing) {
                     Group {
@@ -519,8 +523,8 @@ private struct MessageRow: View {
                                 .onSubmit { state.saveMessageEdit(message) }
                                 .onExitCommand { state.editingMessageId = nil; state.editingMessageText = "" }
                         } else {
-                            Text(message.deleted ? "（已删除）" : message.body).textSelection(.enabled)
-                                .lineLimit((message.body.count > DesignTokens.longMessageThreshold || message.body.filter({ $0 == "\n" }).count >= DesignTokens.longMessageLines) && !state.expandedMessages.contains(message.id) ? DesignTokens.longMessageLines : nil)
+                            Text(decoded.body).textSelection(.enabled)
+                                .lineLimit((decoded.body.count > DesignTokens.longMessageThreshold || decoded.body.filter({ $0 == "\n" }).count >= DesignTokens.longMessageLines) && !state.expandedMessages.contains(message.id) ? DesignTokens.longMessageLines : nil)
                         }
                     }.font(DesignTokens.fontUI)
                         .foregroundStyle(isOwner ? Color.white : DesignTokens.ink)
@@ -532,7 +536,7 @@ private struct MessageRow: View {
                         }
                     }
                     if message.edited && !message.deleted { Text("已编辑").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }
-                    if message.body.count > DesignTokens.longMessageThreshold || message.body.filter({ $0 == "\n" }).count >= DesignTokens.longMessageLines {
+                    if decoded.body.count > DesignTokens.longMessageThreshold || decoded.body.filter({ $0 == "\n" }).count >= DesignTokens.longMessageLines {
                         Button(state.expandedMessages.contains(message.id) ? "收起" : "展开全文") {
                             if state.expandedMessages.contains(message.id) { state.expandedMessages.remove(message.id) } else { state.expandedMessages.insert(message.id) }
                         }.buttonStyle(.plain).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.blue)
@@ -548,10 +552,33 @@ private struct MessageRow: View {
     }
 }
 
+private struct ReplyQuoteView: View {
+    let reply: ReplySnapshot
+    var body: some View {
+        HStack(alignment: .center, spacing: DesignTokens.replyPadding) {
+            RoundedRectangle(cornerRadius: DesignTokens.radiusSmall).fill(DesignTokens.blue).frame(width: DesignTokens.replyBarWidth)
+            VStack(alignment: .leading, spacing: DesignTokens.memberListTextSpacing) {
+                Text(reply.author).font(DesignTokens.summarySectionFont).foregroundStyle(DesignTokens.blue)
+                Text(reply.text.replacingOccurrences(of: "\n", with: " ")).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).lineLimit(1)
+            }
+        }.fixedSize(horizontal: false, vertical: true)
+            .padding(DesignTokens.replyPadding)
+            .background(DesignTokens.blue.opacity(DesignTokens.replyBackgroundOpacity), in: RoundedRectangle(cornerRadius: DesignTokens.radiusSmall))
+    }
+}
+
 private struct Composer: View {
     @ObservedObject var state: AppState
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.composerSpacing) {
+                if let reply = state.replyByRoom[state.currentRoom] {
+                    HStack(spacing: DesignTokens.shellGap) {
+                        ReplyQuoteView(reply: reply)
+                        Spacer(minLength: 0)
+                        Button { state.replyByRoom.removeValue(forKey: state.currentRoom) } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.plain).font(DesignTokens.fontSmall).help("取消回复")
+                    }
+                }
                 if state.mentionPopupVisible {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(state.mentionCandidates) { member in
