@@ -117,7 +117,8 @@ def parse_template_command(body, names):
     token, arg = mm.group(1), (mm.group(2) or "").strip()
     if token in names:
         return ("hit", token, arg)
-    cands = [n for n in names if n.startswith(token)]
+    low = token.lower()
+    cands = [n for n in names if n.lower().startswith(low)]
     if len(cands) == 1:
         return ("hit", cands[0], arg)
     if len(cands) > 1:
@@ -213,13 +214,15 @@ async def _handle_message(c, room, m, targets, tpl_names):
 MAX_MSG_FAILURES = 5  # 同一条消息连续处理失败上限，超过记日志放弃（防毒消息堵死整房）
 
 
-async def run():
-    st = load_state()
-    since = st["rooms"]
-    fail_counts = {}
+MAX_POLL_ERRORS = 3  # 同一会话连续轮询失败达此数判定会话楔住、退出重连（P5）
+RECONNECT_MAX_SEC = 30  # 重连退避上限（秒）
+
+
+async def _watch_session(st, since, fail_counts):
     transport = StreamableHttpTransport(URL, headers={"Authorization": "Bearer " + TOKEN})
     async with Client(transport) as c:
         log(f"watch start rooms={list(since)}")
+        poll_errors = 0
         while True:
             try:
                 # 每轮刷新房间、模板与成员名单（W3：成员名单不再只在启动时
@@ -258,9 +261,36 @@ async def run():
                             fail_counts.pop(key, None)
                         since[room] = max(since[room], m["id"])
                         save_state(st)
+                poll_errors = 0
             except Exception as e:
-                log(f"poll error: {e!r}")
+                # P4：连续同类错误只记首条与触发重连的一条，不再逐轮刷屏。
+                poll_errors += 1
+                if poll_errors == 1 or poll_errors >= MAX_POLL_ERRORS:
+                    log(f"poll error {poll_errors}/{MAX_POLL_ERRORS}: {e!r}")
+                if poll_errors >= MAX_POLL_ERRORS:
+                    raise
             await anyio.sleep(POLL_SEC)
+
+
+async def run():
+    st = load_state()
+    since = st["rooms"]
+    fail_counts = {}
+    backoff = 5
+    while True:
+        started = time.monotonic()
+        try:
+            await _watch_session(st, since, fail_counts)
+        except Exception as e:
+            # P5：启动期中枢未就绪 / 会话楔住都不再靠进程退出等 systemd 拉起，
+            # 进程内退避重连；状态以落盘为准重读（游标只进不退）。
+            if time.monotonic() - started > 120:
+                backoff = 5
+            log(f"watch session ended: {e!r}; reconnect in {backoff}s")
+            await anyio.sleep(backoff)
+            backoff = min(backoff * 2, RECONNECT_MAX_SEC)
+            st = load_state()
+            since = st["rooms"]
 
 
 if __name__ == "__main__":

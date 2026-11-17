@@ -1,0 +1,7 @@
+/home/hatch/workspace/pack/hub/room-watch.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+}

@@ -1431,6 +1431,10 @@ def build_server():
             raise ValueError("kind task_card is hub-internal")
         if kind == "decision" and me["role"] != "dispatcher":
             raise ValueError("kind decision is dispatcher-only")
+        if kind not in ("chat", "approval_request", "decision"):
+            # F2 (staging43): kind 白名单——report/system 等中枢内部 kind 与
+            # 任意字符串一律拒绝，防视觉冒充（第 1 轮深查 F2 残余项）。
+            raise ValueError(f"kind not allowed via room_post: {kind}")
         conn = db()
         r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
         if not r:
@@ -2268,6 +2272,10 @@ def build_server():
             conn.close()
             raise ValueError(f"no such task: {task_id}")
         if t["status"] in ("done", "cancelled"):
+            # D3 (staging43): 早返也留审计，重复/误取消不再无痕。
+            audit(conn, me["name"], "task_cancel_noop",
+                  f"task {task_id} already {t['status']}")
+            conn.commit()
             conn.close()
             return {"task_id": task_id, "status": t["status"]}
         conn.execute(
