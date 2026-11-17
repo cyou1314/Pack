@@ -48,6 +48,16 @@ enum DesignTokens {
     static let shellMinWidth: CGFloat = 900
     static let shellMinHeight: CGFloat = 620
     static let shellTitle = Font.system(size: 17, weight: .bold)
+    static let shellHeaderHeight: CGFloat = 45
+    static let shellHeaderInset: CGFloat = 25
+    static let shellHeaderTitle = Font.system(size: 14, weight: .semibold)
+    static let connectionDotSize: CGFloat = 6
+    static let connectionBannerBackground = Color(hex: 0xFFF6E7)
+    static let connectionBannerVertical: CGFloat = 8
+    static let connectionDisabledOpacity: Double = 0.55
+    static let summaryItemSpacing: CGFloat = 3
+    static let summaryIconFont = Font.system(size: 10, weight: .semibold)
+    static let summarySectionFont = Font.system(size: 11, weight: .semibold)
     static let shellSurface = Color(nsColor: .textBackgroundColor)
     static let shellSelectionOpacity: Double = 0.1
     static let quotaGradientOpacity: Double = 0.6

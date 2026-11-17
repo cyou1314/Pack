@@ -99,8 +99,16 @@ struct ContentView: View {
             Rectangle().fill(DesignTokens.hairline).frame(width: DesignTokens.shellDivider)
             VStack(spacing: 0) {
                 CenterHeader(state: state)
-                MainTabs(state: state)
                 Rectangle().fill(PackStyle.line).frame(height: 1)
+                if state.connectionFailed {
+                    Text("中枢连接已断开 · 正在重连")
+                        .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.amber)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, DesignTokens.shellHeaderInset)
+                        .padding(.vertical, DesignTokens.connectionBannerVertical)
+                        .background(DesignTokens.connectionBannerBackground)
+                        .transition(.opacity)
+                }
                 Group {
                     if state.selection == "tasks", let task = state.selectedTask {
                         ScrollView {
@@ -120,7 +128,8 @@ struct ContentView: View {
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 Composer(state: state)
-                StatusLine(state: state)
+                    .disabled(!state.connected)
+                    .opacity(state.connected ? 1 : DesignTokens.connectionDisabledOpacity)
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(PackStyle.canvas)
         }
         .background(PackStyle.canvas)
@@ -139,6 +148,7 @@ struct ContentView: View {
         }
         .onAppear { state.start() }
         .preferredColorScheme(.light)
+        .animation(DesignTokens.animFast, value: state.connectionFailed)
         .frame(minWidth: DesignTokens.shellMinWidth, minHeight: DesignTokens.shellMinHeight)
     }
 }
@@ -197,6 +207,7 @@ private struct Sidebar: View {
             row("approvals", "收件箱", "tray")
             row("room", "对话", "bubble.left.and.bubble.right")
             row("tasks", "任务板", "square.grid.2x2")
+            row("members", "成员", "person.2")
             if state.showSidebar {
                 HStack { Text("房间"); Spacer() }.font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).padding(.top, DesignTokens.shellInset)
                 ForEach(state.rooms) { room in
@@ -258,6 +269,9 @@ private struct Sidebar: View {
             HStack(spacing: DesignTokens.shellGap) {
                 MemberAvatarView(name: "owner", member: state.members.first { $0.name == "owner" }, size: DesignTokens.shellAvatar, showStatus: false)
                 if state.showSidebar { Text("群主").font(DesignTokens.fontUI); Spacer(minLength: 0) }
+                Circle().fill(state.connected ? DesignTokens.okGreen : DesignTokens.faintText)
+                    .frame(width: DesignTokens.connectionDotSize, height: DesignTokens.connectionDotSize)
+                    .help(state.connected ? "中枢在线" : "中枢重连中")
             }.frame(maxWidth: .infinity).padding(.bottom, DesignTokens.shellInset)
         }.padding(.horizontal, DesignTokens.shellInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -282,45 +296,27 @@ private struct RoomNameDialog: View {
 private struct CenterHeader: View {
     @ObservedObject var state: AppState
     var body: some View {
-        HStack(spacing: 12) {
-            Text(state.currentRoom).font(.system(size: 14, weight: .semibold))
-            Text("成员 \(state.members.count) · 在线 \(state.members.filter(\.isOnline).count)").font(.system(size: 11)).foregroundStyle(.secondary)
+        HStack(spacing: DesignTokens.shellGap) {
+            Text(state.currentRoom).font(DesignTokens.shellHeaderTitle)
             Spacer()
             if !state.pendingApprovals.isEmpty { Pill(title: "待批准 \(state.pendingApprovals.count)", color: PackStyle.amber) }
-        }.padding(.horizontal, 25).frame(height: 45)
-    }
-}
-
-private struct MainTabs: View {
-    @ObservedObject var state: AppState
-    let tabs: [(String, String)] = [("room", "对话"), ("tasks", "任务板"), ("approvals", "批准中心"), ("members", "成员")]
-    var body: some View {
-        HStack(spacing: 27) {
-            ForEach(tabs, id: \.0) { key, title in
-                Button { state.selection = key; if key == "tasks" { state.selectedTaskId = nil } } label: {
-                    VStack(spacing: 0) {
-                        Text(title).font(.system(size: 12, weight: state.selection == key ? .semibold : .regular)).foregroundStyle(state.selection == key ? PackStyle.accent : Color.secondary).frame(height: 35)
-                        Rectangle().fill(state.selection == key ? PackStyle.accent : Color.clear).frame(height: 2)
-                    }.contentShape(Rectangle())
-                }.buttonStyle(.plain)
-            }
-            Spacer()
-        }.padding(.horizontal, 25)
-    }
-}
-
-private struct StatusLine: View {
-    @ObservedObject var state: AppState
-    var body: some View {
-        let active = state.tasks.filter { ["working", "claimed"].contains($0.status) }.count
-        let complete = state.tasks.filter { $0.status == "done" && Calendar.current.isDateInToday(Date(timeIntervalSince1970: $0.updatedAt)) }.count
-        HStack(spacing: 14) { Text(state.connected ? "中枢在线" : "中枢重连中"); Text("进行中 \(active)"); Text("今日完成 \(complete)") }.font(.system(size: 10)).foregroundStyle(.tertiary).frame(height: 22)
+        }.padding(.horizontal, DesignTokens.shellHeaderInset).frame(height: DesignTokens.shellHeaderHeight)
     }
 }
 
 private struct RoomView: View {
     @ObservedObject var state: AppState
     var body: some View {
+        VStack(spacing: 0) {
+        if let summary = state.roomSummary {
+            SummaryCardView(summary: summary, expanded: state.summaryExpanded) {
+                withAnimation(DesignTokens.animFast) { state.summaryExpanded.toggle() }
+            }
+            .frame(maxWidth: DesignTokens.chatContentWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, DesignTokens.chatInset)
+            .padding(.top, DesignTokens.detailPadding)
+        }
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(spacing: DesignTokens.chatSpacing) {
@@ -349,6 +345,7 @@ private struct RoomView: View {
             if let id = state.highlightedMessageId { proxy.scrollTo(id, anchor: .center) }
         }.onChange(of: state.highlightedMessageId) { id in
             if let id { withAnimation(DesignTokens.animStd) { proxy.scrollTo(id, anchor: .center) } }
+        }
         }
         }
     }
@@ -469,7 +466,7 @@ private struct Composer: View {
                         }
                     }.background(Color(nsColor: .controlBackgroundColor))
                 }
-                TextField("发消息或派活，@ 成员指派", text: $state.draftMessage, axis: .vertical)
+                TextField(state.connected ? "发消息或派活，@ 成员指派" : "连接恢复后可发送", text: $state.draftMessage, axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(2...5)
                     .focused($messageFocused)
                     .onSubmit { state.sendDraft() }
@@ -670,7 +667,7 @@ private struct DeliveryCard: View {
                     }.font(DesignTokens.fontSmall)
                 }
             }
-            if state.lastActionNote.hasPrefix("操作失败") || state.lastActionNote == "请填写打回理由" { Text(state.lastActionNote).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger) }
+            if state.lastActionNote.hasPrefix("操作未完成") || state.lastActionNote == "请填写打回理由" { Text(state.lastActionNote).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger) }
         }.padding(DesignTokens.detailPadding).frame(maxWidth: .infinity, alignment: .leading)
             .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
             .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine))

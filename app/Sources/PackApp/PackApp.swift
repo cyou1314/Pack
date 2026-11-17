@@ -13,6 +13,9 @@ final class AppState: ObservableObject {
     @Published var members: [MemberInfo] = []
     @Published var connectionNote: String = "未连接"
     @Published var connected: Bool = false
+    @Published var connectionFailed: Bool = false
+    @Published var roomSummary: RoomSummary?
+    @Published var summaryExpanded = true
     @Published var selection: String? = "room"
     @Published var selectedTaskId: Int?
     @Published var boardFilter: String = "全部"
@@ -131,7 +134,9 @@ final class AppState: ObservableObject {
                                                args: ["room": room, "since_id": 0, "limit": 200])
             let taskRes = try await client.call(name: "task_list")
             let memRes = try await client.call(name: "member_list")
+            let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
             guard room == currentRoom else { return }
+            if let summaryRes { roomSummary = summaryVal(summaryRes) }
             if let arr = roomRes["rooms"] as? [[String: Any]] {
                 rooms = arr.map { RoomItem(id: intVal($0["id"]), name: ($0["name"] as? String) ?? "?") }.reversed()
             }
@@ -171,9 +176,11 @@ final class AppState: ObservableObject {
                 }
             }
             connected = true
+            connectionFailed = false
             connectionNote = "已连接"
         } catch {
             connected = false
+            connectionFailed = true
             connectionNote = "连接中断，重试中"
         }
     }
@@ -201,7 +208,7 @@ final class AppState: ObservableObject {
             if let token = cfg.ownerToken, !token.isEmpty { var ownerCfg = cfg; ownerCfg.token = token; ownerClient = HubClient(cfg: ownerCfg) }
             settingsMessage = "地址已保存，正在连接"
             Task { await refresh() }
-        } catch { settingsMessage = "保存失败：\(error.localizedDescription)" }
+        } catch { settingsMessage = "保存失败，请检查本机配置后重试" }
     }
 
     func toggleMember(_ name: String) {
@@ -229,11 +236,11 @@ final class AppState: ObservableObject {
                 guard let token = response["token"] as? String, let bytes = token.data(using: .utf8) else { memberActionError = "登记结果缺少凭证，请联系调度员处理"; return }
                 let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.cyou.pack.member", kSecAttrAccount as String: name, kSecValueData as String: bytes, kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
                 let result = SecItemAdd(query as CFDictionary, nil)
-                guard result == errSecSuccess else { memberActionError = "成员已登记，但凭证未能存入钥匙串（\(result)）；请联系调度员重置"; return }
+                guard result == errSecSuccess else { memberActionError = "成员已登记，但凭证未能存入钥匙串；请联系调度员重置"; return }
                 if !pendingMembers.contains(name) { pendingMembers.append(name); UserDefaults.standard.set(pendingMembers, forKey: "pack.pendingMembers") }
                 showAddMember = false; memberNameInput = ""; selectedMemberName = name; selection = "members"
                 await refresh()
-            } catch { memberActionError = "登记失败：\(error)" }
+            } catch { memberActionError = "登记未完成，请检查名称和头像组合后重试" }
         }
     }
 
@@ -245,7 +252,7 @@ final class AppState: ObservableObject {
                 SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.cyou.pack.member", kSecAttrAccount as String: name] as CFDictionary)
                 pendingMembers.removeAll { $0 == name }; UserDefaults.standard.set(pendingMembers, forKey: "pack.pendingMembers")
                 selectedMemberName = nil; await refresh()
-            } catch { memberActionError = "移除失败：\(error)" }
+            } catch { memberActionError = "移除未完成，请检查连接后重试" }
         }
     }
 
@@ -257,7 +264,7 @@ final class AppState: ObservableObject {
                 let result = try await client.call(name: kind == "技能" ? "skill_list" : "template_list")
                 catalogItems = (result[kind == "技能" ? "skills" : "templates"] as? [[String: Any]]) ?? []
                 catalogNote = catalogItems.isEmpty ? "暂无\(kind)" : ""
-            } catch { catalogNote = "读取失败：\(error)" }
+            } catch { catalogNote = "读取未完成，请检查连接后重试" }
         }
     }
 
@@ -271,6 +278,7 @@ final class AppState: ObservableObject {
         guard room != currentRoom else { selection = "room"; return }
         if let last = messages.last?.id { lastSeenByRoom[currentRoom] = last; UserDefaults.standard.set(lastSeenByRoom, forKey: "pack.lastSeen") }
         currentRoom = room
+        roomSummary = nil
         unreadBoundary = lastSeenByRoom[room]
         draftMessage = roomDrafts[room] ?? ""
         messages = []; tasks = []; selectedTaskId = nil; highlightedMessageId = nil
@@ -298,7 +306,7 @@ final class AppState: ObservableObject {
                 } else { _ = try await client.call(name: "room_create", args: ["name": name]) }
                 showRoomDialog = false
                 if currentRoom != name { selectRoom(name) } else { await refresh() }
-            } catch { roomDialogError = "操作失败：\(error)" }
+            } catch { roomDialogError = "操作未完成，请检查连接后重试" }
         }
     }
 
@@ -308,7 +316,7 @@ final class AppState: ObservableObject {
             do {
                 _ = try await client.call(name: "room_archive", args: ["room": name, "archived": true])
                 if currentRoom == name { selectRoom("pack-main") } else { await refresh() }
-            } catch { lastActionNote = "操作失败：\(error)" }
+            } catch { lastActionNote = "操作未完成，请检查连接后重试" }
         }
     }
 
@@ -377,7 +385,7 @@ final class AppState: ObservableObject {
                 lastActionNote = note
                 await refresh()
             } catch {
-                lastActionNote = "操作失败：" + String(describing: error)
+                lastActionNote = "操作未完成，请检查连接后重试"
             }
         }
     }
@@ -407,7 +415,7 @@ final class AppState: ObservableObject {
                 sendingRoom = nil
                 if currentRoom == room && draftMessage.isEmpty { draftMessage = body }
                 else if (roomDrafts[room] ?? "").isEmpty { roomDrafts[room] = body; UserDefaults.standard.set(roomDrafts, forKey: "pack.roomDrafts") }
-                lastActionNote = "操作失败：" + String(describing: error)
+                lastActionNote = "操作未完成，请检查连接后重试"
             }
         }
     }
@@ -426,7 +434,7 @@ final class AppState: ObservableObject {
                 _ = try await ownerClient.call(name: "message_edit", args: ["message_id": message.id, "new_body": text])
                 editingMessageId = nil; editingMessageText = ""
                 await refresh()
-            } catch { lastActionNote = "操作失败：" + String(describing: error) }
+            } catch { lastActionNote = "操作未完成，请检查连接后重试" }
         }
     }
 
@@ -436,7 +444,7 @@ final class AppState: ObservableObject {
             do {
                 _ = try await ownerClient.call(name: "message_delete", args: ["message_id": message.id])
                 await refresh()
-            } catch { lastActionNote = "操作失败：" + String(describing: error) }
+            } catch { lastActionNote = "操作未完成，请检查连接后重试" }
         }
     }
 
@@ -499,7 +507,7 @@ final class AppState: ObservableObject {
                 reviewInput = ""
                 lastActionNote = approve ? "已关单 #\(tid)" : "已打回 #\(tid)"
                 await refresh()
-            } catch { lastActionNote = "操作失败：" + String(describing: error) }
+            } catch { lastActionNote = "操作未完成，请检查连接后重试" }
         }
     }
 
@@ -515,7 +523,7 @@ final class AppState: ObservableObject {
                 taskRuns = (runs["runs"] as? [[String: Any]]) ?? []
                 taskTransfers = (transfers["transfers"] as? [[String: Any]]) ?? []
                 detailLoadNote = ""
-            } catch { if expandedChatTaskId == tid { detailLoadNote = "记录读取失败：\(error)" } }
+            } catch { if expandedChatTaskId == tid { detailLoadNote = "记录暂时无法读取，请稍后重试" } }
         }
     }
 
