@@ -18,6 +18,7 @@ done
 
 [ -f "$HUB/hub.py" ] && ok "hub.py present" || bad "hub.py missing"
 [ -f "$HUB/room_watch.py" ] && ok "room_watch.py present" || bad "room_watch.py missing"
+[ -x "$HUB/.venv/bin/python" ] && ok "hub venv present" || bad "hub/.venv/bin/python missing"
 [ -x "$HUB/backup-db.sh" ] && ok "backup-db.sh executable" || bad "backup-db.sh missing/not executable"
 [ -x "$HUB/verify-backup.sh" ] && ok "verify-backup.sh executable" || bad "verify-backup.sh missing/not executable"
 
@@ -32,6 +33,12 @@ else
   fi
 fi
 
+if mkdir -p "$HUB/attachments" "$HUB/backups"; then
+  ok "attachments/backups directories present"
+else
+  bad "cannot create attachments/backups directories"
+fi
+
 if [ -f "$HUB/.dispatcher_token" ]; then
   perms="$(stat -c '%a' "$HUB/.dispatcher_token" 2>/dev/null || stat -f '%Lp' "$HUB/.dispatcher_token" 2>/dev/null || echo unknown)"
   case "$perms" in
@@ -41,10 +48,6 @@ if [ -f "$HUB/.dispatcher_token" ]; then
 else
   warn "dispatcher token file not present (Hub may create it during init)"
 fi
-
-mkdir -p "$HUB/attachments" "$HUB/backups"
-ok "attachments directory present"
-ok "backups directory present"
 
 if ls "$HUB"/backups/pack-*.db >/dev/null 2>&1; then
   if "$HUB/verify-backup.sh" >/dev/null 2>&1; then

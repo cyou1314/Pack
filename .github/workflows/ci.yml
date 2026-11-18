@@ -28,12 +28,14 @@ jobs:
           bash -n hub/backup-db.sh
           bash -n hub/verify-backup.sh
           bash -n hub/preflight.sh
+          bash -n hub/test_backup.sh
           bash -n hub/install-services.sh
           bash -n run-all-suites.sh
       - name: Python compile
         run: python -m compileall -q hub hub-staging38 hub-staging39 hub-staging40 hub-staging41 hub-staging42 hub-staging43 hub-staging44 hub-staging45 hub-staging46
       - name: Unit tests
         run: |
+          bash hub/test_backup.sh
           python hub/test_reply_watcher.py
           python hub-staging41/test_w4_handler.py
           python hub-staging44/test_w5_template.py
