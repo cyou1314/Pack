@@ -43,6 +43,8 @@ async def main():
     ok, t = await call(D, "task_create", room="pack-main",
                        title="[AUTO] 决议完整性甲", body="测试", assignee_name="alice")
     tid_a = t["task_id"] if ok else None
+    ok, cl = await call(A, "task_claim", task_id=tid_a)
+    check("A0b alice 先认领任务（F1 守卫要求持有人发批准请求）", ok)
     ok, out = await call(A, "room_post", room="pack-main",
                          body=f"申请批准 任务#{tid_a}：打开 https://example.com/a",
                          kind="approval_request")
@@ -71,6 +73,7 @@ async def main():
     ok, t = await call(D, "task_create", room="pack-main",
                        title="[MANU] 决议完整性乙", body="测试", assignee_name="alice")
     tid_b = t["task_id"] if ok else None
+    ok, cl = await call(A, "task_claim", task_id=tid_b)
     ok, out = await call(A, "room_post", room="pack-main",
                          body=f"申请批准 任务#{tid_b}：打开 https://example.com/b",
                          kind="approval_request")
@@ -104,6 +107,7 @@ async def main():
     ok, t = await call(D, "task_create", room="pack-main",
                        title="[MANU] 决议完整性丙", body="测试", assignee_name="alice")
     tid_c = t["task_id"] if ok else None
+    ok, cl = await call(A, "task_claim", task_id=tid_c)
     await call(A, "room_post", room="pack-main",
                body=f"申请批准 任务#{tid_c}：打开 https://example.com/c",
                kind="approval_request")
