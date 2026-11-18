@@ -1,0 +1,16 @@
+[Unit]
+Description=Pack Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@PACK_USER@
+WorkingDirectory=@PACK_ROOT@/hub
+ExecStart=@PACK_ROOT@/hub/.venv/bin/python @PACK_ROOT@/hub/hub.py serve
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,10 +1,11 @@
-"""staging39 harness: multi-identity FastMCP client (shared staging shape)."""
-import asyncio, json
+"""staging39 harness: multi-identity FastMCP 客户端。"""
+import asyncio, json, os
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 URL = "http://127.0.0.1:8839/mcp"
-DISP = open("/home/hatch/workspace/pack/hub-staging39/.dispatcher_token").read().strip()
+DISP = open(os.path.join(HERE, ".dispatcher_token")).read().strip()
 
 def client(tok):
     return Client(StreamableHttpTransport(URL, headers={"Authorization": f"Bearer {tok}"}))

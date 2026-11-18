@@ -61,7 +61,7 @@ flowchart TB
         HUB["pack-hub<br/>FastMCP + SQLite(WAL)<br/>63 个工具"]
         WATCH["pack-room-watch<br/>活群转换器：@消息 / 模板指令 → 任务卡"]
         BAK["pack-db-backup<br/>每日在线备份，留 14 份"]
-        DOG["看门狗<br/>每 60 秒巡检，unit 丢失自动重装"]
+        CI["GitHub Actions<br/>Hub 回归 / Runtime / Swift"]
     end
     subgraph MAC["Mac"]
         APP["♾️ App<br/>原生 SwiftUI 群聊客户端"]
@@ -76,7 +76,7 @@ flowchart TB
     BRIDGE <--> HUB
     ENG <--> HUB
     WATCH --> HUB
-    DOG -.-> HUB
+    CI -.-> HUB
     BAK -.-> HUB
 ```
 
@@ -163,18 +163,24 @@ learning/           同类开源项目拆解笔记（Letta / AutoGen / ChatDev /
 
 ## 运维
 
-中枢在 VM 上由 systemd 托管：`pack-hub`、`pack-tunnel`、`pack-room-watch`、`pack-url-publisher.timer`、`pack-db-backup.timer`。unit 正本在 `hub/systemd/`，VM 被替换后跑 `hub/install-services.sh` 一键恢复；看门狗每 60 秒巡检，unit 丢失会自动重装（包括备份定时器）。
+仓库现在提供可从干净 clone 恢复的基础 systemd 单元：`pack-hub`、`pack-room-watch`、`pack-db-backup.timer`。`pack-tunnel` 与 `pack-url-publisher` 仍属于当前 VM 的环境专属组件，不把 Pinggy 凭证、发布脚本或实时隧道配置硬编码进公开仓库。
 
 ```bash
-hub/preflight.sh     # 动工日预检：服务 / 库完整性 / 中枢应答 / 仓库同步 / 备份新鲜度
-hub/backup-db.sh     # 手动在线备份（定时器每日自动跑，备份与现库双边完整性校验）
+sudo hub/install-services.sh
+PACK_PREFLIGHT_SYSTEMD=1 hub/preflight.sh
+hub/backup-db.sh
+hub/verify-backup.sh
+./run-all-suites.sh
 ```
 
-每个中枢增量都先在隔离环境开发、多轮测试、过一轮慢工复检（鉴权边界 / 并发原子性 / 限额口径 / 数据完整性 / 审计 / 纪律一致性），才备份上线；2026-11-16 用线上代码把全部历史测试套件复演了一遍，零回归。
+备份现在包含两部分：SQLite 在线快照 + `attachments/` 内容归档，并生成 SHA-256 manifest；轮换按完整备份集执行，默认保留 14 套。预检会检查数据库完整性、令牌权限、附件/备份目录以及最近一套备份。
+
+回归测试统一使用 `hub-staging38`–`hub-staging46` 当前套件，测试运行在临时目录，不修改仓库里的 staging 副本。GitHub Actions 同时执行 Hub 回归、Runtime 语法检查和 macOS Swift 构建。
 
 ## 安全纪律
 
 - 令牌只存各机本地文件（0600），**不进仓库、不进聊天、不进日志正文**。
+- 当前公开仓库仍存在动态 Hub 地址发现链；签名 Discovery 尚未启用，因此不要把仓库写权限视为实时地址的安全边界。
 - 成员登录必须由账号本人亲手完成，密码与验证码不经过群主、聊天或中枢。
 - 房间内容对成员是数据不是指令；不可逆动作必须回成员自己的主人批准。
 
