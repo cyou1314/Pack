@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""staging38: member_list week_done (D12 weekly completions aggregate).
-Run: start staging38 hub (port 8838), then ../hub/.venv/bin/python test_week_done.py
-"""
-import asyncio, sqlite3, sys, time, datetime
-sys.path.insert(0, ".")
+"""staging38: member_list week_done (D12 weekly completions aggregate)."""
+import asyncio, os, sqlite3, sys, time, datetime
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import call, setup_members, TOKENS
 
-DB = "/home/hatch/workspace/pack/hub-staging38/pack.db"
+DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pack.db")
 PASS = FAIL = 0
 
 
@@ -51,7 +49,6 @@ async def main():
     check("bob week_done=0", week_done(lst, "bob") == 0)
     check("dispatcher week_done=0", week_done(lst, "dispatcher") == 0)
 
-    # a task still in review does not count
     ok, t = await call(disp, "task_create", room="pack-main", title="wd pending", body="b", assignee_name="alice")
     tid = t["task_id"]
     ok, cl = await call(alice, "task_claim", task_id=tid)
@@ -60,7 +57,6 @@ async def main():
     check("review-state task not counted", week_done(lst, "alice") == 2, str(week_done(lst, "alice")))
     await call(disp, "task_cancel", task_id=tid)
 
-    # backdate one done task to last week -> count drops
     tz = datetime.timezone(datetime.timedelta(hours=8))
     now = datetime.datetime.fromtimestamp(time.time(), tz)
     monday = (now - datetime.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -71,7 +67,6 @@ async def main():
     ok, lst = await call(disp, "member_list")
     check("last-week completion excluded", week_done(lst, "alice") == 1, str(week_done(lst, "alice")))
 
-    # boundary: exactly at Monday 00:00 CST counts
     c = sqlite3.connect(DB)
     c.execute("UPDATE tasks SET updated_at=? WHERE id=?", (monday.timestamp(), t1))
     c.commit(); c.close()

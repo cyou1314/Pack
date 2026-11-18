@@ -1,0 +1,3 @@
+# CI-only dependency pin. Production/runtime dependencies are still inventoried
+# from the target VM separately; this file is intentionally not the production lock.
+fastmcp==4.1.8
