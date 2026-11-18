@@ -1,0 +1,13 @@
+[Unit]
+Description=Pack room watcher (@mention -> task card)
+After=network.target pack-hub.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hatch/workspace/pack/hub
+ExecStart=/home/hatch/workspace/pack/hub/.venv/bin/python /home/hatch/workspace/pack/hub/room_watch.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

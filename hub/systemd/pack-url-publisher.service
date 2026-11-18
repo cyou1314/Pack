@@ -1,0 +1,7 @@
+[Unit]
+Description=Publish current Pack hub tunnel URL to repo
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/hatch/workspace/pack/hub/publish-url.sh

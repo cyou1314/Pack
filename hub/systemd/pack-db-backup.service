@@ -1,0 +1,5 @@
+[Unit]
+Description=Pack hub DB daily backup + integrity check
+[Service]
+Type=oneshot
+ExecStart=/home/hatch/workspace/pack/hub/backup-db.sh
