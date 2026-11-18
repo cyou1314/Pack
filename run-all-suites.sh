@@ -122,7 +122,7 @@ trap 'exit 143' TERM HUP
 prepare_stage() {
   local stage="$1"
   local with_hub="$2"
-  local source="$ROOT/hub-staging$stage"
+  local source="$ROOT/tests/hub-staging$stage"
   local work="$TMP_ROOT/hub-staging$stage"
   [[ -d "$source" ]] || { echo "ERROR: missing $source" >&2; return 1; }
   cp -a "$source" "$work"
@@ -150,6 +150,7 @@ stage = os.environ["PACK_TEST_STAGE"]
 work = os.environ["PACK_TEST_STAGE_ROOT"]
 root = os.environ["PACK_TEST_ROOT"]
 old_stage = f"/home/hatch/workspace/pack/hub-staging{stage}"
+old_stage2 = f"/home/hatch/workspace/pack/tests/hub-staging{stage}"
 old_skills = "/home/hatch/workspace/pack/repo-mirror/skills"
 old_python = "/home/hatch/workspace/pack/hub/.venv/bin/python"
 
@@ -161,6 +162,7 @@ for path in Path(work).rglob("*"):
     except (UnicodeDecodeError, OSError):
         continue
     updated = content.replace(old_stage, work)
+    updated = updated.replace(old_stage2, work)
     updated = updated.replace(old_skills, os.path.join(root, "skills"))
     updated = updated.replace("PY=" + old_python, 'PY="$PACK_TEST_PY"')
     if updated != content:
