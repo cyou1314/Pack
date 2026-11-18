@@ -1,9 +1,11 @@
 """staging21 对抗复检：越权矩阵 / kind 伪造 / 令牌冒用 / 记忆隔离 / 轻量压力。
 对象 = 线上 hub.py + room_post kind 守卫。成员令牌一律不得触碰调度员面。"""
-import asyncio, sys, time
+import asyncio, os, sys, time
 sys.path.insert(0, "/home/hatch/workspace/pack/hub-staging21")
 import harness
 from harness import call, setup_members, TOKENS
+
+BASE = os.path.dirname(os.path.abspath(__file__))
 
 PASS, FAIL = [], []
 def check(name, cond, extra=""):
@@ -136,10 +138,14 @@ async def main():
             await call(A, "room_post", room="pack-main", body=f"soak msg {i}-{j}")
     dt = time.time() - t0
     check("F soak 300 tasks lifecycle", done == 300, f"done={done} in {dt:.0f}s")
-    ok, out = await call(D, "task_list", status="review")
-    check("F 300 in review", len(out["tasks"]) == 300, f"got {len(out['tasks'])}")
+    # task_list 单页上限 100（staging42 起 offset 分页），分三页汇总
+    total = 0
+    for off in (0, 100, 200):
+        ok, out = await call(D, "task_list", status="review", offset=off)
+        total += len(out["tasks"]) if ok else 0
+    check("F 300 in review", total == 300, f"got {total}")
     import sqlite3
-    conn = sqlite3.connect("/home/hatch/workspace/pack/hub-staging21/pack.db")
+    conn = sqlite3.connect(os.path.join(BASE, "pack.db"))
     ic = conn.execute("PRAGMA integrity_check").fetchone()[0]
     nmsg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     conn.close()
