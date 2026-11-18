@@ -8,6 +8,9 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 if [ -z "${PY:-}" ]; then
   PY="$ROOT/hub/.venv/bin/python"
 fi
+if [[ "$PY" != */* ]]; then
+  PY="$(command -v "$PY" || true)"
+fi
 HUB="$ROOT/hub/hub.py"
 FULL=0
 while (($#)); do
@@ -34,9 +37,14 @@ while (($#)); do
   esac
 done
 
+if [[ "$HUB" != /* ]]; then
+  HUB="$(cd "$(dirname "$HUB")" 2>/dev/null && pwd)/$(basename "$HUB")" || {
+    echo "ERROR: cannot resolve Hub source path: $HUB" >&2
+    exit 2
+  }
+fi
 [[ -x "$PY" ]] || { echo "ERROR: Python interpreter not executable: $PY" >&2; exit 2; }
 [[ -f "$HUB" ]] || { echo "ERROR: Hub source not found: $HUB" >&2; exit 2; }
-[[ "$HUB" = /* ]] || HUB="$ROOT/$HUB"
 
 export PACK_TEST_PY="$PY"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/pack-regression.XXXXXX")"
@@ -141,13 +149,12 @@ from pathlib import Path
 stage = os.environ["PACK_TEST_STAGE"]
 work = os.environ["PACK_TEST_STAGE_ROOT"]
 root = os.environ["PACK_TEST_ROOT"]
-python = os.environ["PACK_TEST_PY"]
 old_stage = f"/home/hatch/workspace/pack/hub-staging{stage}"
 old_skills = "/home/hatch/workspace/pack/repo-mirror/skills"
 old_python = "/home/hatch/workspace/pack/hub/.venv/bin/python"
 
 for path in Path(work).rglob("*"):
-    if not path.is_file():
+    if not path.is_file() or path.name == "hub.py":
         continue
     try:
         content = path.read_text(encoding="utf-8")
@@ -317,7 +324,10 @@ for i in $(seq 1 30); do
 done
 [ "$token_ready" -eq 1 ] || { echo "DISPATCHER_TOKEN_NOT_CREATED"; exit 71; }
 
-"$PACK_TEST_PY" rehearse_combo.py seed > seed.log 2>&1
+if ! "$PACK_TEST_PY" rehearse_combo.py seed > seed.log 2>&1; then
+  cat seed.log >&2 || true
+  exit 74
+fi
 cat seed.log >> regression-run.log
 
 PACK_WATCH_URL="http://127.0.0.1:$PORT/mcp" \
@@ -351,7 +361,11 @@ if [ "$watch_ready" -ne 1 ]; then
   exit 73
 fi
 
-"$PACK_TEST_PY" rehearse_combo.py verify > verify.log 2>&1
+if ! "$PACK_TEST_PY" rehearse_combo.py verify > verify.log 2>&1; then
+  cat verify.log >&2 || true
+  cat verify.log >> regression-run.log
+  exit 75
+fi
 cat verify.log >> regression-run.log
 BASH
   chmod +x "$work/.pack-run-stage24.sh"
