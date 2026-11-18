@@ -1,8 +1,8 @@
-import asyncio, sqlite3, sys
-sys.path.insert(0, ".")
+import asyncio, os, sqlite3, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import call, DISP
 from orphans import check_orphans
-DB = "pack.db"
+DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pack.db")
 res = []
 def note(name, ok, extra=""):
     res.append(ok)

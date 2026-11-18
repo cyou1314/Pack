@@ -1,6 +1,6 @@
 """staging43 directed tests: F2 kind whitelist + D3 task_cancel noop audit."""
-import asyncio, sys
-sys.path.insert(0, ".")
+import asyncio, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import call, setup_members, TOKENS, DISP
 
 FAIL = []
@@ -22,11 +22,9 @@ async def main():
     check("dispatcher decision allowed", ok, str(r))
     ok, r = await call(DISP, "room_post", room="pack-main", body="冒充报告", kind="report")
     check("dispatcher report via room_post rejected", not ok, str(r))
-    # approval_request passes whitelist, hits the F1 gate (nonexistent task)
     ok, r = await call(alice, "room_post", room="pack-main", body="任务#99999 请批准", kind="approval_request")
     check("approval_request reaches F1 gate", not ok and "existing task" in str(r), str(r))
 
-    # --- D3: cancel noop audit ---
     ok, t = await call(DISP, "task_create", room="pack-main", title="D3 取消审计", body="b", assignee_name="alice")
     tid = t["task_id"]
     ok, r = await call(DISP, "task_cancel", task_id=tid)
@@ -38,14 +36,13 @@ async def main():
     check("noop audit written", "task_cancel_noop" in actions, str(actions))
     check("real cancel audit kept", "task_cancel" in actions, str(actions))
 
-    # done-task cancel also noop-audits
     ok, t2 = await call(DISP, "task_create", room="pack-main", title="D3 done 取消", body="b", assignee_name="alice")
     tid2 = t2["task_id"]
     ok, c = await call(alice, "task_claim", task_id=tid2)
     tok = c["claim_token"]
     ok, r = await call(alice, "task_complete", task_id=tid2, claim_token=tok, result="done")
     check("complete to done", ok, str(r))
-    ok, r = await call(DISP, "task_review", task_id=tid2, approve=True)
+    await call(DISP, "task_review", task_id=tid2, approve=True)
     ok, r = await call(DISP, "task_cancel", task_id=tid2)
     check("cancel done returns done", ok and r.get("status") == "done", str(r))
     ok, a = await call(DISP, "task_audit", task_id=tid2)
