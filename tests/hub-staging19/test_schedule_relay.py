@@ -135,7 +135,7 @@ async def main():
     ok, out = await call(A, "task_claim", task_id=tid6)
     check("alice claimed drop task", ok, str(out))
     dbx("UPDATE tasks SET lease_expires=? WHERE id=?", (time.time() - 10, tid6))
-    r = subprocess.run(["/home/hatch/workspace/pack/hub/.venv/bin/python", "-c",
+    r = subprocess.run([sys.executable, "-c",
                         "import sys; sys.path.insert(0, '/home/hatch/workspace/pack/hub-staging19');"
                         "import hub; print(hub.sweep_once())"],
                        capture_output=True, text=True, cwd="/home/hatch/workspace/pack/hub-staging19")

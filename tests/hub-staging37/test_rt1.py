@@ -36,7 +36,7 @@ def db_one(sql, args=()):
 
 
 def sweep():
-    r = subprocess.run(["/home/hatch/workspace/pack/hub/.venv/bin/python", "-c",
+    r = subprocess.run([sys.executable, "-c",
                         "import hub; hub.sweep_once()"],
                        cwd="/home/hatch/workspace/pack/hub-staging37",
                        capture_output=True, text=True)
