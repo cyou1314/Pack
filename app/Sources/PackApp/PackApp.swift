@@ -101,6 +101,9 @@ final class AppState: ObservableObject {
     @Published var showArtifactPreview = false
     @Published var selectedArtifacts: [Int: Int] = [:]
     @Published var showMemberLogin = false
+    @Published var loginTargetName = ""
+    @Published var loginTargetProvider: String?
+    @Published var memberLoginSaving = false
     @Published var showRemoveMember = false
     @Published var pendingMembers: [String] = UserDefaults.standard.stringArray(forKey: "pack.pendingMembers") ?? []
     @Published var draftMessage: String = "" {
@@ -274,6 +277,8 @@ final class AppState: ObservableObject {
                                profile: optStringVal($0["profile"]),
                                avatar: avatarVal($0["avatar"]),
                                lastHeartbeat: optDoubleVal($0["last_heartbeat"]),
+                               provider: optStringVal($0["provider"]).flatMap { $0.isEmpty ? nil : $0 },
+                               loginState: optStringVal($0["login_state"]),
                                quotaWeekUsedPct: optDoubleVal($0["quota_week_used_pct"]),
                                quotaWeekResetAt: optDoubleVal($0["quota_week_reset_at"]),
                                quotaExtraLeft: optIntVal($0["quota_extra_left"]),
@@ -599,11 +604,48 @@ final class AppState: ObservableObject {
     }
 
     func memberStatus(_ member: MemberInfo) -> String {
+        if let login = loginStatus(member.loginState) { return login }
         if member.quotaExhausted { return "额度耗尽" }
         if let task = tasks.first(where: { $0.assignee == member.name && ["claimed", "working"].contains($0.status) }) { return "执行中 · #\(task.id)" }
         if member.isOnline { return "在线" }
         if pendingMembers.contains(member.name) && member.lastHeartbeat == nil { return "接入中 · 等待登录" }
         return "离线"
+    }
+
+    func loginStatus(_ value: String?) -> String? {
+        switch value {
+        case "pending": return "接入中 · 等待登录"
+        case "logged_in": return "已登录 · 待引擎接入"
+        case "expired": return "登录已失效 · 待重新登录"
+        default: return nil
+        }
+    }
+
+    func openMemberLogin(_ member: MemberInfo) {
+        loginTargetName = member.name
+        loginTargetProvider = member.provider
+        memberActionError = ""
+        showMemberLogin = true
+    }
+
+    func completeMemberLogin() {
+        guard !memberLoginSaving else { return }
+        guard let client else { memberActionError = "中枢未连接，登录状态未保存"; return }
+        let name = loginTargetName
+        memberLoginSaving = true
+        memberActionError = ""
+        Task {
+            defer { memberLoginSaving = false }
+            do {
+                _ = try await client.call(name: "member_login_state_set", args: ["name": name, "state": "logged_in"])
+                showMemberLogin = false
+                await refresh()
+            } catch let error as HubError {
+                switch error {
+                case .toolError(let message), .badResponse(let message): memberActionError = "登录状态保存失败：\(message)"
+                }
+            } catch { memberActionError = "登录状态保存失败：\(error.localizedDescription)" }
+        }
     }
 
     func registerMember() {
@@ -614,7 +656,7 @@ final class AppState: ObservableObject {
             do {
                 let combo = ["species": avatarSpecies, "palette": avatarPalette, "accessory": avatarAccessory, "bg": avatarBackground]
                 let data = try JSONSerialization.data(withJSONObject: combo, options: [.sortedKeys])
-                let response = try await client.call(name: "member_register", args: ["name": name, "avatar_combo": String(decoding: data, as: UTF8.self)])
+                let response = try await client.call(name: "member_register", args: ["name": name, "avatar_combo": String(decoding: data, as: UTF8.self), "provider": "muse"])
                 guard let token = response["token"] as? String, let bytes = token.data(using: .utf8) else { memberActionError = "登记结果缺少凭证，请联系调度员处理"; return }
                 let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.cyou.pack.member", kSecAttrAccount as String: name, kSecValueData as String: bytes, kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
                 let result = SecItemAdd(query as CFDictionary, nil)

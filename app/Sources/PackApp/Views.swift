@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import WebKit
 
 private enum PackStyle {
     static let accent = Color(red: 27.0 / 255, green: 124.0 / 255, blue: 245.0 / 255)
@@ -1274,6 +1275,7 @@ private struct OnboardingView: View {
 private struct MemberDirectory: View {
     @ObservedObject var state: AppState
     private func rowStatus(_ member: MemberInfo) -> String {
+        if state.loginStatus(member.loginState) != nil { return state.memberStatus(member) }
         if state.pendingMembers.contains(member.name) && member.lastHeartbeat == nil { return state.memberStatus(member) }
         guard member.isOnline else {
             guard let heartbeat = member.lastHeartbeat else { return "离线 · 暂无记录" }
@@ -1338,6 +1340,8 @@ private struct MemberDetail: View {
                 }
                 Text("最近心跳：\(member.lastHeartbeat.map { Date(timeIntervalSince1970: $0).formatted() } ?? "暂无记录") · 本周已交活：\(member.weekDone.map(String.init) ?? "暂无完整统计")")
                     .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                Text("脑源：\(member.provider == nil || member.provider == "muse" ? "Muse" : member.provider!) · \(state.loginStatus(member.loginState) ?? "暂无登录状态")")
+                    .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                 Divider()
                 HStack { QuotaRingView(usedPct: member.quotaWeekUsedPct, stale: member.quotaIsStale); VStack(alignment: .leading) {
                     Text("周额度").font(DesignTokens.fontTitle)
@@ -1365,7 +1369,7 @@ private struct MemberDetail: View {
                     Text("\(skill.name) · v\(skill.version)").font(DesignTokens.fontSmall)
                 }
                 if member.name != "owner" {
-                    if member.role == "member" { Button("成员本人登录 / 重新登录") { state.showMemberLogin = true }.buttonStyle(.bordered) }
+                    if member.role == "member" { Button("成员本人登录 / 重新登录") { state.openMemberLogin(member) }.buttonStyle(.bordered) }
                     Button("更换头像") { state.openAvatarPicker(member) }.buttonStyle(.bordered)
                     if member.role == "member" { Button("移除成员") { state.showRemoveMember = true }.foregroundStyle(DesignTokens.danger) }
                 }
@@ -1413,6 +1417,7 @@ private struct AddMemberView: View {
         VStack(alignment: .leading, spacing: DesignTokens.memberGap) {
             Text("添加成员").font(DesignTokens.fontTitle)
             TextField("成员名字", text: $state.memberNameInput).textFieldStyle(.roundedBorder)
+            Text("脑源：Muse").font(DesignTokens.fontUI)
             let avatar = AvatarInfo(glyph: "?", c1: "#1B7CF5", c2: "#1B7CF5", species: state.avatarSpecies, palette: state.avatarPalette, accessory: state.avatarAccessory, bg: state.avatarBackground, combo: nil)
             let preview = MemberInfo(name: state.memberNameInput, role: "member", profile: nil, avatar: avatar, lastHeartbeat: nil)
             HStack(spacing: DesignTokens.memberGap) {
@@ -1434,15 +1439,28 @@ private struct AddMemberView: View {
 
 private struct MemberLoginShell: View {
     @ObservedObject var state: AppState
+    private var loginURL: URL? { MemberLoginWebView.startURL(provider: state.loginTargetProvider) }
     var body: some View {
         VStack(spacing: DesignTokens.memberGap) {
-            Text("成员本人登录").font(DesignTokens.fontTitle)
-            Text("服务方登录页容器待接入。账号、密码和验证码应由成员本人在服务方页面输入。")
+            Text("成员本人登录 · \(state.loginTargetName)").font(DesignTokens.fontTitle)
+            Text("账号、密码和验证码由成员本人在服务方页面输入。")
                 .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
-            RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.hairline, lineWidth: DesignTokens.boardLine)
-                .overlay(Text("登录页容器 · 尚未接入").font(DesignTokens.fontUI).foregroundStyle(DesignTokens.subText))
-            Button("关闭") { state.showMemberLogin = false }
-        }.padding(DesignTokens.chatInset).frame(width: DesignTokens.memberLoginWidth, height: DesignTokens.memberLoginHeight)
+            if let url = loginURL {
+                MemberLoginWebView(memberName: state.loginTargetName, url: url, onAuthenticated: { state.completeMemberLogin() }, onError: { state.memberActionError = $0 })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+            } else {
+                Text("该脑源暂不支持内嵌登录").font(DesignTokens.fontUI).foregroundStyle(DesignTokens.subText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if !state.memberActionError.isEmpty { Text(state.memberActionError).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger).textSelection(.enabled) }
+            HStack {
+                Button("关闭") { state.showMemberLogin = false }.disabled(state.memberLoginSaving)
+                Spacer()
+                Button(state.memberLoginSaving ? "保存中…" : "我已登录") { state.completeMemberLogin() }
+                    .buttonStyle(.borderedProminent).tint(DesignTokens.blue).disabled(state.memberLoginSaving || loginURL == nil)
+            }
+        }.padding(DesignTokens.chatInset).frame(width: DesignTokens.memberLoginSheetWidth, height: DesignTokens.memberLoginSheetHeight)
     }
 }
 
