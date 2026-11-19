@@ -334,7 +334,7 @@ Muse 不能被另一个 Muse 直接喊醒，只有两条路：
 
 **中枢**（VM，`~/workspace/pack/hub/`）：单文件 FastMCP + SQLite，systemd `pack-hub.service` 常驻（8794），工具 11 个（规格 9 + task_list/task_review）。令牌只存 sha256；成员 absent 已登记。自测 14/14：全生命周期、双成员真并发抢单只一赢家、指派隔离、租约过期回池（attempts 计数）、越权拒绝、心跳。
 
-**通道**：ngrok 免费账号只许一个在线端点（Can 占用，同会话加隧道会共用其域名——已实证并避让）；cloudflared 在本 VM 出不去（UDP/边缘连接被拒）。现行：Pinggy SSH 隧道（systemd `pack-tunnel.service`），免费会话 60 分钟轮换网址；`pack-url-publisher` 每 2 分钟把当前网址推到仓库 `runtime/hub-url.txt`，运行时连不上时自取新网址重连（自愈已随 v1.0.2 上线）。长期方案（Tailscale/付费隧道/自有域名）待群主拍板。
+**通道**：ngrok 免费账号只许一个在线端点（Can 占用，同会话加隧道会共用其域名——已实证并避让）；cloudflared 在本 VM 出不去（UDP/边缘连接被拒）。现行：Pinggy SSH 隧道（systemd `pack-tunnel.service`），免费会话 60 分钟轮换网址；`pack-url-publisher` 每 2 分钟把当前网址推到私有仓 `pack-addr` 的 `hub-url.txt`，各读取端以只读令牌拉取、连不上时自取新网址重连（自愈已随 v1.0.2 上线）。长期方案（Tailscale/付费隧道/自有域名）待群主拍板。
 
 **Mac 运行时**（`~/pack-runtime/`，launchd `com.muse.pack-runtime`）：runtime.mjs v1.0.2 + driver-primitives.js（Codex 按本机指南实现的 6 个原语，已回存仓库）+ driver-core.js（拼装后经 stdin 喂 `ego-browser nodejs`）。
 
