@@ -1,11 +1,34 @@
 #!/usr/bin/env bash
 # Pack 动工日预检（VM 半边）：Mac 开工派第一项之前跑一遍，全绿才动刀。
-# 检查：systemd 六件套 / DB 完整性 / 中枢 MCP 应答与工具数 / 仓库同步与干净 /
-# 备份新鲜度。Mac 半边（App 基线构建、Codex 额度）不在此列，见 UI-IMPL-BRIEF。
+# 检查：静态资产（命令/文件/令牌权限）/ systemd 五件 / DB 完整性 /
+# 中枢 MCP 应答与工具数 / 仓库同步与干净 / 备份新鲜度与可验证性。
+# Mac 半边（App 基线构建、Codex 额度）不在此列，见 UI-IMPL-BRIEF。
+# 静态段吸收自 PR #4 的静态检查版（2026-11-19 合并）：生产版为正本，
+# GPT 版的 systemd 可选段与仓库版部署口径不合，未吸收。
 set -u
 FAIL=0
 ok()   { printf '  ok  %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n' "$1"; FAIL=1; }
+
+HUB=/home/hatch/workspace/pack/hub
+
+echo "[static]"
+for cmd in python3 sqlite3; do
+  command -v "$cmd" >/dev/null 2>&1 && ok "command: $cmd" || bad "missing command: $cmd"
+done
+[ -f "$HUB/hub.py" ] && ok "hub.py present" || bad "hub.py missing"
+[ -f "$HUB/room_watch.py" ] && ok "room_watch.py present" || bad "room_watch.py missing"
+[ -x "$HUB/.venv/bin/python" ] && ok "hub venv present" || bad "hub/.venv/bin/python missing"
+[ -x "$HUB/backup-db.sh" ] && ok "backup-db.sh executable" || bad "backup-db.sh missing/not executable"
+[ -x "$HUB/verify-backup.sh" ] && ok "verify-backup.sh executable" || bad "verify-backup.sh missing/not executable"
+[ -d "$HUB/attachments" ] && ok "attachments dir present" || bad "attachments dir missing"
+[ -d "$HUB/backups" ] && ok "backups dir present" || bad "backups dir missing"
+if [ -f "$HUB/.dispatcher_token" ]; then
+  PERMS=$(stat -c '%a' "$HUB/.dispatcher_token")
+  [ "$PERMS" = "600" ] && ok "dispatcher token permissions 0600" || bad "dispatcher token permissions=$PERMS (expected 600)"
+else
+  bad "dispatcher token file missing"
+fi
 
 echo "[services]"
 for u in pack-hub.service pack-tunnel.service pack-room-watch.service \
@@ -57,6 +80,7 @@ LATEST=$(ls -t /home/hatch/workspace/pack/hub/backups/*.db 2>/dev/null | head -1
 if [ -n "$LATEST" ]; then
   AGE=$(( ($(date +%s) - $(stat -c %Y "$LATEST")) / 3600 ))
   [ "$AGE" -lt 36 ] && ok "latest backup ${AGE}h old" || bad "latest backup ${AGE}h old (>36h)"
+  if "$HUB/verify-backup.sh" >/dev/null 2>&1; then ok "latest backup verifies"; else bad "latest backup verification failed"; fi
 else
   bad "no backups found"
 fi
