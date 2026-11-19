@@ -55,3 +55,10 @@ Gemini 独立读码后给的分析与本复盘三处完全撞上：连接脆性�
 3. 引擎与桥守护化（launchd + 自愈 + paused 恢复手段）；
 4. 额度自动数据源（不再手填）；
 5. 未实证清单逐项清（从备份真实触发与过期重登闭环开始）。
+
+## 附记：与 Gemini 对谈后续（2026-11-19 深夜，调度员整理）
+
+- **固定入口免费路全断**：cloudflared quick tunnel 加 --protocol http2 仍死于 provisioning 403（VM 实测，QUIC 假设证伪）；ngrok 免费档经 Gemini 按现行代码真实轮询量核算——App 15 秒一轮 ≥5 请求、运行时 20 秒一轮 ≥4 请求且 rpc 写死 Connection: close 每次新建连接——请求数与连接数双双打穿免费档，「连一天都撑不住」，划掉。剩付费两条（小鸡 + autossh/frp + Caddy；Pinggy Pro 过渡），均待群主拍板。不花钱先行项：运行时 rpc 去 Connection: close 改长连接复用（注意把 ECONNRESET/UND_ERR_SOCKET 类 socket 复连错归入 hubNetworkFailure 重试，别误判业务失败）；App 改真增量拉取。
+- **影子双成员 §9 演练已跑完**（正本 SHADOW-S9-RESULT.md，730a012）：并发抢单/并行交活/留痕转交/桌面锁/批准全程/额度接力/掉线接力全实证；FD 分开统计（db 句柄 / TCP socket）无泄漏。**新缺口**：卡指派后成员从不认领时无任何接力路径（接力只挂 block-quota 与租约回收），修法（sweeper 巡检 + 宽限期 + 指派人额度/心跳条件）与 Gemini 商定中，列 v1.1 议题。
+- **额度自动数据源方案定稿（Gemini 出、调度员收）**：新增独立工具 member_quota_report——不收 member_name、按 token 定身份、只能报自己、审计记 source=self；member_quota_set 保留给调度员纠偏（source=dispatcher）。读失败宁可不上报让旧数据过期转灰，绝不回填 0%；成员 task_block(fail_class=quota) 时中枢可直接标记短期耗尽、压过偏乐观自报。运行时读法：优先拦截服务方用量接口的 XHR/fetch JSON（抗改版胜过刮 DOM），任务/闲聊结束搭便车读一次，空闲超 10–12 分钟且无任务在跑时轻量补采。
+- **App 增量对账方案定稿**：短期不动 Schema——平时 since_id 增量 + 每 2–3 分钟重拉最近 50–100 条原地覆盖（只有 kind=chat 可编辑/软删，跨端改老消息场景极少，够用）；长期加房间级单调 rev（messages/rooms 加 rev 列与 (room_id, rev) 索引，发消息/编辑/软删同事务 +1 并写进消息行；room_read_new 加 since_rev、保留 since_id 兼容；room_list 带回每房 rev，未变则 App 整轮免拉）。自报工具与 rev 是否合并为一个中枢增量，待 Gemini 回复后定。
