@@ -39,8 +39,6 @@ jobs:
           bash hub/test_backup.sh
           python hub/test_reply_watcher.py
           python hub/test_resolve_mention.py
-          python tests/hub-staging41/test_w4_handler.py
-          python tests/hub-staging44/test_w5_template.py
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
 

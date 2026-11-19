@@ -17,9 +17,10 @@ def _stub_open(path, *a, **k):
 
 
 import builtins
+from pathlib import Path
 builtins.open = _stub_open
 try:
-    spec = importlib.util.spec_from_file_location("rw", "room_watch.py")
+    spec = importlib.util.spec_from_file_location("rw", str(Path(__file__).with_name("room_watch.py")))
     rw = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rw)
 finally:
