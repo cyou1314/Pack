@@ -1225,6 +1225,14 @@ private struct SettingsView: View {
                         HStack { TextField("中枢地址", text: $state.settingsHubURL).textFieldStyle(.roundedBorder); Button("保存") { state.saveHubURL() } }
                         Text("地址会自动跟随中枢发布地址，手动保存后本次运行以手动为准")
                             .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                        Text("地址源令牌").font(DesignTokens.fontUI)
+                        HStack {
+                            SecureField("地址源令牌（可留空）", text: $state.settingsAddrToken).textFieldStyle(.roundedBorder)
+                            Button("保存令牌") { state.saveAddrToken() }
+                        }
+                        Text("用于从私有仓获取中枢地址，可留空；保存空值会清除已存令牌。")
+                            .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                        Text(state.addrTokenStatus).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                         Text(state.credentialStatus)
                             .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                         if !state.settingsMessage.isEmpty { Text(state.settingsMessage).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText) }

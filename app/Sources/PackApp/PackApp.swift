@@ -146,6 +146,8 @@ final class AppState: ObservableObject {
     @Published var lastActionNote: String = ""
     @Published var settingsHubURL = ""
     @Published var settingsMessage = ""
+    @Published var settingsAddrToken = ""
+    @Published var addrTokenStatus = "地址源令牌未配置"
     @Published var credentialStatus = "正在检查凭证…"
     @Published var showOnboarding = false
     @Published var approvalDefault: Bool = UserDefaults.standard.bool(forKey: "pack.approvalDefault") {
@@ -179,6 +181,7 @@ final class AppState: ObservableObject {
         PackNotifications.shared.start(state: self)
         draftMessage = roomDrafts[currentRoom] ?? ""
         newNeedsApproval = approvalDefault
+        refreshAddrTokenStatus()
         let loaded = PackConfig.load()
         credentialStatus = loaded.credentialStatus
         guard let cfg = loaded.config else {
@@ -428,6 +431,18 @@ final class AppState: ObservableObject {
 
     var selectedTask: PackTask? { tasks.first { $0.id == selectedTaskId } }
 
+    private func refreshAddrTokenStatus() {
+        let status = AddressSource.status()
+        addrTokenStatus = status == errSecSuccess ? "地址源令牌已存入钥匙串" : (status == errSecItemNotFound ? "地址源令牌未配置" : "地址源令牌状态无法读取")
+    }
+
+    func saveAddrToken() {
+        let status = AddressSource.save(settingsAddrToken)
+        settingsAddrToken = ""
+        if status == errSecSuccess || status == errSecItemNotFound { refreshAddrTokenStatus() }
+        else { addrTokenStatus = "地址源令牌保存失败（钥匙串状态 \(status)）" }
+    }
+
     func saveHubURL() {
         if persistHubURL(settingsHubURL.trimmingCharacters(in: .whitespacesAndNewlines), manual: true) {
             Task { await refresh() }
@@ -497,6 +512,12 @@ final class AppState: ObservableObject {
         defer { discoveryInProgress = false }
         if manualHubURLSaved { return rebuildOnFailure && rebuildHubClients() }
         let generation = clientGeneration
+        if let value = await AddressSource.privateURL(timeout: hubDiscoveryTimeout) {
+            guard generation == clientGeneration, !manualHubURLSaved else { return false }
+            if value != storedHubURL, persistHubURL(value, manual: false) { return true }
+            if value == storedHubURL { return rebuildOnFailure && rebuildHubClients() }
+        }
+        guard generation == clientGeneration, !manualHubURLSaved else { return false }
         guard let source = URL(string: "https://raw.githubusercontent.com/cyou1314/Pack/main/runtime/hub-url.txt") else {
             return rebuildOnFailure && rebuildHubClients()
         }
@@ -504,6 +525,7 @@ final class AppState: ObservableObject {
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
+            NSLog("地址源 raw.githubusercontent.com HTTP %d", (response as? HTTPURLResponse)?.statusCode ?? 0)
             // A manual save or another client change while the request was in flight wins.
             guard generation == clientGeneration, !manualHubURLSaved else { return false }
             if let http = response as? HTTPURLResponse, http.statusCode == 200,

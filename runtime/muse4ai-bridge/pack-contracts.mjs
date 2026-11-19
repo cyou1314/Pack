@@ -2,7 +2,20 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 // Shared local contract helpers.
 // The caller must supply an authenticated hub.call and an approval implementation.
-export async function discoverPublishedHub() {
+export async function discoverPublishedHub({addrToken = '', onSource = () => {}} = {}) {
+  if (typeof addrToken === 'string' && addrToken.trim()) {
+    try {
+      const privateResponse = await fetch('https://api.github.com/repos/cyou1314/pack-addr/contents/hub-url.txt', {
+        headers: {'Authorization': `Bearer ${addrToken.trim()}`, 'Accept':'application/vnd.github.raw', 'X-GitHub-Api-Version':'2022-11-28', 'User-Agent':'pack-runtime', 'Cache-Control':'no-cache'},
+        signal:AbortSignal.timeout(15000), cache:'no-store', redirect:'error'
+      });
+      onSource('api.github.com', privateResponse.status);
+      if (privateResponse.ok) {
+        const url = new URL((await privateResponse.text()).trim());
+        if (url.protocol === 'https:' && url.pathname === '/mcp' && !url.username && !url.password && !url.search && !url.hash) return url.href;
+      }
+    } catch { onSource('api.github.com', 0); }
+  }
   let sha;
   try {
     const r=await fetch('https://api.github.com/repos/cyou1314/Pack/git/ref/heads/main', {headers:{'User-Agent':'pack-runtime','Cache-Control':'no-cache'},signal:AbortSignal.timeout(12000),cache:'no-store'});
@@ -16,6 +29,7 @@ export async function discoverPublishedHub() {
   }
   const ref=sha || 'refs/heads/main';
   const r=await fetch(`https://raw.githubusercontent.com/cyou1314/Pack/${ref}/runtime/hub-url.txt?pack=${Date.now()}`,{signal:AbortSignal.timeout(15000),cache:'no-store',headers:{'Cache-Control':'no-cache'}});
+  onSource('raw.githubusercontent.com', r.status);
   if(!r.ok) throw Error('hub_discovery_http_'+r.status);
   const url=new URL((await r.text()).trim());
   if(url.protocol!=='https:' || url.pathname!=='/mcp' || url.username || url.password || url.search || url.hash) throw Error('invalid_hub_url');

@@ -175,7 +175,7 @@ let failStreak = 0;
 // The free tunnel URL rotates; the hub publishes its current URL to the
 // repo file runtime/hub-url.txt. On repeated failures, fetch it and move.
 async function discoverHubUrl() {
-  try { const url=await discoverPublishedHub(); if(url!==cfg.hubUrl){console.log(`hub url discovered: ${url}`);cfg.hubUrl=url;sessionId=null;} }
+  try { const url=await discoverPublishedHub({addrToken:cfg.addrToken, onSource:(domain,status)=>console.log(`hub source ${domain} HTTP ${status}`)}); if(url!==cfg.hubUrl){console.log(`hub url discovered: ${url}`);cfg.hubUrl=url;sessionId=null;} }
   catch(e) { console.error('hub discovery failed:',e.message); }
 }
 

@@ -11,7 +11,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATE = path.join(DIR, 'state.json');
 const KEY = path.join(DIR, '.api-key');
 const CFG = '/Users/cyou/pack-runtime/config.json';
-const SOURCE = 'https://raw.githubusercontent.com/cyou1314/Pack/refs/heads/main/runtime/hub-url.txt';
+const ADDR_TOKEN = path.join(DIR, '.addr_token');
 const LOCAL = 'http://127.0.0.1:47821';
 const PERIOD = 20000;
 const MAX_IMAGE = 100 * 1024 * 1024;
@@ -29,7 +29,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 class Hub {
   constructor(token) { this.token = token; this.url = null; this.sid = null; this.id = 0; }
-  async discover() { const url=await discoverPublishedHub(); if(this.url!==url){this.url=url;this.sid=null;log('hub address updated');} }
+  async discover() { let addrToken=''; try { addrToken=readFileSync(ADDR_TOKEN,'utf8').trim(); } catch {} const url=await discoverPublishedHub({addrToken, onSource:(domain,status)=>log(`hub source ${domain} HTTP ${status}`)}); if(this.url!==url){this.url=url;this.sid=null;log('hub address updated');} }
   async rpc(method, params, notification = false) {
     const req = { jsonrpc: '2.0', method, params }; if (!notification) req.id = ++this.id;
     const r = await fetch(this.url, { method: 'POST', signal: AbortSignal.timeout(15000), headers: {
