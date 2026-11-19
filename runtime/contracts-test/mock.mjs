@@ -10,7 +10,7 @@ globalThis.fetch=async(url,opt={})=>{
  const req=JSON.parse(opt.body);if(req.method==='notifications/initialized')return new Response(null,{status:202});let r={};
  if(req.method==='initialize')r={};else if(req.method==='tools/call'){
   const n=req.params.name,a=req.params.arguments;
-  if(n==='heartbeat'){}else if(n==='room_read_new')r={messages:[]};else if(n==='task_list')r={tasks:[task]};
+  if(n==='heartbeat'){}else if(n==='room_read_new')r={messages:[]};else if(n==='room_list')r={rooms:[{name:'pack-main',last_message_id:0}]};else if(n==='task_list')r={tasks:[task]};
   else if(n==='task_accept_transfer'){if(!transfer||task.lease_expires!==null)throw Error('wrong_accept');task.lease_expires=1234567890;r={claim_token:'synthetic-claim'};}
   else if(n==='egress_check'){if(!egress)throw Error('unexpected_egress');r={decision:'allow'};}
   else if(n==='task_claim'){if(task.status!=='open')throw Error('wrong_claim');task={...task,status:'claimed',attempts:1};r={claim_token:'synthetic-claim'};}

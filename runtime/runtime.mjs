@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {completeWithEnvelope, discoverPublishedHub, settleTaskMemory, loadTaskMemory, transferFromReply, transferInstructions} from './pack-contracts.mjs';
+import {classifyChat, quotaAllowsChat} from './chat-policy.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -143,12 +144,12 @@ async function mcpInit() {
   }).catch(() => {});
 }
 
-function runDriver(message, signal) {
+function runDriver(message, signal, chat = null) {
   // ego-browser nodejs reads program source from stdin (no file argument),
   // so compose: task injection + primitives (Mac-local) + core flow.
   const primitives = readFileSync(path.join(DIR, "driver-primitives.js"), "utf8");
-  const core = readFileSync(path.join(DIR, "driver-core.js"), "utf8");
-  const task = { profileId: cfg.profileId, spaceName: cfg.spaceName, message };
+  const core = readFileSync(path.join(DIR, chat ? "chat-driver.js" : "driver-core.js"), "utf8");
+  const task = { profileId: cfg.profileId, spaceName: cfg.spaceName, message, ...(chat || {}) };
   const source = `globalThis.PACK_TASK = ${JSON.stringify(task)};\n${primitives}\n${core}`;
   return new Promise((resolve, reject) => {
     const child = spawn(cfg.egoBin || "ego-browser", ["nodejs"], {
@@ -180,6 +181,57 @@ async function discoverHubUrl() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const chatPath = path.join(DIR, "chat-state.json");
+let chatState;
+try { chatState = JSON.parse(readFileSync(chatPath, "utf8")); }
+catch (e) { if (e.code !== "ENOENT") throw e; chatState = null; }
+function saveChatState() {
+  const tmp = chatPath + ".tmp";
+  writeFileSync(tmp, JSON.stringify(chatState, null, 2) + "\n", {mode:0o600});
+  renameSync(tmp, chatPath);
+}
+const chatSeed = "你是 absent，这是 ♾️ 群聊房间 pack-main。群主的话会原样转进来；请以 absent 身份简短自然地回话，不接任务语义，单条回复控制在 200 字内。";
+let chatFailures = 0, chatRetryAt = 0, chatLoginRequired = false;
+async function processChat(message, members) {
+  try {
+    const member = members.find(m => m.name === cfg.memberName);
+    if (!quotaAllowsChat(member)) { console.log(`chat ${message.id} skipped: weekly quota >=90% or unavailable`); return; }
+    if (!chatState.chatUrl) {
+      const seed = await runDriver(chatSeed, null, {action:"seed"});
+      if (!seed.ok || !seed.chatUrl) throw Error(seed.error || "chat_seed_failed");
+      chatState.chatUrl = seed.chatUrl; saveChatState();
+    }
+    const result = await runDriver(message.body, null, {action:"send", chatUrl:chatState.chatUrl});
+    if (!result.ok || !result.reply) throw Error(result.error || "chat_reply_empty");
+    await tool("room_post", {room:"pack-main", kind:"chat", body:Array.from(result.reply).slice(0,200).join("")});
+    chatFailures = 0; chatRetryAt = 0;
+    console.log(`chat ${message.id} replied`);
+  } catch(e) {
+    if (e.message === "login_required") chatLoginRequired = true;
+    chatFailures++;
+    chatRetryAt = Date.now() + (chatFailures >= 3 ? 10 * 60_000 : 60_000);
+    if (chatFailures >= 3) chatFailures = 0;
+    console.error(`chat ${message.id} failed; backoff:`, e.message);
+  } finally {
+    chatState.last_chat_id = message.id;
+    saveChatState();
+  }
+}
+async function checkChat(busy) {
+  if (busy.size || chatLoginRequired || Date.now() < chatRetryAt) return;
+  const result = await tool("room_read_new", {room:"pack-main", since_id:chatState.last_chat_id, limit:50});
+  if (!result.messages?.length) return;
+  const members = (await tool("member_list", {})).members || [];
+  const names = members.map(m => m.name);
+  for (const message of result.messages) {
+    if (classifyChat(message, chatState.last_chat_id, names, cfg.memberName)) {
+      busy.add("chat");
+      processChat(message, members).catch(e => console.error("chat state error:", e.message)).finally(() => busy.delete("chat"));
+      return;
+    }
+    chatState.last_chat_id = message.id; saveChatState();
+  }
+}
 const receiptPath = path.join(DIR, "delivery-receipts.json");
 let deliveryReceipts;
 try { deliveryReceipts = JSON.parse(readFileSync(receiptPath, "utf8")); }
@@ -469,6 +521,13 @@ async function main() {
   console.log(`pack-runtime up: member=${cfg.memberName} hub=${cfg.hubUrl}`);
   const boot = await tool("room_read_new", { room: "pack-main", since_id: 0, limit: 200 });
   for (const m of boot.messages) lastMsgId = Math.max(lastMsgId, m.id);
+  if (!chatState) {
+    const rooms = await tool("room_list", {});
+    const room = (rooms.rooms || []).find(r => r.name === "pack-main");
+    if (!room || !Number.isSafeInteger(room.last_message_id)) throw Error("chat watermark unavailable");
+    chatState = {last_chat_id:room.last_message_id, chatUrl:null}; saveChatState();
+    console.log(`chat initialized at message ${chatState.last_chat_id}`);
+  }
   const busy = new Set();
   let heartbeatLogged = false;
   for (;;) {
@@ -487,6 +546,7 @@ async function main() {
         busy.add(t.id);
         processTask(t).catch((e) => console.error("task", t.id, e.message)).finally(() => busy.delete(t.id));
       }
+      await checkChat(busy);
     } catch (e) {
       console.error("poll error:", e.message);
       heartbeatLogged = false;
