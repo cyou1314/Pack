@@ -72,7 +72,7 @@ async def main():
 
     # ---------- 工具面 ----------
     tools = await tools_of(disp)
-    check("工具数 63", len(tools) == 63, f"got {len(tools)}")
+    check("工具数 64", len(tools) == 64, f"got {len(tools)}")
     check("含六个 skill 工具", all(t in tools for t in (
         "skill_publish", "skill_list", "skill_read",
         "skill_assign", "skill_unassign", "skill_rollback")))

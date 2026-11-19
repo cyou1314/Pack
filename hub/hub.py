@@ -665,6 +665,8 @@ AVATAR_PALETTES = ["orange", "violet", "ocean", "forest", "rose",
                    "amber", "teal", "indigo", "crimson", "slate"]
 AVATAR_ACCESSORIES = ["none", "star-clip", "glasses", "headset", "scarf", "cap"]
 AVATAR_BGS = ["cream", "mint", "sky", "peach", "lavender", "sand"]
+# staging47 / 分发线 L1：成员登录状态枚举（中枢只存状态、永不存会话内容）
+LOGIN_STATES = ("pending", "logged_in", "expired")
 
 
 def _avatar_combo(name: str, used: set) -> dict:
@@ -791,6 +793,12 @@ def init():
     # token 作废、列表隐藏、头像组合释放、接力候选排除）。
     if "removed_at" not in mcols2:
         conn.execute("ALTER TABLE members ADD COLUMN removed_at REAL")
+    # staging47 / 分发线 L1 登录容器：脑源 provider 与登录状态两列
+    # （LOGIN-CONTAINER-DESIGN 缺口 2/3；老库 init 时自动补列、老数据留空）。
+    if "provider" not in mcols2:
+        conn.execute("ALTER TABLE members ADD COLUMN provider TEXT")
+    if "login_state" not in mcols2:
+        conn.execute("ALTER TABLE members ADD COLUMN login_state TEXT")
     # H2 房间归档标记。
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
     if "archived_at" not in rcols:
@@ -1167,17 +1175,23 @@ def build_server():
     mcp = FastMCP("pack-hub")
 
     @mcp.tool
-    def member_register(name: str, profile: str = "", avatar_combo: str = "") -> dict:
+    def member_register(name: str, profile: str = "", avatar_combo: str = "",
+                        provider: str = "") -> dict:
         """调度员登记一个新成员，返回其一次性明文 token（中枢只存哈希）。
         avatar_combo 可选（JSON 字符串，如 {"species":"fox","palette":"ocean",
         "accessory":"cap","bg":"peach"}）：App 添加成员流程先让群主预览挑选
         组合再发起登记；给了的字段逐个校验（不在参数集内整笔拒绝），缺的
         字段由自动分配补齐；拼出的组合已被在册成员占用则拒绝。不给则沿用
-        按名哈希自动分配避撞。已移除成员的名字保持占用，不许同名再登记。"""
+        按名哈希自动分配避撞。已移除成员的名字保持占用，不许同名再登记。
+        provider 可选（staging47，L1 登录容器）：成员的脑源标识（如 muse），
+        给了则 login_state 初始为 pending（等待登录），App 据 provider 查
+        内置登录页注册表；不给则两字段留空、行为与旧版完全一致。"""
         me = authenticate()
         require(me, "dispatcher")
         if len(profile or "") > 2000:
             raise ValueError("profile too long: > 2000 chars")
+        if len(provider or "") > 64:
+            raise ValueError("provider too long: > 64 chars")
         tok = "pk-mem-" + secrets.token_urlsafe(32)
         # 头像组合分配（查占用→选组合→插入）必须原子，否则并发注册会撞组合；
         # 按 task_claim 范式走全局 _lock（S1 复检教训）。
@@ -1219,9 +1233,11 @@ def build_server():
                     av.update(merged)
                 else:
                     av.update(_avatar_combo(name, used))
+                login_state = "pending" if provider else None
                 cur = conn.execute(
-                    "INSERT INTO members(name,role,token_hash,profile,created_at,avatar) VALUES(?,'member',?,?,?,?)",
-                    (name, hash_token(tok), profile or None, time.time(), json.dumps(av)))
+                    "INSERT INTO members(name,role,token_hash,profile,created_at,avatar,provider,login_state) VALUES(?,'member',?,?,?,?,?,?)",
+                    (name, hash_token(tok), profile or None, time.time(), json.dumps(av),
+                     provider or None, login_state))
                 mid = cur.lastrowid
                 audit(conn, me["name"], "member_register", name)
                 conn.commit()
@@ -1229,7 +1245,8 @@ def build_server():
                 raise ValueError(f"member name already exists: {name}")
             finally:
                 conn.close()
-        return {"member_id": mid, "name": name, "token": tok, "avatar": av}
+        return {"member_id": mid, "name": name, "token": tok, "avatar": av,
+                "provider": provider or None, "login_state": login_state}
 
     @mcp.tool
     def member_remove(name: str) -> dict:
@@ -1411,6 +1428,37 @@ def build_server():
                 (row["id"],)).fetchone())
         finally:
             conn.close()
+        return out
+
+    @mcp.tool
+    def member_login_state_set(name: str, state: str) -> dict:
+        """调度员回写成员登录状态（staging47，分发线 L1 登录容器）：App 在
+        成员本人于内嵌登录页完成服务方登录后回写，中枢只存状态枚举、
+        永不存任何会话内容。state 只许 pending（等待登录）/ logged_in
+        （已登录 · 待引擎接入）/ expired（会话失效待重登）；成员须存在且
+        未移除。每次回写写审计，返回该成员的 provider 与新状态。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if state not in LOGIN_STATES:
+            raise ValueError(
+                f"bad login_state: {state!r} (allowed: {', '.join(LOGIN_STATES)})")
+        with _lock:
+            conn = db()
+            try:
+                row = conn.execute(
+                    "SELECT id, removed_at, provider FROM members WHERE name=?",
+                    (name,)).fetchone()
+                if not row:
+                    raise ValueError(f"no such member: {name}")
+                if row["removed_at"] is not None:
+                    raise ValueError(f"member removed: {name}")
+                conn.execute("UPDATE members SET login_state=? WHERE id=?",
+                             (state, row["id"]))
+                audit(conn, me["name"], "member_login_state_set", f"{name}: {state}")
+                conn.commit()
+                out = {"name": name, "provider": row["provider"], "login_state": state}
+            finally:
+                conn.close()
         return out
 
     @mcp.tool
@@ -2325,13 +2373,16 @@ def build_server():
         """List room members with role/profile and last heartbeat (epoch seconds).
         每人另带 week_done：本周（周一 00:00 起，UTC+8）已交活数——status=done
         且 updated_at 落在本周内的任务计数（staging38，D12：App 成员详情
-        「本周已交活」的数据源；task_list 有条数上限算不出全局口径）。"""
+        「本周已交活」的数据源；task_list 有条数上限算不出全局口径）。
+        staging47 起另带 provider 与 login_state（L1 登录容器的数据源；
+        老成员两字段为空）。"""
         me = authenticate()
         require(me)
         conn = db()
         rows = conn.execute(
             "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
-            " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at"
+            " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at,"
+            " provider, login_state"
             " FROM members WHERE removed_at IS NULL ORDER BY id"
         ).fetchall()
         wk = _week_start_cst()
