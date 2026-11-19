@@ -1342,6 +1342,11 @@ private struct MemberDetail: View {
                     .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                 Text("脑源：\(member.provider == nil || member.provider == "muse" ? "Muse" : member.provider!) · \(state.loginStatus(member.loginState) ?? "暂无登录状态")")
                     .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                if member.loginState == "logged_in" && (member.provider == nil || member.provider == "muse") {
+                    Button(state.memberHandoffInProgress == member.name ? "正在交接…" : "将会话交给本机引擎") { state.handoffMember(member) }
+                        .disabled(state.memberHandoffInProgress != nil)
+                    if let result = state.memberHandoffResults[member.name] { Text(result).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).textSelection(.enabled) }
+                }
                 Divider()
                 HStack { QuotaRingView(usedPct: member.quotaWeekUsedPct, stale: member.quotaIsStale); VStack(alignment: .leading) {
                     Text("周额度").font(DesignTokens.fontTitle)

@@ -104,6 +104,8 @@ final class AppState: ObservableObject {
     @Published var loginTargetName = ""
     @Published var loginTargetProvider: String?
     @Published var memberLoginSaving = false
+    @Published var memberHandoffInProgress: String?
+    @Published var memberHandoffResults: [String: String] = UserDefaults.standard.dictionary(forKey: "pack.memberHandoffResults") as? [String: String] ?? [:]
     @Published var showRemoveMember = false
     @Published var pendingMembers: [String] = UserDefaults.standard.stringArray(forKey: "pack.pendingMembers") ?? []
     @Published var draftMessage: String = "" {
@@ -645,6 +647,19 @@ final class AppState: ObservableObject {
                 case .toolError(let message), .badResponse(let message): memberActionError = "登录状态保存失败：\(message)"
                 }
             } catch { memberActionError = "登录状态保存失败：\(error.localizedDescription)" }
+        }
+    }
+
+    func handoffMember(_ member: MemberInfo) {
+        guard memberHandoffInProgress == nil, member.loginState == "logged_in" else { return }
+        memberHandoffInProgress = member.name
+        Task {
+            defer { memberHandoffInProgress = nil }
+            let result: String
+            do { result = try await MemberHandoff.perform(member: member.name) }
+            catch { result = "交接失败：\(error.localizedDescription)" }
+            memberHandoffResults[member.name] = "\(Date().formatted()) · \(result)"
+            UserDefaults.standard.set(memberHandoffResults, forKey: "pack.memberHandoffResults")
         }
     }
 

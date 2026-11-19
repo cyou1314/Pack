@@ -161,6 +161,7 @@ enum DesignTokens {
     static let memberLoginHeight: CGFloat = 360
     static let memberLoginSheetWidth: CGFloat = 880
     static let memberLoginSheetHeight: CGFloat = 600
+    static let memberHandoffTimeoutSeconds = 240
     static let memberGap: CGFloat = 12
     static let memberInset: CGFloat = 16
     static let memberIconRatio: CGFloat = 0.52
