@@ -30,7 +30,7 @@
 
 ### 交接
 
-A 段已完成，界面应用保持打开。未点击应用界面、Continue，未提交任务；没有停止或重启桥。C 段未执行，等待调度员明确发话。
+A 段已完成，界面应用保持打开。未点击应用界面、Continue，未提交任务；没有停止或重启桥。当时 C 段尚未执行，后续恢复记录见下方。
 
 ## 界面段（2026-11-19 21:56–21:58，调度员经设备操控 + 群主亲手点击）
 
@@ -43,3 +43,11 @@ A 段已完成，界面应用保持打开。未点击应用界面、Continue，�
 ## E2 终测结论（调度员，2026-11-19）
 
 官方壳的全部路径均已实测：网页聊天可正常回复、原版应用可刷新额度、可看活会话画面；但两账号的机器状态恒为 assigned / UNKNOWN，会话检查恒 PRE_SUBMIT_TRANSIENT，任务派发零尝试；此前改判定放行后的真实连接为 HTTP_CONNECT_FAILED。**E2 最后一公里卡在 Muse 服务侧机器不可达，非 Pack / 桥 / 引擎 / 原版应用本地问题。E2 就此冻结为 v1.0 已知限制**；账号侧恢复后，用 probe_card3.py（正文带 [M4A]）重发文本+图卡即可补验桥路。
+
+
+## C 段（2026-11-19，北京时间；已完成）
+
+- 通过系统正常退出界面应用（原 PID 63874），确认进程退出、127.0.0.1:47821 端口释放。
+- 按现行 nohup 方式恢复无头构建：`/Users/cyou/pack-headless-l2/Electron.app/Contents/MacOS/Electron /Users/cyou/pack-headless-l2/app`，使用原 MuseStudio roaming/local 路径及 47821 端口；未开启副本验证模式。无头进程 PID 65409，health HTTP 200，日志 `/Users/cyou/pack-headless-l2/engine.log`。
+- 原桥进程在无头恢复后仍运行，使用桥凭证只读访问 `/v1/status` 返回 HTTP 200、scope 为 `generate`；但空闲桥无新的引擎握手日志，不能仅凭这项代理检查声称桥自身已重连。确认没有活动任务后重启桥一次；新 PID 65514，22:02:17 日志依次记录 `hub connected`、`hub heartbeat ok`、`bridge up: absent; Muse4AI authenticated`，证实桥进程已连接并认证恢复后的引擎。
+- 未修改代码、未手动修改账号数据或删除文件，未提交任务；界面应用没有再次启动。
