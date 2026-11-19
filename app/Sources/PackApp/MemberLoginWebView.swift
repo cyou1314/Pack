@@ -25,6 +25,17 @@ struct MemberLoginWebView: NSViewRepresentable {
         return id
     }
 
+    @MainActor
+    static func removeStore(for name: String) async throws -> Bool {
+        let defaults = UserDefaults.standard
+        var ids = defaults.dictionary(forKey: identifiersKey) as? [String: String] ?? [:]
+        guard let value = ids[name], let id = UUID(uuidString: value) else { return false }
+        try await WKWebsiteDataStore.remove(forIdentifier: id)
+        ids.removeValue(forKey: name)
+        defaults.set(ids, forKey: identifiersKey)
+        return true
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator(onAuthenticated: onAuthenticated, onError: onError) }
 
     func makeNSView(context: Context) -> WKWebView {

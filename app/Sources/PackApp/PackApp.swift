@@ -106,6 +106,8 @@ final class AppState: ObservableObject {
     @Published var memberLoginSaving = false
     @Published var memberHandoffInProgress: String?
     @Published var memberHandoffResults: [String: String] = UserDefaults.standard.dictionary(forKey: "pack.memberHandoffResults") as? [String: String] ?? [:]
+    @Published var memberRemovalInProgress = false
+    @Published var memberRemovalReport = UserDefaults.standard.string(forKey: "pack.memberRemovalReport") ?? ""
     @Published var showRemoveMember = false
     @Published var pendingMembers: [String] = UserDefaults.standard.stringArray(forKey: "pack.pendingMembers") ?? []
     @Published var draftMessage: String = "" {
@@ -650,16 +652,41 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func saveHandoffResult(_ name: String, _ result: String) {
+        memberHandoffResults[name] = "\(Date().formatted()) · \(result)"
+        UserDefaults.standard.set(memberHandoffResults, forKey: "pack.memberHandoffResults")
+    }
+
+    private func applyEngineState(_ state: String, member: String) async -> String {
+        guard state == "needs_login" else { return state == "not_found" ? "引擎无此账号" : "引擎状态：\(state)" }
+        guard let client else { return "引擎会话已失效；中枢未连接，失效状态未写回" }
+        do {
+            _ = try await client.call(name: "member_login_state_set", args: ["name": member, "state": "expired"])
+            await refresh()
+            return "引擎会话已失效，已标记待重新登录"
+        } catch { return "引擎会话已失效，但中枢状态写回失败：\(error.localizedDescription)" }
+    }
+
+    func checkMemberEngine(_ member: MemberInfo) {
+        guard memberHandoffInProgress == nil else { return }
+        memberHandoffInProgress = member.name
+        Task {
+            defer { memberHandoffInProgress = nil }
+            do { saveHandoffResult(member.name, await applyEngineState(try await MemberHandoff.operation("status", member: member.name), member: member.name)) }
+            catch { saveHandoffResult(member.name, "状态查询失败：\(error.localizedDescription)") }
+        }
+    }
+
     func handoffMember(_ member: MemberInfo) {
         guard memberHandoffInProgress == nil, member.loginState == "logged_in" else { return }
         memberHandoffInProgress = member.name
         Task {
             defer { memberHandoffInProgress = nil }
-            let result: String
-            do { result = try await MemberHandoff.perform(member: member.name) }
-            catch { result = "交接失败：\(error.localizedDescription)" }
-            memberHandoffResults[member.name] = "\(Date().formatted()) · \(result)"
-            UserDefaults.standard.set(memberHandoffResults, forKey: "pack.memberHandoffResults")
+            do {
+                let (result, state) = try await MemberHandoff.perform(member: member.name)
+                let suffix = state == "needs_login" ? " · " + (await applyEngineState(state, member: member.name)) : ""
+                saveHandoffResult(member.name, result + suffix)
+            } catch { saveHandoffResult(member.name, "交接失败：\(error.localizedDescription)") }
         }
     }
 
@@ -684,14 +711,29 @@ final class AppState: ObservableObject {
     }
 
     func removeSelectedMember() {
-        guard let name = selectedMemberName, name != "owner", name != "dispatcher", let client else { return }
+        guard !memberRemovalInProgress, let name = selectedMemberName, name != "owner", name != "dispatcher", let client else { return }
+        memberRemovalInProgress = true
+        let isProviderMember = members.first(where: { $0.name == name })?.provider == "muse"
         Task {
+            defer { memberRemovalInProgress = false }
+            var lines: [String] = []
+            do { lines.append(try await MemberLoginWebView.removeStore(for: name) ? "登录分区：已清除" : "登录分区：无记录") }
+            catch { lines.append("登录分区：清除失败（\(error.localizedDescription)）") }
+            if isProviderMember {
+                do {
+                    let status = try await MemberHandoff.operation("remove", member: name)
+                    lines.append(status == "not_found" ? "引擎账号与分区：无此账号" : "引擎账号与分区：已清除")
+                } catch { lines.append("引擎账号与分区：清除失败（\(error.localizedDescription)）") }
+            } else { lines.append("引擎账号与分区：非登录容器成员，未操作") }
             do {
                 _ = try await client.call(name: "member_remove", args: ["name": name])
+                lines.append("中枢成员：已移除")
                 SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.cyou.pack.member", kSecAttrAccount as String: name] as CFDictionary)
                 pendingMembers.removeAll { $0 == name }; UserDefaults.standard.set(pendingMembers, forKey: "pack.pendingMembers")
                 selectedMemberName = nil; await refresh()
-            } catch { memberActionError = "移除未完成，请检查连接后重试" }
+            } catch { lines.append("中枢成员：移除失败（\(error.localizedDescription)）") }
+            memberRemovalReport = "\(name)\n" + lines.joined(separator: "\n")
+            UserDefaults.standard.set(memberRemovalReport, forKey: "pack.memberRemovalReport")
         }
     }
 

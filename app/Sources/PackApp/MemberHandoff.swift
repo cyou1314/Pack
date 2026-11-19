@@ -17,7 +17,7 @@ enum MemberHandoff {
     private static let service = "com.cyou.pack.l2-handoff"
 
     @MainActor
-    static func perform(member: String) async throws -> String {
+    static func perform(member: String) async throws -> (String, String) {
         let store = WKWebsiteDataStore(forIdentifier: MemberLoginWebView.storeIdentifier(for: member))
         let all: [HTTPCookie] = await withCheckedContinuation { continuation in
             store.httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
@@ -60,7 +60,17 @@ enum MemberHandoff {
         guard let body = try JSONSerialization.jsonObject(with: result) as? [String: Any] else { throw MemberHandoffError.helper("引擎交接响应无法识别。") }
         guard body["ok"] as? Bool == true else { throw MemberHandoffError.helper(body["error"] as? String ?? "会话交接失败。") }
         let state = body["state"] as? String ?? "unknown"
-        return state == "ready" ? "交接成功 · 会话检查通过" : "已加密交接 · 会话检查未就绪（\(state)）"
+        return (state == "ready" ? "交接成功 · 会话检查通过" : "已加密交接 · 会话检查未就绪（\(state)）", state)
+    }
+
+    static func operation(_ op: String, member: String) async throws -> String {
+        let request = try JSONSerialization.data(withJSONObject: ["op": op, "member": member]) + Data("\n".utf8)
+        let socket = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pack/l2-ipc/handoff.sock").path
+        let data = try await Task.detached(priority: .userInitiated) { try communicate(socket: socket, request: request) }.value
+        guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any], body["ok"] as? Bool == true, let state = body["state"] as? String else {
+            throw MemberHandoffError.helper("引擎操作失败，请检查引擎或账号是否正忙。")
+        }
+        return state
     }
 
     private static func communicate(socket: String, request: Data) throws -> Data {

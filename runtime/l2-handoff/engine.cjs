@@ -97,6 +97,22 @@ async function handoff(request, deps) {
   }
 }
 
+async function memberOperation(request, deps) {
+  const member = typeof request.member === 'string' ? request.member.trim() : '';
+  if (!member || member.length > 32) throw Error('invalid member');
+  const account = deps.repo.listAccounts().find(a => a.alias === member);
+  if (request.op === 'status') return { ok: true, state: account ? account.state : 'not_found' };
+  if (request.op !== 'remove' || member.toLowerCase() === 'absent') throw Error('invalid operation');
+  if (!account) return { ok: true, state: 'not_found' };
+  if (account.state === 'busy' || deps.coord.leases?.has(account.id) || deps.coord.pageRunsOn(account.id) > 0) throw Error('account busy');
+  const result = await deps.coord.removeAccount(account.id, false);
+  if (!result.removed || deps.repo.listAccounts().some(a => a.id === account.id)) throw Error('account removal incomplete');
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  const dir = path.join(deps.sessionData, 'Partitions', `acc-${account.id}`);
+  if (fs.existsSync(dir)) throw Error('partition removal incomplete');
+  return { ok: true, state: 'removed' };
+}
+
 async function startHandoff(deps) {
   fs.mkdirSync(SOCKET_DIR, { recursive: true, mode: 0o700 });
   const dir = fs.lstatSync(SOCKET_DIR);
@@ -120,7 +136,7 @@ async function startHandoff(deps) {
       const end = request.indexOf(10); if (end < 0) return;
       handled = true;
       let parsed; try { parsed = JSON.parse(request.subarray(0, end).toString('utf8')); } catch { socket.end('{"ok":false,"error":"invalid request"}\n'); return; }
-      handoff(parsed, deps).then(result => socket.end(JSON.stringify(result) + '\n')).catch(() => socket.end('{"ok":false,"error":"会话交接或检查失败，请检查引擎及钥匙串授权"}\n'));
+      (parsed.op ? memberOperation(parsed, deps) : handoff(parsed, deps)).then(result => socket.end(JSON.stringify(result) + '\n')).catch(() => socket.end('{"ok":false,"error":"会话交接或检查失败，请检查引擎及钥匙串授权"}\n'));
     });
     socket.on('error', () => {});
   });
@@ -128,4 +144,4 @@ async function startHandoff(deps) {
   fs.chmodSync(SOCKET, 0o600);
   return () => { for (const socket of active) socket.destroy(); server.close(); try { if (fs.lstatSync(SOCKET).isSocket()) fs.unlinkSync(SOCKET); } catch {} };
 }
-module.exports = { startHandoff, cookieEncryptionEnabled, cookieDetails };
+module.exports = { startHandoff, cookieEncryptionEnabled, cookieDetails, memberOperation };

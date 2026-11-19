@@ -251,7 +251,7 @@ struct ContentView: View {
             Button("取消", role: .cancel) { }
             Button("确认移除", role: .destructive) { state.removeSelectedMember() }
         } message: {
-            Text("移除后在跑任务回池；消息与交活保留并标记已移除；头像组合释放。此操作会撤销该成员访问。")
+            Text("移除后将在本机清除该成员登录分区及引擎账号与分区，并撤销中枢访问；各项结果会逐项显示。")
         }
         .onAppear { state.start() }
         .preferredColorScheme(.light)
@@ -1288,6 +1288,17 @@ private struct MemberDirectory: View {
         HStack(alignment: .top, spacing: DesignTokens.memberGap) {
             ScrollView {
                 LazyVStack(spacing: DesignTokens.memberListRowSpacing) {
+                    if !state.memberRemovalReport.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignTokens.memberGap) {
+                            Text("最近一次成员移除结果").font(DesignTokens.fontTitle)
+                            Text(state.memberRemovalReport).font(DesignTokens.fontSmall).textSelection(.enabled)
+                            Button("关闭结果") {
+                                state.memberRemovalReport = ""
+                                UserDefaults.standard.removeObject(forKey: "pack.memberRemovalReport")
+                            }.buttonStyle(.plain)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(DesignTokens.memberInset)
+                            .background(DesignTokens.bubbleAI).clipShape(RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+                    }
                     ForEach(state.members.sorted { a, b in
                         let aa = a.isOnline && !a.quotaExhausted; let bb = b.isOnline && !b.quotaExhausted
                         return aa == bb ? a.name < b.name : aa && !bb
@@ -1347,6 +1358,11 @@ private struct MemberDetail: View {
                         .disabled(state.memberHandoffInProgress != nil)
                     if let result = state.memberHandoffResults[member.name] { Text(result).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).textSelection(.enabled) }
                 }
+                if member.provider == "muse", state.memberHandoffResults[member.name] != nil {
+                    Button("检查引擎会话状态") { state.checkMemberEngine(member) }
+                        .disabled(state.memberHandoffInProgress != nil)
+                    if member.loginState != "logged_in", let result = state.memberHandoffResults[member.name] { Text(result).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).textSelection(.enabled) }
+                }
                 Divider()
                 HStack { QuotaRingView(usedPct: member.quotaWeekUsedPct, stale: member.quotaIsStale); VStack(alignment: .leading) {
                     Text("周额度").font(DesignTokens.fontTitle)
@@ -1376,7 +1392,7 @@ private struct MemberDetail: View {
                 if member.name != "owner" {
                     if member.role == "member" { Button("成员本人登录 / 重新登录") { state.openMemberLogin(member) }.buttonStyle(.bordered) }
                     Button("更换头像") { state.openAvatarPicker(member) }.buttonStyle(.bordered)
-                    if member.role == "member" { Button("移除成员") { state.showRemoveMember = true }.foregroundStyle(DesignTokens.danger) }
+                    if member.role == "member" { Button("移除成员") { state.showRemoveMember = true }.foregroundStyle(DesignTokens.danger).disabled(state.memberRemovalInProgress) }
                 }
             }.padding(DesignTokens.memberInset)
         }.background(DesignTokens.bubbleAI)
