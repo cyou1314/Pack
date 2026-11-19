@@ -1,0 +1,484 @@
+Pack regression runner
+base: /home/hatch/workspace/pack
+hub under test: /home/hatch/workspace/pack/tests/hub-staging48/hub.py
+python: /home/hatch/workspace/pack/hub/.venv/bin/python
+temporary root: /tmp/pack-regression.0LlffB
+default suite order: 15 16 17 18 19 23 24 38 39 40 41 42 43 44 45 46
+--- staging15: existing run_all.sh, isolated copy, port 8813
+== test-output.txt ==
+server pid: 59298
+===== test_skills.py =====
+  FAIL 工具数 64 got 65
+  PASS 含六个 skill 工具
+  PASS publish 新建 version=1
+  PASS publish 更新 version=2
+  PASS skill_versions 全量留版 2 行
+  PASS 调度员目录含该 skill 且简介保留
+  PASS 非调度员 publish 被拒
+  PASS 成员目录未指派为空
+  PASS 读未指派被拒
+  PASS assign 不存在成员被拒
+  PASS assign 不存在 skill 被拒
+  PASS assign 成功
+  PASS absent 目录见已指派
+  PASS absent 读到 v2 正文
+  PASS bert 目录为空（隔离）
+  PASS bert 读他人 skill 被拒（隔离）
+  PASS 调度员可读全部
+  PASS 回滚不存在版本被拒
+  PASS rollback 生成新版本 3
+  PASS 回滚后正文等于 v1
+  PASS 回滚不删历史（3 行）
+  PASS unassign 后读不到
+  PASS 再指派后恢复可读
+  PASS 正文 20001 字被拒
+  PASS 超限不落版
+  PASS 超限新建也被拒
+  PASS 超限新建不落库
+  PASS 简介 201 字被拒
+  PASS 正文整 20000 字可发布
+  PASS 审计含四类 skill 动作
+  PASS 审计不含正文
+  PASS 回归：发帖读帖
+  PASS 回归：建房与房间列表
+  PASS 回归：任务全链带信封
+  PASS 回归：转交+领令牌
+  PASS 回归：记忆写读
+
+35/36 passed
+rc(test_skills.py)=1
+server pid: 59399
+===== test_review.py =====
+== A. auth boundaries ==
+  PASS A1 owner list empty before assign
+  PASS A2 owner read unassigned rejected
+  PASS A3 owner publish rejected (dispatcher only)
+  PASS A4 owner assign rejected
+  PASS A5 owner rollback rejected
+  PASS A6 member assign rejected
+  PASS A7 member unassign rejected
+  PASS A8 member rollback rejected
+  PASS A10 bad token rejected
+  PASS A11 member read nonexistent -> unified forbidden (no existence leak)
+  PASS A12 dispatcher read nonexistent -> no such skill
+  PASS A13 owner reads after assign
+  PASS A14 owner read after unassign (enabled=0) rejected
+== B. concurrency / atomicity ==
+  EVIDENCE B1 8x concurrent publish existing: ok=8 err=0 versions=[1, 2, 3, 4, 5, 6, 7, 8, 9] current_version=9
+  PASS B1 all 8 concurrent publishes succeed
+  PASS B1 versions contiguous 1..9, no dup/gap
+  EVIDENCE B2 6x concurrent publish new name: ok=6 err=0 skills_rows=1 versions=[1, 2, 3, 4, 5, 6]
+  PASS B2 exactly one skills row for raced new name
+  PASS B2 all 6 succeed with contiguous versions
+  EVIDENCE B3 4x concurrent rollback: ok=4 err=0 cur 9->13 maxver=13 nvers=13
+  PASS B3 all 4 concurrent rollbacks succeed, versions unique+contiguous
+== C. limit accounting ==
+  PASS C1 body of 20000 CJK chars accepted (char counting)
+  EVIDENCE C1 len(body)=20000 utf8_bytes=60000
+  PASS C2 body of 20001 chars rejected
+  PASS C2 rejection writes nothing (no version row, no bump)
+  PASS C3 description of 200 CJK chars accepted
+  PASS C3 description of 201 chars rejected, no version written
+  PASS C4 body of 20000 astral emoji accepted (code-point counting)
+  EVIDENCE C4 python len=20000 utf8_bytes=80000 utf16_units=40000
+== D. data integrity ==
+  PASS D1 rollback version=0 cleanly rejected
+  PASS D2 rollback negative version cleanly rejected
+  PASS D3 rollback nonexistent skill cleanly rejected
+  PASS D4 assign to nonexistent member rejected, no row written
+  EVIDENCE D5 unassign never-assigned: result={'name': 'auth-skill', 'member': 'bert', 'enabled': False} member_skills rows 1->1 row=None
+  PASS D5 unassign of never-assigned creates no row
+  PASS D6 read '100%_x' exact
+  PASS D6 read 'a_b' exact (no LIKE bleed from aXb)
+  PASS D6 read name with quote exact
+  PASS D6 read '100zzx' -> no such skill (no wildcard match)
+  PASS D6 read 'a%b' -> no such skill
+  PASS D7 publish strips name ('padded' created)
+  EVIDENCE D7 read unstripped name result: NO-ERROR: {'name': 'padded', 'version': 1, 'description': '', 'body': 'pad v1'}
+  PASS D7 read with same unstripped name finds the skill
+  PASS D7 re-publish stripped name bumps same row
+  PASS D8 whitespace-only name cleanly rejected
+  PASS D9 empty body cleanly rejected
+== E. audit completeness ==
+  PASS E1 audit rows metadata-only, actor=dispatcher
+  PASS E2 failed operations write no audit rows
+== F. error-path robustness ==
+  PASS F1 server responsive after 120 failing calls
+  PASS F2 over-limit error is structured JSON (error/limit/current/hint)
+== G. fix2: existence side-channel + missing version row ==
+  PASS G1 member errors identical (nonexistent==unassigned), dispatcher precise
+  PASS G2 missing version row -> clean inconsistent error, no TypeError, server ok
+
+45/45 passed
+rc(test_review.py)=0
+server pid: 60206
+===== test_functional.py =====
+PASS auth: member rule_upsert 被拒
+PASS auth: member egress_rule_upsert 被拒
+PASS auth: member task_release 被拒
+PASS auth: member run_list 被拒
+PASS auth: member task_transfers_list 被拒
+PASS auth: member room_create 被拒
+PASS auth: member memory_rollback 被拒(forbidden)
+PASS auth: member memory_versions include_text 被拒
+PASS auth: 坏 token 被拒
+PASS auth: 跨成员读 private-core forbidden
+PASS audit: 跨成员读留 memory_access_denied
+PASS auth: 调度员代查不存在成员 not_found
+PASS auth: 成员写 room-shared 被拒
+PASS auth: 成员自报 origin=dispatcher 被拒
+PASS limit: L0 4096B 通过
+PASS limit: L0 4097B 整笔拒绝
+PASS limit: L0 超限不落版
+PASS limit: L0 按字节计（2048 汉字=6144B 被拒）
+PASS limit: L1 20000 CJK 字符通过（字符计数）
+PASS limit: L1 20001 字符拒绝且不落版
+PASS limit: 第 32 个主题通过
+PASS limit: 第 33 个主题被拒 memory_topic_limit
+PASS limit: 删主题后名额释放
+PASS limit: L1 总量超软顶仍可写（只警告）
+PASS audit: 软顶触发 memory_soft_cap 审计
+PASS audit: 记忆正文不进审计
+PASS audit: 记忆正文不进房间消息
+PASS egress: 畸形 URL 拒绝
+PASS egress: 非 http scheme 拒绝
+PASS egress: 无规则无点名 → ask
+PASS egress: 调度员任务点名同站 → allow
+PASS egress: 点名覆盖子域 → allow
+PASS egress: 点名不覆盖异站 → ask
+PASS egress: ask 规则压过点名
+PASS egress: allow 规则命中（父域覆盖子域）
+PASS egress: 不存在 task_id 干净报错
+PASS audit: egress 每次判定留审计
+PASS rule: 命中规则自动决议
+PASS audit: 规则决议 actor=rule-engine
+PASS review: 已决议任务拒绝重复 filing
+PASS review: 无批准请求拒绝 filing
+PASS review: 未决议任务 filing 成功
+PASS review: review_log 留痕
+PASS review: 审查后拒绝二次 filing
+PASS review: 证据为空拒绝
+PASS envelope: 非法信封整笔打回、状态不变
+PASS envelope: 合法信封交活进 review、result=summary
+PASS backoff: 非法 fail_class 记 unknown 不报错
+PASS backoff: unknown 基数 300s×2^0 已预置
+PASS release: 非 blocked 任务拒绝放回
+PASS release: blocked 放回 open
+PASS backoff: 退避期内 claim 被拒
+PASS backoff: 清退避后可认领
+PASS clear_backoff: 非 open 拒绝
+PASS msg: 非作者删除被拒
+PASS msg: 非作者编辑被拒
+PASS msg: 作者编辑成功且记 edited_at
+PASS msg: 删除后读取只见占位
+PASS msg: 删除后 DB 正文已替换为占位（原正文不留存）
+PASS msg: 重复删除被拒
+PASS msg: 已删消息不可编辑
+PASS msg: task_card 不可删
+PASS msg: 不存在消息干净报错
+PASS room: 含空白名被拒
+PASS room: 含斜杠名被拒
+PASS room: 超 40 名被拒
+PASS room: 建房成功
+PASS room: 重名被拒
+PASS room: room_list 含新房且成员可调
+PASS transfer: 错 token 转交被拒
+PASS transfer: 目标不存在被拒
+PASS transfer: 转给 owner 被拒（按名补检）
+PASS transfer: 正常转交 pending
+PASS transfer: 已有 pending 时再转交被拒
+PASS transfer: 非接收方领令牌被拒
+PASS transfer: 接收方领令牌成功
+PASS transfer: 重复领取被拒
+PASS transfer: 转交行 accepted 落库
+
+==== functional: 78 passed, 0 failed ====
+rc(test_functional.py)=0
+===== test_more.py =====
+PC1 round0: 双抢成功数 1（期望 1）
+PC1 round1: 双抢成功数 1（期望 1）
+PC1 round2: 双抢成功数 1（期望 1）
+PC1 round3: 双抢成功数 1（期望 1）
+PC1 round4: 双抢成功数 1（期望 1）
+PC1 round5: 双抢成功数 1（期望 1）
+PC1 RESULT: 原子认领达标 6/6
+PC2 RESULT: 并发建同名房成功 1（期望 1），其余错误均为 already exists: True
+PC3 RESULT: 双 run_start 成功 1（期望 1），fence_reject 审计 1（期望 ≥1）
+PC3b run_finish: True
+PC3c run_finish 非法 outcome 被拒: True
+CAP RESULT: 第 4 次转交被拒=True（Error calling tool 'task_transfer': task 16 transfer relay c），cap 审计 1，房间提示 2
+REVIEW-REJ RESULT: 打回后 status=open，退避 300s（unknown 基数 300×2^0，期望 ≈300）
+EG-OWNER RESULT: owner（role=member）建的任务点名 -> allow（期望 allow）
+EG-MEM RESULT: 普通成员建的任务点名 -> ask（期望 ask，防自授）
+FD RESULT: server pid=60206 失败调用 120 次 fd 7 -> 7（无增长）
+SW1 RESULT: accept 已提交后，sweeper 无守卫 UPDATE 把转交行改成 status=expired（accepted_at 仍在=True）=> 已接受被改标过期，账面自相矛盾
+SW2 RESULT: 持有人已续租成功后，sweeper 仍按旧快照回收：status=open claim_token=None => 活跃任务被误回收回池
+saved more-output.txt
+rc(test_more.py)=0
+===== test_concurrency.py =====
+C0 timing: 1x=0.17s 4x并发=0.78s -> 疑似串行
+C1 round0: 并发写 6 个新主题，成功 1，最终主题数 32（上限 32）
+C1 round1: 并发写 6 个新主题，成功 1，最终主题数 32（上限 32）
+C1 round2: 并发写 6 个新主题，成功 1，最终主题数 32（上限 32）
+C1 round3: 并发写 6 个新主题，成功 1，最终主题数 32（上限 32）
+C1 round4: 并发写 6 个新主题，成功 1，最终主题数 32（上限 32）
+C1 round5: 并发写 6 个新主题，成功 1，最终主题数 32（上限 32）
+C1 RESULT: live 未复现（窗口小，见语句级证据） rounds_hit=0
+C2 round0: 双 filing 成功数 1, review_log 行数 1
+C2 round1: 双 filing 成功数 1, review_log 行数 1
+C2 round2: 双 filing 成功数 1, review_log 行数 1
+C2 round3: 双 filing 成功数 1, review_log 行数 1
+C2 round4: 双 filing 成功数 1, review_log 行数 1
+C2 round5: 双 filing 成功数 1, review_log 行数 1
+C2 round6: 双 filing 成功数 1, review_log 行数 1
+C2 round7: 双 filing 成功数 1, review_log 行数 1
+C2 RESULT: live 未复现 rounds_hit=0
+C3 round0: 4 路并发删同一消息，成功 1，审计行 1
+C3 round1: 4 路并发删同一消息，成功 1，审计行 1
+C3 round2: 4 路并发删同一消息，成功 1，审计行 1
+C3 round3: 4 路并发删同一消息，成功 1，审计行 1
+C3 round4: 4 路并发删同一消息，成功 1，审计行 1
+C3 round5: 4 路并发删同一消息，成功 1，审计行 1
+C3 round6: 4 路并发删同一消息，成功 1，审计行 1
+C3 round7: 4 路并发删同一消息，成功 1，审计行 1
+C3 RESULT: live 未复现 rounds_hit=0
+C4 round0: 双交活成功 1，交活消息 1
+C4 round1: 双交活成功 1，交活消息 1
+C4 round2: 双交活成功 1，交活消息 1
+C4 round3: 双交活成功 1，交活消息 1
+C4 round4: 双交活成功 1，交活消息 1
+C4 round5: 双交活成功 1，交活消息 1
+C4 round6: 双交活成功 1，交活消息 1
+C4 round7: 双交活成功 1，交活消息 1
+C4 RESULT: live 未复现 rounds_hit=0
+C7 RESULT: 非持有人 bob 冒发 approval_request -> auto_decision=Error calling tool 'room_post': approval_request only from the member executing that task，房间内决议消息 0 条
+C8 RESULT: egress 审计 detail 含完整 URL 查询串（含 token 值）: 否
+C1b RESULT: 两路并发都过 COUNT 检查后落库，最终主题数 33（>32 即检查非原子）
+C5 round0: accept 成功=True 转交行 status=accepted accepted_at=1795102590.216381
+C5 round1: accept 成功=True 转交行 status=accepted accepted_at=1795102590.4785013
+C5 round2: accept 成功=True 转交行 status=accepted accepted_at=1795102590.7358932
+C5 round3: accept 成功=True 转交行 status=accepted accepted_at=1795102590.9981601
+C5 round4: accept 成功=True 转交行 status=accepted accepted_at=1795102591.261022
+C5 round5: accept 成功=True 转交行 status=accepted accepted_at=1795102591.5265353
+C5 round6: accept 成功=True 转交行 status=accepted accepted_at=1795102591.793345
+C5 round7: accept 成功=True 转交行 status=accepted accepted_at=1795102592.0567575
+C5 round8: accept 成功=True 转交行 status=accepted accepted_at=1795102592.3866155
+C5 round9: accept 成功=True 转交行 status=accepted accepted_at=1795102592.606899
+C5 round10: accept 成功=True 转交行 status=accepted accepted_at=1795102592.872037
+C5 round11: accept 成功=True 转交行 status=accepted accepted_at=1795102593.1180437
+C5 RESULT: live 未复现（窗口≈ms级，见语句级证据） rounds_hit=0
+C5b line 1048: "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
+C5b line 1430: "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND status IN ('claimed','working')",
+C5b line 1444: "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
+C6 RESULT: _holder 先检通过=True；回收+重认领后旧持有人的无守卫 UPDATE rowcount=1；最终 status=review assignee=3 claim_token=None result=迟到交活  => bob 的新认领被迟到交活覆盖（token 被清空、任务被抢进 review）
+saved concurrency-output.txt
+rc(test_concurrency.py)=0
+server pid: 61227
+===== test_decision_kind.py =====
+PASS D1 普通 chat 消息作者可删除
+PASS A0 规则建立
+PASS A0b alice 先认领任务（F1 守卫要求持有人发批准请求）
+PASS A1 规则命中自动决议
+PASS A2 决议消息 kind='decision'
+PASS A3 决议正文带规则库后缀
+PASS A4 dispatcher 删决议被拒
+PASS A5 dispatcher 改决议被拒
+PASS A6 决议正文完好未软删
+PASS A7 已决议任务再 filing 被拒
+PASS B1 无规则命中不自动决议
+PASS B2 review_file 决议成功
+PASS B3 审查决议 kind='decision'
+PASS B4 审查决议正文格式
+PASS B5 dispatcher 删审查决议被拒
+PASS B6 dispatcher 改审查决议被拒
+PASS B7 审查后任务再 filing 被拒
+PASS C1 历史 chat 决议仍被识别为已决议
+
+==== decision-kind: 18 passed, 0 failed ====
+rc(test_decision_kind.py)=0
+ALL DONE
+FAIL staging15 run_all.sh rc=0; server process group terminated
+--- staging16: existing run_all.sh, isolated copy, port 8814
+== test-output-round1.txt ==
+server pid: 61311
+== H1 额度 ==
+  ok set ok
+  ok updated_at set
+  ok list carries quota
+  ok unset member null
+  ok partial update
+  ok reject pct>100
+  ok reject pct<0
+  ok reject extra<0
+  ok reject reset=0
+  ok reject no fields
+  ok reject unknown member
+  ok member cannot set quota
+== H2 房间改名/归档 ==
+  ok create
+  ok rename
+  ok list shows new name
+  ok archived flag present
+  ok rename to existing rejected
+  ok rename main rejected
+  ok rename ghost rejected
+  ok rename invalid name rejected
+  ok member cannot rename
+  ok archive
+  ok archived hidden by default
+  ok include_archived shows flagged
+  ok archived room still postable (visibility only)
+  ok unarchive
+  ok unarchived visible again
+  ok archive main rejected
+  ok archive ghost rejected
+  ok member cannot archive
+== H3 头像组合 ==
+  ok avatar combo present: dispatcher
+  ok avatar v1 compat: dispatcher
+  ok avatar combo present: alice
+  ok avatar v1 compat: alice
+  ok avatar combo present: bob
+  ok avatar v1 compat: bob
+  ok avatar combo present: owner
+  ok avatar v1 compat: owner
+  ok combos unique (incl dispatcher backfill)
+  ok register m0
+  ok register m1
+  ok register m2
+  ok register m3
+  ok register m4
+  ok register m5
+  ok register m6
+  ok register m7
+  ok register m8
+  ok register m9
+  ok register m10
+  ok register m11
+  ok 16 members combos all unique
+== 并发注册避撞 ==
+  ok 8 parallel registers all ok
+  ok 24 members combos all unique
+== 回归 ==
+  ok post
+  ok read
+  ok task_create
+  ok skill_list
+RESULT pass=58 fail=0
+rc(test_h123)=0
+PASS staging16 run_all.sh rc=0; server process group terminated
+--- staging17: existing run_all.sh, isolated copy, port 8815
+== test-output-round1.txt ==
+  ok empty summary shape
+  ok set ok
+  ok member reads back
+  ok partial sections default empty
+  ok reject not json
+  ok reject not object
+  ok reject unknown section
+  ok reject section not list
+  ok reject item not string
+  ok reject too many items
+  ok reject item too long
+  ok reject total too long
+  ok rejected writes left summary intact
+  ok member cannot set
+  ok get ghost room rejected
+  ok set ghost room rejected
+  ok second room set
+  ok rooms independent
+  ok room-b own summary
+RESULT pass=19 fail=0
+rc=0
+PASS staging17 run_all.sh rc=0; server process group terminated
+--- staging18: existing run_all.sh, isolated copy, port 8816
+== test-output-round1.txt ==
+  ok upsert
+  ok list
+  ok fire
+  ok card assembled
+  ok fired card claimable (same state machine)
+  ok upsert updates
+  ok fire uses new version, no default assignee
+  ok assignee override
+  ok arg without placeholder rejected
+  ok fire without arg ok
+  ok reject empty name
+  ok reject name too long
+  ok reject empty title
+  ok reject title too long
+  ok reject body too long
+  ok reject ghost assignee
+  ok reject arg too long
+  ok fire ghost template rejected
+  ok fire ghost room rejected
+  ok member cannot upsert
+  ok member cannot list
+  ok member cannot fire
+  ok member cannot delete
+  ok delete
+  ok fire deleted rejected
+  ok fired cards survive template delete
+  ok delete twice rejected
+RESULT pass=27 fail=0
+rc=0
+PASS staging18 run_all.sh rc=0; server process group terminated
+--- staging19: existing run_all.sh, isolated copy, port 8817
+== test-output-round1.txt ==
+== 排班 ==
+  ok schedule ok
+  ok sched_at visible in list
+  ok claim before time rejected
+  ok past time rejected
+  ok ghost member rejected
+  ok owner target rejected
+  ok member cannot schedule
+  ok clear_backoff cancels schedule
+  ok sched_at cleared
+  ok claimable after cancel
+  ok cleanup block
+  ok claim after scheduled time ok
+  ok sched_at cleared on claim
+== 接力：quota 阻塞 ==
+  ok bob quota seeded
+  ok quota block relays to bob
+  ok transfer row pending by auto-relay
+  ok bob accepts relay
+  ok bob completes relayed task
+== 接力：不合格候选 ==
+  ok stale quota candidate -> no relay, stays blocked
+  ok quota >=90 candidate -> no relay
+  ok non-quota block -> no relay
+  ok executor-marked task -> no relay
+== 接力：sweeper 掉线路径 ==
+  ok alice claimed drop task
+  ok sweep ran
+  ok sweeper relayed dropped task to bob
+  ok bob accepts sweeper-relayed task
+RESULT pass=26 fail=0
+rc=0
+PASS staging19 run_all.sh rc=0; server process group terminated
+--- staging23: hub.py serve + test_s2_walk.py, isolated copy, port 8821
+PASS staging23 server process group terminated; test=test_s2_walk.py rc=0
+--- staging24: Hub + seed, watcher initialization barrier, verify; isolated copy, port 8822
+PASS staging24 Hub and watcher process group terminated; seed/verify rc=0
+--- staging38: hub.py serve + test_week_done.py, isolated copy, port 8838
+PASS staging38 server process group terminated; test=test_week_done.py rc=0
+--- staging39: hub.py serve + test_attachments.py, isolated copy, port 8839
+PASS staging39 server process group terminated; test=test_attachments.py rc=0
+--- staging40: hub.py serve + test_hardening.py, isolated copy, port 8840
+PASS staging40 server process group terminated; test=test_hardening.py rc=0
+--- staging41: local import-only test, dummy token in disposable copy
+PASS staging41 no server; test=test_w4_handler.py; placeholder token only
+--- staging42: hub.py serve + test_tasklist_offset.py, isolated copy, port 8842
+PASS staging42 server process group terminated; test=test_tasklist_offset.py rc=0
+--- staging43: hub.py serve + test_kind_whitelist.py, isolated copy, port 8843
+PASS staging43 server process group terminated; test=test_kind_whitelist.py rc=0
+--- staging44: local import-only test, dummy token in disposable copy
+PASS staging44 no server; test=test_w5_template.py; placeholder token only
+--- staging45: hub.py serve + test_orphans.py, isolated copy, port 8845
+PASS staging45 server process group terminated; test=test_orphans.py rc=0
+--- staging46: hub.py serve + test_complete_attach.py, isolated copy, port 8846
+PASS staging46 server process group terminated; test=test_complete_attach.py rc=0
+================ SUMMARY ================
+REGRESSION: FAILURES

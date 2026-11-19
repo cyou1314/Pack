@@ -62,3 +62,10 @@ Gemini 独立读码后给的分析与本复盘三处完全撞上：连接脆性�
 - **影子双成员 §9 演练已跑完**（正本 SHADOW-S9-RESULT.md，730a012）：并发抢单/并行交活/留痕转交/桌面锁/批准全程/额度接力/掉线接力全实证；FD 分开统计（db 句柄 / TCP socket）无泄漏。**新缺口**：卡指派后成员从不认领时无任何接力路径（接力只挂 block-quota 与租约回收），修法（sweeper 巡检 + 宽限期 + 指派人额度/心跳条件）与 Gemini 商定中，列 v1.1 议题。
 - **额度自动数据源方案定稿（Gemini 出、调度员收）**：新增独立工具 member_quota_report——不收 member_name、按 token 定身份、只能报自己、审计记 source=self；member_quota_set 保留给调度员纠偏（source=dispatcher）。读失败宁可不上报让旧数据过期转灰，绝不回填 0%；成员 task_block(fail_class=quota) 时中枢可直接标记短期耗尽、压过偏乐观自报。运行时读法：优先拦截服务方用量接口的 XHR/fetch JSON（抗改版胜过刮 DOM），任务/闲聊结束搭便车读一次，空闲超 10–12 分钟且无任务在跑时轻量补采。
 - **App 增量对账方案定稿**：短期不动 Schema——平时 since_id 增量 + 每 2–3 分钟重拉最近 50–100 条原地覆盖（只有 kind=chat 可编辑/软删，跨端改老消息场景极少，够用）；长期加房间级单调 rev（messages/rooms 加 rev 列与 (room_id, rev) 索引，发消息/编辑/软删同事务 +1 并写进消息行；room_read_new 加 since_rev、保留 since_id 兼容；room_list 带回每房 rev，未变则 App 整轮免拉）。自报工具与 rev 是否合并为一个中枢增量，待 Gemini 回复后定。
+
+## 附记二：对谈续轮与 staging48 落地（2026-11-19 深夜，调度员记）
+
+- **未认领巡检口径定稿（Gemini 出、调度员收）**：切开「慢/忙」与「真失联/真没额度」——eligible_at = max(updated_at, next_claim_at, sched_at)，宽限 240 秒（取 4 分钟）；条件 A 心跳为空或过期 >300 秒，条件 B 额度 900 秒内新鲜且周已用 >=90%（数据过期/缺失绝不按 B 触发）。**关键修正：绝不能只清 assignee 回池**——运行时只领指派给自己的卡（runtime.mjs:544 源码实证），清指派等于把卡晾死；正解是直接走 _auto_relay 记账转交，无合格候选时不清指派、只升级提示一次交调度员。
+- **自报防伪造四规则定稿（Gemini 出、调度员全收）**：「同周期单调 + 事实熔断 + 权威压制 + 异常留痕」——同周期自报只升不降（真周期滚动才许回落，自报 reset_at 只许后移）；task_block(quota) 当场置 100 记 source=fact 熔断；调度员 set 永远压过自报；报高照收，单次跳涨 >30 点且期间无交活写 quota_anomaly 审计。
+- **staging48 已部署生产（2026-11-19 23:4x）**：member_quota_report + sweeper 未认领巡检一个增量落地，工具数 64→65；自研断言 42/42、回归 15/16（唯一 FAIL 为 staging15 工具数硬断言，已同步改 65）；生产冒烟实证（自报成功 source=self、报低 19→5 被拦）；preflight ALL GREEN（tools=65）。正本 tests/hub-staging48/REVIEW48.md（含施工期间一次 pkill 误杀生产中枢数分钟的事故如实记录，已恢复、数据零损）。运行时侧接自报上报与 rpc 长连接改造待派 Codex；rev 增量按议定押后。
+- **守护化第三条路（Gemini 出，调度员收）**：方案一（拉起原版应用点 Continue）否决——与无头引擎共用数据目录/分区，共存易踩 SQLite 锁与 Cookie 损坏。正解：进程守护全交 launchd（桥与运行时已在 launchd 下，裸跑只剩引擎）；熔断恢复在无头引擎补受控本地 resume 入口（paused/failTimes 有主进程内存镜像、改库不行，恢复函数本就在主进程内，缺的只是回环加本机令牌的入口，或挂 L2 交接助手），分级放行：瞬时类冷却 10–15 分钟后最多自动试一次，真失败/未知类先告警、群主在 App 成员详情点「恢复引擎」人工放行。次序：当前冻结真因是服务侧机器不可达、非 paused，resume 入口随 E2 第四步在账号恢复后补；launchd 守护可先行。

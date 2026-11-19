@@ -1,0 +1,16 @@
+PASS A1 same-cycle drop rejected
+PASS A1 db unchanged after drop attempt
+PASS A1 drop-blocked audit written
+PASS A2 future reset_at wash: pct drop blocked  ['week_used_pct']
+PASS A2 reset move-back blocked
+PASS A3 genuine rollover allows drop
+PASS A4 fuse pins 100 with source=fact  pct=100.0 src=fact
+PASS A4 fused self-report drop ineffective
+PASS A4 dispatcher set releases fuse
+PASS A4 self-report cannot lower dispatcher value
+PASS A5 big jump accepted (report-high passes)
+PASS A5 anomaly audit on jump without completion
+PASS A5 jump with completion in window: no anomaly
+PASS A6 small rise accepted, no anomaly
+
+14/14 passed

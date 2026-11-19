@@ -799,6 +799,10 @@ def init():
         conn.execute("ALTER TABLE members ADD COLUMN provider TEXT")
     if "login_state" not in mcols2:
         conn.execute("ALTER TABLE members ADD COLUMN login_state TEXT")
+    # staging48 额度来源标记：最近一次额度写入的来源 self/dispatcher/fact，
+    # 供自报防伪造口径判读与审计对照（老数据留空 = 来源未知）。
+    if "quota_source" not in mcols2:
+        conn.execute("ALTER TABLE members ADD COLUMN quota_source TEXT")
     # H2 房间归档标记。
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
     if "archived_at" not in rcols:
@@ -855,6 +859,78 @@ RELAY_HEARTBEAT_FRESH = 180   # 候选须在线：心跳 3 分钟内
 RELAY_QUOTA_FRESH = 900       # 候选额度数据须 15 分钟内（与 App 额度过期口径一致）
 RELAY_QUOTA_HEADROOM = 90     # 候选周额度已用须 <90%
 EXECUTOR_MARKERS = ("[M4A]", "[ENG]", "[ENG-image]")
+
+# ---------------- 未认领指派卡巡检（staging48「让卡别躺死」） ----------------
+# open 且已指派的卡若没人认领，旧 sweeper 完全不看（它只管 claimed/working
+# 的租约回收）——指派人掉线或额度见底时卡会一直躺死。巡检口径（保守）：
+# 过了可认领时刻 + 宽限期，且指派人「真失联」（心跳 >300 秒/从无）或
+# 「真没额度」（额度数据 900 秒内新鲜且周已用 >=90%）才动手；额度数据
+# 过期/缺失绝不按没额度触发，心跳新鲜且额度未见底绝不动（防误伤正忙）。
+UNCLAIMED_GRACE = 240            # 宽限期（秒）：可认领时刻过后 4 分钟才判断
+UNCLAIMED_HEARTBEAT_STALE = 300  # 真失联口径：心跳距今超过 5 分钟
+# member_quota_report 的 week_reset_at 合理区间：重置时刻是「下一次重置」，
+# 语义上必在未来——只容 5 分钟时钟偏差，未来至多 40 天；区间外整笔拒绝。
+# 严防把 reset_at 报成过去值人为制造「周期已到期」来洗白用量（防伪造规则 1）。
+QUOTA_RESET_PAST_TOLERANCE = 300
+QUOTA_RESET_FUTURE_TOLERANCE = 40 * 86400
+# 自报用量单次跳涨超过此百分点且期间无交活记录 → quota_anomaly 审计
+# （防伪造规则 4：报高先放行、后告警）。
+QUOTA_ANOMALY_JUMP = 30
+
+
+def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
+    """member_quota_report 入参校验（自报通道比调度员通道严：自报值会
+    直接驱动接力/巡检判断，荒谬值必须整笔拒绝、库不落任何字段）。
+    返回问题列表，空 = 合法。"""
+    problems = []
+    if week_used_pct is None and week_reset_at is None and extra_tokens_left is None:
+        problems.append("nothing to report: give at least one quota field")
+    if week_used_pct is not None:
+        try:
+            pct = float(week_used_pct)
+            if pct != pct or not (0 <= pct <= 100):
+                problems.append(f"week_used_pct out of range 0-100: {week_used_pct}")
+        except (TypeError, ValueError):
+            problems.append(f"week_used_pct not a number: {week_used_pct!r}")
+    if week_reset_at is not None:
+        try:
+            ts = float(week_reset_at)
+            now = _now()
+            if ts != ts or not (now - QUOTA_RESET_PAST_TOLERANCE <= ts
+                                <= now + QUOTA_RESET_FUTURE_TOLERANCE):
+                problems.append(f"week_reset_at outside sane range: {week_reset_at}")
+        except (TypeError, ValueError):
+            problems.append(f"week_reset_at not a number: {week_reset_at!r}")
+    if extra_tokens_left is not None:
+        try:
+            if int(extra_tokens_left) != extra_tokens_left or extra_tokens_left < 0:
+                problems.append(f"extra_tokens_left must be an integer >= 0: {extra_tokens_left}")
+        except (TypeError, ValueError):
+            problems.append(f"extra_tokens_left not a number: {extra_tokens_left!r}")
+    return problems
+
+
+def _apply_quota(conn, member_id, week_used_pct, week_reset_at, extra_tokens_left,
+                 source):
+    """把额度字段写入 members 并刷新 quota_updated_at 与 quota_source
+    （member_quota_set 与 member_quota_report 共用；校验由各自调用方先行
+    完成）。source ∈ self/dispatcher/fact，记最近一次额度写入的来源。
+    返回更新了的字段名列表（不含 quota_updated_at/quota_source 本身）。"""
+    sets, args, fields = [], [], []
+    if week_used_pct is not None:
+        sets.append("quota_week_used_pct=?"); args.append(float(week_used_pct))
+        fields.append("quota_week_used_pct")
+    if week_reset_at is not None:
+        sets.append("quota_week_reset_at=?"); args.append(float(week_reset_at))
+        fields.append("quota_week_reset_at")
+    if extra_tokens_left is not None:
+        sets.append("quota_extra_left=?"); args.append(int(extra_tokens_left))
+        fields.append("quota_extra_left")
+    sets.append("quota_updated_at=?"); args.append(_now())
+    sets.append("quota_source=?"); args.append(source)
+    args.append(member_id)
+    conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE id=?", args)
+    return fields
 
 
 def _auto_relay(conn, t, from_name, reason_label):
@@ -1032,6 +1108,75 @@ def sweep_once():
                             _auto_relay(conn, t2, holder_name, "掉线失联")
                         except Exception:
                             pass  # 接力失败不连累本轮回收
+    # staging48 未认领指派卡巡检（「让卡别躺死」，口径见 UNCLAIMED_* 常量）：
+    # 只处理 next_claim_at 已到期/未设的卡；可认领时刻 eligible_at 取
+    # updated_at、next_claim_at、sched_at 三者最大值，过宽限期才判断。
+    # 钉死卡（标题开头或正文含执行体标记，沿用 _auto_relay 的不接力口径）
+    # 与已有 pending 转交（正在等人接受）的卡一律不碰。
+    unclaimed = conn.execute(
+        """SELECT t.*, m.name AS a_name, m.last_heartbeat AS a_hb,
+                  m.quota_week_used_pct AS a_pct, m.quota_updated_at AS a_quota_at
+             FROM tasks t JOIN members m ON m.id=t.assignee
+            WHERE t.status='open' AND t.assignee IS NOT NULL AND m.removed_at IS NULL
+              AND (t.next_claim_at IS NULL OR t.next_claim_at<=?)""",
+        (now,)).fetchall()
+    for t in unclaimed:
+        title = (t["title"] or "").lstrip()
+        body = t["body"] or ""
+        if any(title.startswith(mk) for mk in EXECUTOR_MARKERS) or \
+           any(mk in body for mk in EXECUTOR_MARKERS):
+            continue
+        eligible_at = max(t["updated_at"] or 0, t["next_claim_at"] or 0,
+                          t["sched_at"] or 0)
+        if eligible_at + UNCLAIMED_GRACE > now:
+            continue
+        cond_a = t["a_hb"] is None or (now - t["a_hb"]) > UNCLAIMED_HEARTBEAT_STALE
+        cond_b = (t["a_quota_at"] is not None
+                  and (now - t["a_quota_at"]) <= RELAY_QUOTA_FRESH
+                  and t["a_pct"] is not None and t["a_pct"] >= RELAY_QUOTA_HEADROOM)
+        if not (cond_a or cond_b):
+            continue
+        pend = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=? AND status='pending'",
+            (t["id"],)).fetchone()["n"]
+        if pend:
+            continue
+        reason_label = "指派人失联未认领" if cond_a else "指派人额度见底未认领"
+        cond_tag = ("A" if cond_a else "") + ("B" if cond_b else "")
+        # 记账段走 _lock 并复检任务仍是扫描时的状态（与既有接力段同纪律），
+        # 防与工具层的认领/转交竞态。
+        with _lock:
+            t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
+            if (not t2 or t2["status"] != "open" or t2["assignee"] != t["assignee"]
+                    or t2["claim_token"] is not None):
+                continue
+            relayed = None
+            try:
+                relayed = _auto_relay(conn, t2, t["a_name"], reason_label)
+            except Exception:
+                relayed = None  # 接力失败不连累本轮巡检，落到升级判断
+            if relayed:
+                continue
+            # 无合格候选：不清指派、只升级一次。去重按「任务+指派人」查
+            # 审计（detail 由本段写死格式，精确前缀匹配不会串到别的任务）；
+            # 指派人变更后可对新指派人再升级一次。
+            seen = conn.execute(
+                "SELECT COUNT(*) AS n FROM audit WHERE action='task_unclaimed_escalate'"
+                " AND detail LIKE ?",
+                (f"task {t['id']} assignee_id={t['assignee']} %",)).fetchone()["n"]
+            if seen:
+                continue
+            disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+            if disp:
+                conn.execute(
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)"
+                    " VALUES(?,?,'chat',?,?,?)",
+                    (t2["room_id"], disp["id"],
+                     f"任务#{t['id']} 指派给 {t['a_name']} 已超过宽限期未认领"
+                     f"（{reason_label}），暂无可自动接力的成员，请调度员处理",
+                     t["id"], now))
+            audit(conn, "sweeper", "task_unclaimed_escalate",
+                  f"task {t['id']} assignee_id={t['assignee']} assignee={t['a_name']} cond={cond_tag} ")
     conn.commit()
     conn.close()
     return len(rows) + n_expired
@@ -1409,26 +1554,124 @@ def build_server():
             row = conn.execute("SELECT id FROM members WHERE name=?", (member_name,)).fetchone()
             if not row:
                 raise ValueError(f"no such member: {member_name}")
-            sets, args = [], []
-            if week_used_pct is not None:
-                sets.append("quota_week_used_pct=?"); args.append(float(week_used_pct))
-            if week_reset_at is not None:
-                sets.append("quota_week_reset_at=?"); args.append(float(week_reset_at))
-            if extra_tokens_left is not None:
-                sets.append("quota_extra_left=?"); args.append(int(extra_tokens_left))
-            sets.append("quota_updated_at=?"); args.append(_now())
-            args.append(row["id"])
-            conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE id=?", args)
+            fields = _apply_quota(conn, row["id"], week_used_pct,
+                                  week_reset_at, extra_tokens_left, "dispatcher")
             audit(conn, me["name"], "member_quota_set",
-                  f"{member_name}: " + ", ".join(s.split("=")[0] for s in sets))
+                  f"{member_name}: " + ", ".join(fields) + " source=dispatcher")
             conn.commit()
             out = dict(conn.execute(
                 "SELECT name, quota_week_used_pct, quota_week_reset_at,"
-                " quota_extra_left, quota_updated_at FROM members WHERE id=?",
+                " quota_extra_left, quota_updated_at, quota_source"
+                " FROM members WHERE id=?",
                 (row["id"],)).fetchone())
         finally:
             conn.close()
         return out
+
+    @mcp.tool
+    def member_quota_report(week_used_pct: float = None,
+                            week_reset_at: float = None,
+                            extra_tokens_left: int = None) -> dict:
+        """成员自报本人额度（staging48）：身份只认 Bearer token 解析出的
+        me，没有 member_name 入参、物理上改不了别人。字段口径与
+        member_quota_set 一致（只更新给了的字段、刷新 quota_updated_at），
+        但校验更严：pct 须 0–100、week_reset_at 须落在合理区间（未来 40 天
+        内、至多 5 分钟过去偏差）、extra 须为 >=0 的整数，任一非法整笔
+        拒绝、库不变。本工具没有「报 0 清空」语义。
+        防伪造（调度员+Gemini 定稿四规则）：①同周期只升不降——自报 pct
+        低于已存值一律拦下（写 member_quota_drop_blocked 审计；同报其他
+        字段照常生效，只报 pct 时整笔报错）；唯一例外是真周期滚动：已存
+        week_reset_at 已实际到期（<=now）且新报 reset_at 更大，才许回落；
+        同理自报 reset_at 只许往后移（回挪 = 人为加速周期到期，同罪拦下，
+        写 member_quota_reset_blocked 审计）。
+        ②task_block quota 的 fact 熔断（pct=100、source=fact）与③调度员
+        设的高值同样受①保护，自报调低不动。④报高照收，但单次跳涨
+        >30 个百分点且自上次额度写入以来无 task_complete 交活记录时，
+        另写 quota_anomaly 审计告警。审计记 source=self。"""
+        me = authenticate()
+        require(me)
+        problems = _validate_quota_report(week_used_pct, week_reset_at,
+                                          extra_tokens_left)
+        if problems:
+            raise ValueError("invalid quota report: " + "; ".join(problems))
+        conn = db()
+        try:
+            with _lock:
+                row = conn.execute("SELECT * FROM members WHERE id=?",
+                                   (me["id"],)).fetchone()
+                now = _now()
+                blocked_drop = None
+                if week_used_pct is not None and row["quota_week_used_pct"] is not None \
+                        and float(week_used_pct) < row["quota_week_used_pct"]:
+                    stored_reset = row["quota_week_reset_at"]
+                    cycle_rolled = (stored_reset is not None and stored_reset <= now
+                                    and week_reset_at is not None
+                                    and float(week_reset_at) > stored_reset)
+                    if not cycle_rolled:
+                        blocked_drop = (row["quota_week_used_pct"], float(week_used_pct))
+                        week_used_pct = None  # 该字段忽略，其余字段照常
+                blocked_reset = None
+                if week_reset_at is not None and row["quota_week_reset_at"] is not None \
+                        and float(week_reset_at) < row["quota_week_reset_at"]:
+                    # 自报 reset_at 只许往后移：回挪能人为加速「周期到期」、
+                    # 配合下一报洗白用量，与降幅同罪拦下（真滚动要求新值更大，
+                    # 天然不受此限；调度员 member_quota_set 不受此限、可纠偏）。
+                    blocked_reset = (row["quota_week_reset_at"], float(week_reset_at))
+                    week_reset_at = None
+                anomaly = None
+                if week_used_pct is not None and row["quota_week_used_pct"] is not None:
+                    jump = float(week_used_pct) - row["quota_week_used_pct"]
+                    if jump > QUOTA_ANOMALY_JUMP:
+                        since = row["quota_updated_at"] or row["created_at"]
+                        done_n = conn.execute(
+                            "SELECT COUNT(*) AS n FROM audit WHERE actor=? AND action='task_complete' AND ts>=?",
+                            (me["name"], since)).fetchone()["n"]
+                        if not done_n:
+                            anomaly = (row["quota_week_used_pct"], float(week_used_pct))
+                fields = []
+                if week_used_pct is not None or week_reset_at is not None \
+                        or extra_tokens_left is not None:
+                    fields = _apply_quota(conn, me["id"], week_used_pct,
+                                          week_reset_at, extra_tokens_left, "self")
+                if blocked_drop is not None:
+                    audit(conn, me["name"], "member_quota_drop_blocked",
+                          f"{me['name']}: week_used_pct {blocked_drop[0]}->{blocked_drop[1]}"
+                          f" blocked source=self stored_source={row['quota_source']}")
+                if blocked_reset is not None:
+                    audit(conn, me["name"], "member_quota_reset_blocked",
+                          f"{me['name']}: week_reset_at {blocked_reset[0]}->{blocked_reset[1]}"
+                          " blocked (self-report may only move reset later) source=self")
+                if anomaly is not None:
+                    audit(conn, me["name"], "quota_anomaly",
+                          f"{me['name']}: week_used_pct jump {anomaly[0]}->{anomaly[1]}"
+                          f" (+{anomaly[1] - anomaly[0]:.0f}) with no task_complete since last quota write source=self")
+                if fields:
+                    audit(conn, me["name"], "member_quota_report",
+                          f"{me['name']}: " + ", ".join(fields) + " source=self")
+                conn.commit()
+            if (blocked_drop is not None or blocked_reset is not None) and not fields:
+                why = []
+                if blocked_drop is not None:
+                    why.append(f"week_used_pct drop {blocked_drop[0]}->{blocked_drop[1]}"
+                               " within the same cycle")
+                if blocked_reset is not None:
+                    why.append(f"week_reset_at move-back {blocked_reset[0]}->{blocked_reset[1]}")
+                raise ValueError("quota report blocked: " + "; ".join(why))
+            out = dict(conn.execute(
+                "SELECT name, quota_week_used_pct, quota_week_reset_at,"
+                " quota_extra_left, quota_updated_at, quota_source"
+                " FROM members WHERE id=?",
+                (me["id"],)).fetchone())
+            blocked_fields = []
+            if blocked_drop is not None:
+                blocked_fields.append("week_used_pct")
+            if blocked_reset is not None:
+                blocked_fields.append("week_reset_at")
+            if blocked_fields:
+                out["blocked_fields"] = blocked_fields
+            return out
+        finally:
+            conn.close()
 
     @mcp.tool
     def member_login_state_set(name: str, state: str) -> dict:
@@ -2291,6 +2534,16 @@ def build_server():
             audit(conn, me["name"], "task_block", f"task {task_id}: {reason} fail_class={fc}")
             relayed_to = None
             if fc == "quota":
+                # staging48 耗尽标记：block quota 是执行体侧的硬信号，自报
+                # 额度可能偏乐观——直接把本人周已用置 100 并刷新时间戳，
+                # 压过此前自报值，使后续接力候选判定（<90%）与未认领巡检
+                # 条件 B 都按耗尽处理。调度员 member_quota_set、本人的后续
+                # 如实自报均可覆盖纠偏；标记动作单独留审计。
+                conn.execute(
+                    "UPDATE members SET quota_week_used_pct=100, quota_updated_at=?,"
+                    " quota_source='fact' WHERE id=?", (now, me["id"]))
+                audit(conn, me["name"], "member_quota_exhausted",
+                      f"task {task_id} via task_block quota source=fact")
                 # 自动接力（§14.3）：额度耗尽先试着转给有额度、在线的成员，
                 # 没人可接才留在 blocked 等调度员。记账段走 _lock 并复检
                 # 任务仍是本人刚 block 的状态。
@@ -2306,7 +2559,8 @@ def build_server():
             return {"task_id": task_id,
                     "status": "claimed" if relayed_to else "blocked",
                     "fail_class": fc, "next_claim_at": nca,
-                    "relayed_to": relayed_to}
+                    "relayed_to": relayed_to,
+                    "quota_marked_exhausted": fc == "quota"}
         finally:
             conn.close()
 
@@ -2382,7 +2636,7 @@ def build_server():
         rows = conn.execute(
             "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
             " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at,"
-            " provider, login_state"
+            " quota_source, provider, login_state"
             " FROM members WHERE removed_at IS NULL ORDER BY id"
         ).fetchall()
         wk = _week_start_cst()
