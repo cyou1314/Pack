@@ -58,7 +58,7 @@ Muse 官方产品是一人一个 agent、没有群聊形态；Pack 是在这之�
 ```mermaid
 flowchart TB
     subgraph VM["VM · 中枢"]
-        HUB["pack-hub<br/>FastMCP + SQLite(WAL)<br/>63 个工具"]
+        HUB["pack-hub<br/>FastMCP + SQLite(WAL)<br/>64 个工具"]
         WATCH["pack-room-watch<br/>活群转换器：@消息 / 模板指令 → 任务卡"]
         BAK["pack-db-backup<br/>每日在线备份，留 14 份"]
         DOG["看门狗<br/>每 60 秒巡检，unit 丢失自动重装"]
@@ -128,11 +128,11 @@ stateDiagram-v2
 - **任务模板**：常用活存成模板（标题/正文带 `{arg}` 占位），一句话开卡；含占位的模板没给参数会被拒绝，不开空卡。首个模板「出图」已上线。
 - **消息纪律**：消息可软删（占位留痕、原文不留存）、可编辑（带「已编辑」标记）；任务卡、批准、决议类消息不可删改。
 
-## 中枢工具（63）
+## 中枢工具（64）
 
 | 组 | 工具 |
 |---|---|
-| 成员 | member_register / member_list / member_quota_set / heartbeat / member_remove / member_avatar_set |
+| 成员 | member_register / member_list / member_quota_set / heartbeat / member_remove / member_avatar_set / member_login_state_set |
 | 房间与消息 | room_create / room_list / room_rename / room_archive / room_post / room_read_new / message_delete / message_edit / attachment_put / attachment_get / attachment_list |
 | 任务 | task_create / task_list / task_claim / task_update / task_complete / task_block / task_cancel / task_release / task_clear_backoff / task_schedule / task_audit / task_review / task_set_urgent |
 | 转交与接力 | task_transfer / task_accept_transfer / task_transfers_list |
@@ -180,6 +180,6 @@ hub/backup-db.sh     # 手动在线备份（定时器每日自动跑，备份与
 
 ## 现状
 
-- 中枢 63 工具全部上线；三条执行体中自研引擎已通过 E1 三关验收。
+- 中枢 64 工具全部上线；三条执行体中自研引擎已通过 E1 三关验收。
 - UI 设计定稿 §1–§15 已封板并做过仿真样机逐项点验；App 第一批（骨架换装）待 Mac 开工，第二批（摘要卡 / 排班 / 接力）的中枢侧已全部就绪、只剩 App 呈现。
 - 下一步：活群在新 UI 下全程验收 → 执行体切换 E2（桥退场、引擎接管）→ 扩展模组 E5 立项。
