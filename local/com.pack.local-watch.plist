@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.pack.local-watch</string>
+<key>ProgramArguments</key><array><string>__PYTHON__</string><string>__HUB__/room_watch.py</string></array>
+<key>WorkingDirectory</key><string>__HUB__</string>
+<key>EnvironmentVariables</key><dict><key>PACK_WATCH_URL</key><string>http://127.0.0.1:8794/mcp</string><key>PYTHONUNBUFFERED</key><string>1</string><key>NO_PROXY</key><string>127.0.0.1,localhost,::1</string><key>no_proxy</key><string>127.0.0.1,localhost,::1</string></dict>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer>
+<key>StandardOutPath</key><string>__HUB__/watch-stdout.log</string><key>StandardErrorPath</key><string>__HUB__/watch-error.log</string>
+</dict></plist>

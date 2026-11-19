@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.pack.local-backup</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>__HUB__/backup-db.sh</string></array>
+<key>WorkingDirectory</key><string>__HUB__</string>
+<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>15</integer></dict>
+<key>Umask</key><integer>63</integer>
+<key>StandardOutPath</key><string>__HUB__/backup-stdout.log</string><key>StandardErrorPath</key><string>__HUB__/backup-error.log</string>
+</dict></plist>

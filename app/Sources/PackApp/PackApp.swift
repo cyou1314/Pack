@@ -445,7 +445,7 @@ final class AppState: ObservableObject {
               let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else {
             return fail("地址格式无效，请使用不带凭证或查询参数的 HTTP(S) 地址。")
         }
-        let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pack/config.json")
+        let path = PackConfig.configurationURL
         do {
             let loaded = PackConfig.load()
             credentialStatus = loaded.credentialStatus
@@ -487,6 +487,9 @@ final class AppState: ObservableObject {
 
     private func followPublishedHubURL(rebuildOnFailure: Bool = false) async -> Bool {
         guard !discoveryInProgress, rebuildOnFailure || !manualHubURLSaved else { return false }
+        if let host = URLComponents(string: storedHubURL)?.host?.lowercased(), ["127.0.0.1", "localhost", "::1", "[::1]"].contains(host) {
+            return rebuildOnFailure && rebuildHubClients()
+        }
         let now = ProcessInfo.processInfo.systemUptime
         if let last = lastHubDiscoveryUptime, now - last < hubDiscoveryInterval { return false }
         lastHubDiscoveryUptime = now

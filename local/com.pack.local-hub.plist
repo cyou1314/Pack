@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.pack.local-hub</string>
+<key>ProgramArguments</key><array><string>__PYTHON__</string><string>__HUB__/hub.py</string><string>serve</string></array>
+<key>WorkingDirectory</key><string>__HUB__</string>
+<key>EnvironmentVariables</key><dict><key>PACK_HUB_HOST</key><string>127.0.0.1</string><key>PACK_HUB_PORT</key><string>8794</string><key>PYTHONUNBUFFERED</key><string>1</string></dict>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer>
+<key>StandardOutPath</key><string>__HUB__/hub.log</string><key>StandardErrorPath</key><string>__HUB__/hub-error.log</string>
+</dict></plist>

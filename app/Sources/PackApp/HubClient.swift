@@ -11,9 +11,15 @@ struct PackConfig {
         let credentialStatus: String
     }
 
+    static var configurationURL: URL {
+        if let override = ProcessInfo.processInfo.environment["PACK_CONFIG_PATH"], override.hasPrefix("/") {
+            return URL(fileURLWithPath: override)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pack/config.json")
+    }
+
     static func load() -> LoadResult {
-        let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pack/config.json")
-        return load(path: path, service: Bundle.main.bundleIdentifier ?? "com.cyou.pack")
+        return load(path: configurationURL, service: Bundle.main.bundleIdentifier ?? "com.cyou.pack")
     }
 
     static func load(path: URL, service: String) -> LoadResult {
