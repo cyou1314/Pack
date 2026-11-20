@@ -3860,7 +3860,13 @@ def build_server():
         staging49：每行新增 room（所属房间名，JOIN rooms）；可选参数 room
         给了则按房间名过滤（房间名不存在 → 空列表不报错，与 status 过滤
         口径一致）。room 参数追加在签名末尾、无参调用行为与旧版完全一致。
-        staging50：status 支持逗号分隔多状态（IN 查询），单状态行为不变。"""
+        staging50：status 支持逗号分隔多状态（IN 查询），单状态行为不变。
+        staging54：每行新增 queue_ahead（队列显性化·显示部分）：按指派人
+        分组（assignee 为 NULL 的未指派池单独成组），组内只计
+        open/claimed/working、按 urgent DESC, id ASC 排序（与本列表口径
+        一致），值为排在该任务前面的同组任务数（队首 0）；review 与终结
+        状态不在队列里，值为 null。全量活跃集一次查询取回内存算名次，
+        本页的过滤/分页不影响位次口径（第二页仍按全队列算）。"""
         me = authenticate()
         require(me)
         conn = db()
@@ -3902,10 +3908,27 @@ def build_server():
         q += " ORDER BY t.urgent DESC, t.id ASC LIMIT 100 OFFSET ?"
         args.append(offset)
         rows = conn.execute(q, args).fetchall()
+        # staging54：队列名次一次查询取全量活跃任务在内存里算（防 N+1）：
+        # 按 assignee 原值分组（NULL = 未指派池），组内顺序与上方排序
+        # 口径逐字一致（urgent DESC, id ASC），逐个计数即 queue_ahead。
+        act = conn.execute(
+            "SELECT id, assignee FROM tasks"
+            " WHERE status IN ('open','claimed','working')"
+            " ORDER BY urgent DESC, id ASC").fetchall()
+        ahead = {}
+        seen = {}
+        for a in act:
+            g = a["assignee"]
+            ahead[a["id"]] = seen.get(g, 0)
+            seen[g] = seen.get(g, 0) + 1
         conn.close()
         out = []
         for x in rows:
             d = dict(x)
+            if d["status"] in ("open", "claimed", "working"):
+                d["queue_ahead"] = ahead.get(d["id"])
+            else:
+                d["queue_ahead"] = None
             raw_env = d.get("envelope")
             if raw_env:
                 try:
