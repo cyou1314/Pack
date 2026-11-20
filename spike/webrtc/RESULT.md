@@ -41,3 +41,26 @@ aiortc peer 都能跑起来，但 ICE 停在 checking、DataChannel 未建立。
 
 信令通道本身（房间消息传 SDP）验证可用，若将来立项，信令可直接
 复用中枢（专用工具/房间），不需要新基础设施。
+
+## 附记：续诊与封存（2026-11-20 22:0x–22:2x）
+
+群主令继续，先经 Gemini 诊断、再实测裁定：
+
+- **Gemini 诊断**：未通符合预期；VM 拿不到 srflx 的原因排序第一位
+  即「云侧/宿主机禁公网 UDP 出站」；Mac 侧正解为按进程
+  PROCESS-PATH 直连（只放行 STUN 域名不够，ICE 打洞包仍会被
+  TUN 拐进代理）；并给出止损清单——VM 侧 UDP 探测三家 STUN
+  全灭即封存 WebRTC 线、改走 VPS 固定隧道方案；且明确若 VM
+  无 srflx 则纯 P2P 无戏，TURN-over-TLS 需要公网 VPS，有 VPS
+  不如直接 frp/autossh + Caddy 做固定入口。
+- **调度员实测（比止损线更干脆）**：VM 上 UDP 的 `sendto` 直接
+  被拒——PermissionError（Errno 1），STUN 3478/19302 与往
+  1.1.1.1 的 UDP/53 皆然；exec shell 与 systemd 服务两种上下文
+  一致。网络形态：网卡仅 198.19.0.2/30、网关 198.19.0.1，
+  DNS 返回 198.18.150.x 假地址段。即平台层硬禁 UDP 出站，
+  不是超时、不是配置问题。
+- **裁定：WebRTC 线封存。** Mac 侧进程直连规则不再试（对端无
+  UDP，后续步骤全部无意义）。连接稳定性回到固定入口议题：
+  小服务器 + frp/autossh 或 Pinggy Pro，待群主拍板花钱。
+  若将来中枢迁到一台 UDP 可用的主机，本 spike 的脚本与信令
+  方式可直接复用重测。
