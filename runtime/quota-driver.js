@@ -4,9 +4,11 @@ async function packQuotaMain() {
  const done=x=>console.log('DRIVER-RESULT '+JSON.stringify(x));
  let page, stage='space';
  try {
-  const space=await egoOpenSpace(profileId,spaceName);stage='page';page=space.page('pack-quota');
+  const space=await egoOpenSpace(profileId,spaceName);stage='page';page=await space.newPage();
   stage='navigation';
-  await page.goto('https://muse.ai/');await page.waitForLoadState();
+  try { await page.goto('https://muse.ai/'); } catch (error) {
+   if (!String(error?.message || '').includes('navigation committed')) throw error;
+  }
   await page.waitForSelector('loc=css:[data-testid="hatch-dock-more"]',{state:'visible',timeout:30000});
   stage='capture';await page.evaluate(()=>{
    window.__packQuota=[];
@@ -17,8 +19,10 @@ async function packQuotaMain() {
    XMLHttpRequest.prototype.send=function(...args){if(this.__packQuota)this.addEventListener('load',()=>{try{add(JSON.parse(this.responseText))}catch{}});return send.apply(this,args);};
   });
   stage='settings-menu';await page.click('loc=css:[data-testid="hatch-dock-more"]');
-  await page.waitForSelector('loc=role:menuitem[name="设置"]',{state:'visible',timeout:10000});
-  await page.click('loc=role:menuitem[name="设置"]');
+  await page.waitForFunction(()=>[...document.querySelectorAll('[role="menuitem"]')].some(e=>e.getClientRects().length && [...e.querySelectorAll('span,div')].some(n=>['Settings','設定','设置'].includes((n.textContent||'').trim()))),undefined,{timeout:10000});
+  const marked=await page.evaluate(()=>{const item=[...document.querySelectorAll('[role="menuitem"]')].find(e=>e.getClientRects().length && [...e.querySelectorAll('span,div')].some(n=>['Settings','設定','设置'].includes((n.textContent||'').trim())));if(!item)return false;item.setAttribute('data-pack-quota-settings','1');return true;});
+  if(!marked)throw Error('settings menu unavailable');
+  await page.click('loc=css:[data-pack-quota-settings="1"]');
   stage='usage-load';await page.waitForFunction(()=>!!document.querySelector('[role="dialog"]') && (/(?:\d+(?:\.\d+)?\s*%\s*(?:used|已使用|已用)|已(?:使)?用\s*\d+(?:\.\d+)?\s*%)/i.test(document.querySelector('[role="dialog"]').innerText) || (window.__packQuota||[]).length>0),undefined,{timeout:20000});
   const data=await page.evaluate(()=>{
    const queue=[...(window.__packQuota||[])]; let found={};
@@ -34,5 +38,6 @@ async function packQuotaMain() {
   if(typeof data.week_used_pct!=='number')throw Error('quota unavailable');
   done({ok:true,quota:data});
  } catch {done({ok:false,error:`quota read unavailable (${stage})`});}
+ finally { if(page) try { await page.close(); } catch {} }
 }
 packQuotaMain();
