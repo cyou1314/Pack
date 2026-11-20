@@ -90,6 +90,7 @@ struct PackTask: Identifiable {
     var createdBy: String? = nil
     var reviewNote: String? = nil
     var urgent: Bool = false
+    var queueAhead: Int? = nil
 
     var isScheduled: Bool { schedAt != nil }
     var isRelayPending: Bool { status == "claimed" && leaseExpires == nil }

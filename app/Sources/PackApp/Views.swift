@@ -1203,6 +1203,12 @@ private struct BoardTaskCard: View {
             }
             Text((task.status == "open" ? (task.reviewNote ?? state.reviewNotes[task.id]) : nil).map { "打回：\($0)" } ?? (task.status == "review" ? (task.envelope?.summary ?? task.result ?? task.body) : task.body))
                 .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).lineLimit(1)
+            if let ahead = task.queueAhead {
+                Text(ahead == 0 ? "队首" : "前面还有 \(ahead) 个")
+                    .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                    .padding(.horizontal, DesignTokens.urgentHorizontal).padding(.vertical, DesignTokens.urgentVertical)
+                    .background(DesignTokens.bubbleAI, in: Capsule())
+            }
             Rectangle().fill(DesignTokens.hairline).frame(height: DesignTokens.boardLine)
             HStack(spacing: DesignTokens.boardCardGap) {
                 if let name = task.assignee {

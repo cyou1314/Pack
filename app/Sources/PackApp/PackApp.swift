@@ -269,7 +269,7 @@ final class AppState: ObservableObject {
                              nextClaimAt: optDoubleVal($0["next_claim_at"]),
                              schedAt: optDoubleVal($0["sched_at"]),
                              createdBy: optStringVal($0["created_by"]), reviewNote: optStringVal($0["review_note"]),
-                             urgent: boolVal($0["urgent"]))
+                             urgent: boolVal($0["urgent"]), queueAhead: optIntVal($0["queue_ahead"]))
                 }
                 if !roomLoading {
                     let claimed = Set(updatedTasks.compactMap { task -> String? in
