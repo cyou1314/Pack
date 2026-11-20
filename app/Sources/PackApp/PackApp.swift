@@ -62,6 +62,11 @@ final class AppState: ObservableObject {
     @Published var editAvatarBackground = "cream"
     @Published var decisionsPending: Set<Int> = []
     @Published var decisionErrors: [Int: String] = [:]
+    @Published var questionInputs: [Int: String] = [:]
+    @Published var questionSending: Set<Int> = []
+    @Published var questionErrors: [Int: String] = [:]
+    @Published var questionResponderName: String?
+    @Published var localQuestionAnswers: [Int: (author: String, body: String)] = [:]
     @Published var alwaysRuleInFlight: Set<Int> = []
     @Published var alwaysRuleErrors: [Int: String] = Dictionary(uniqueKeysWithValues:
         (UserDefaults.standard.dictionary(forKey: "pack.alwaysRuleErrors") ?? [:]).compactMap { key, value in
@@ -239,10 +244,16 @@ final class AppState: ObservableObject {
                                 attachments: (($0["attachments"] as? [[String: Any]]) ?? []).compactMap { item in
                                     guard let id = optIntVal(item["id"]), id > 0, let mime = item["mime"] as? String else { return nil }
                                     return MessageAttachment(id: id, mime: mime, size: intVal(item["size"]), filename: (item["filename"] as? String) ?? "图片")
-                                })
+                                }, replyToId: optIntVal($0["reply_to_id"]), questionPayload: QuestionPayload.parse($0["payload"]))
                 }
                 if roomLoading { messages = parsedMessages }
                 else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
+            }
+            if messages.contains(where: { $0.kind == "question" }) {
+                let answerClient = ownerClient ?? client
+                let identity = try? await answerClient.call(name: "heartbeat")
+                guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
+                questionResponderName = identity?["member"] as? String
             }
             do {
                 let arr = taskRows
@@ -485,6 +496,8 @@ final class AppState: ObservableObject {
 
     private func installHubClients(_ cfg: PackConfig) {
         clientGeneration += 1
+        questionResponderName = nil
+        localQuestionAnswers.removeAll()
         client = HubClient(cfg: cfg)
         if let token = cfg.ownerToken, !token.isEmpty {
             var ownerCfg = cfg; ownerCfg.token = token; ownerClient = HubClient(cfg: ownerCfg)
@@ -900,6 +913,40 @@ final class AppState: ObservableObject {
                   task.status == "claimed" || task.status == "working" else { return false }
             let newerRequest = messages.contains { $0.id > m.id && $0.kind == "approval_request" && $0.taskId == tid }
             return !newerRequest && approvalDecision(for: m) == nil
+        }
+    }
+
+    func questionAnswer(for question: RoomMessage) -> (author: String, body: String)? {
+        if let answer = messages.first(where: { $0.kind == "question_answer" && !$0.deleted && $0.replyToId == question.id }) {
+            return (answer.author, answer.body)
+        }
+        return localQuestionAnswers[question.id]
+    }
+
+    var questionLinksUnavailable: Bool {
+        messages.contains { $0.kind == "question_answer" && !$0.deleted && $0.replyToId == nil }
+    }
+
+    func answerQuestion(_ question: RoomMessage, body: String) {
+        guard ["owner", "dispatcher"].contains(questionResponderName ?? ""),
+              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              questionAnswer(for: question) == nil, !questionLinksUnavailable,
+              !questionSending.contains(question.id), let answerClient = ownerClient ?? client else { return }
+        let room = currentRoom
+        let author = questionResponderName ?? ""
+        questionSending.insert(question.id)
+        questionErrors[question.id] = nil
+        Task {
+            defer { questionSending.remove(question.id) }
+            do {
+                _ = try await answerClient.call(name: "room_post", args: ["room": room, "kind": "question_answer", "body": body, "reply_to_id": question.id])
+                localQuestionAnswers[question.id] = (author: author, body: body)
+                questionInputs[question.id] = nil
+                if currentRoom == room { await refresh() }
+            } catch {
+                questionErrors[question.id] = "答复未确认，请检查网络及提问状态。"
+                if currentRoom == room { await refresh() }
+            }
         }
     }
 

@@ -439,7 +439,7 @@ private struct CenterHeader: View {
 
 private struct RoomView: View {
     @ObservedObject var state: AppState
-    private var visibleMessages: [RoomMessage] { state.messages.filter { $0.kind != "task_card" && $0.kind != "report" } }
+    private var visibleMessages: [RoomMessage] { state.messages.filter { !["task_card", "report", "question_answer"].contains($0.kind) } }
     var body: some View {
         VStack(spacing: 0) {
         if !state.roomLoading && !state.messages.isEmpty, let summary = state.roomSummary {
@@ -540,7 +540,7 @@ private struct MessageOperations: View {
     @ObservedObject var state: AppState
     let message: RoomMessage
     private var usesBubble: Bool {
-        if message.kind == "system" { return false }
+        if message.kind == "system" || message.kind == "question" { return false }
         if ["approval_request", "task_card", "report"].contains(message.kind),
            let task = state.tasks.first(where: { $0.id == message.taskId }) {
             return message.kind == "report" && task.result == nil && task.envelope == nil
@@ -596,6 +596,8 @@ private struct MessageRow: View {
     var body: some View {
         if message.kind == "system" {
             Text(message.body).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).frame(maxWidth: .infinity)
+        } else if message.kind == "question" && !message.deleted {
+            QuestionCard(state: state, message: message)
         } else if message.kind == "approval_request", let t = task {
             ApprovalCard(state: state, message: message, task: t)
         } else if message.kind == "task_card", let t = task {
@@ -950,6 +952,54 @@ private struct ChatTaskDetail: View {
                 Text("\((event["action"] as? String) ?? "事件") · \((event["actor"] as? String) ?? "") · \((event["detail"] as? String) ?? "")").font(DesignTokens.fontSmall).textSelection(.enabled)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct QuestionCard: View {
+    @ObservedObject var state: AppState
+    let message: RoomMessage
+    private var input: Binding<String> {
+        Binding(get: { state.questionInputs[message.id] ?? "" }, set: { state.questionInputs[message.id] = $0 })
+    }
+    private var answer: (author: String, body: String)? { state.questionAnswer(for: message) }
+    private var canAnswer: Bool { ["owner", "dispatcher"].contains(state.questionResponderName ?? "") }
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
+            Text("提问 · \(message.taskId.map { "任务 #\($0)" } ?? "任务编号未知")")
+                .font(DesignTokens.fontTitle).foregroundStyle(DesignTokens.amber)
+            Text("提问者：\(message.author)").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            Text(message.body).font(DesignTokens.fontUI).textSelection(.enabled)
+            if let answer {
+                Text("\(answer.author) 已答复：\(answer.body)").font(DesignTokens.fontSmall).textSelection(.enabled)
+            } else if state.questionLinksUnavailable {
+                Text("答复关联暂不可用，请稍后刷新。").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            } else if let payload = message.questionPayload {
+                if canAnswer {
+                    ForEach(Array(payload.options.enumerated()), id: \.offset) { _, option in
+                        Button(option) { state.answerQuestion(message, body: option) }
+                            .buttonStyle(.bordered).disabled(state.questionSending.contains(message.id))
+                    }
+                    if payload.allowInput {
+                        HStack(spacing: DesignTokens.detailSpacing) {
+                            TextField("输入答复", text: input)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { state.answerQuestion(message, body: input.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                            Button("发送") { state.answerQuestion(message, body: input.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                                .buttonStyle(.borderedProminent).tint(DesignTokens.blue)
+                                .disabled(state.questionSending.contains(message.id) || input.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                } else {
+                    Text("等待群主或调度员答复").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                }
+            } else {
+                Text("提问选项无法读取，请稍后刷新。").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger)
+            }
+            if let error = state.questionErrors[message.id] { Text(error).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.danger) }
+        }.padding(DesignTokens.detailPadding)
+            .background(DesignTokens.approvalBackground, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.radiusCard).stroke(DesignTokens.approvalBorder, lineWidth: DesignTokens.boardLine))
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

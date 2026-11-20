@@ -37,6 +37,25 @@ struct RoomMessage: Identifiable {
     var deleted: Bool = false
     var edited: Bool = false
     var attachments: [MessageAttachment] = []
+    var replyToId: Int? = nil
+    var questionPayload: QuestionPayload? = nil
+}
+
+struct QuestionPayload {
+    let options: [String]
+    let allowInput: Bool
+
+    static func parse(_ value: Any?) -> QuestionPayload? {
+        let object: [String: Any]?
+        if let text = value as? String, let data = text.data(using: .utf8) {
+            object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        } else {
+            object = value as? [String: Any]
+        }
+        guard let object, let options = object["options"] as? [String],
+              let allowInput = object["allow_input"] as? Bool else { return nil }
+        return QuestionPayload(options: options, allowInput: allowInput)
+    }
 }
 
 /// 结构化交活信封（中枢 task_complete 的 envelope，task_list 以 JSON 文本
