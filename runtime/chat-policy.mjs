@@ -24,8 +24,11 @@ export function classifyChat(message, lastId, members, self='absent') {
   if (!Number.isSafeInteger(message.id) || message.id <= lastId || message.deleted || message.kind !== 'chat' || message.author === self || typeof message.body !== 'string') return false;
   const body = stripReplyMetadata(message.body);
   const mention = resolveMention(body, members);
-  if (message.author === 'owner') return mention.kind === 'none';
-  if (message.author === 'dispatcher') return [...body.matchAll(/(?<![A-Za-z0-9_.\-/])[@＠]([A-Za-z0-9_-]+)/g)].some(m => m[1].toLowerCase() === self.toLowerCase());
+  if (message.author === 'owner') return !/^\s*模板[:：]\s*\S/.test(body) && mention.kind === 'none';
+  if (message.author === 'dispatcher') {
+    if (/^(?:已转任务 #\d+ → @|已按模板「.*」开卡 #\d+ → @|「@.*」对上了 \d+ 个成员（)/s.test(body)) return false;
+    return [...body.matchAll(/(?<![A-Za-z0-9_.\-/])[@＠]([A-Za-z0-9_-]+)/g)].some(m => m[1].toLowerCase() === self.toLowerCase());
+  }
   return false;
 }
 export function quotaAllowsChat(member) {
