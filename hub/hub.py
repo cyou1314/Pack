@@ -1551,9 +1551,13 @@ def build_server():
             raise ValueError(f"extra_tokens_left must be >= 0: {extra_tokens_left}")
         conn = db()
         try:
-            row = conn.execute("SELECT id FROM members WHERE name=?", (member_name,)).fetchone()
+            row = conn.execute("SELECT id, removed_at FROM members WHERE name=?", (member_name,)).fetchone()
             if not row:
                 raise ValueError(f"no such member: {member_name}")
+            if row["removed_at"] is not None:
+                # staging49：已移除成员不得再被设额度（写入即污染其历史行，
+                # 且 member_list 已隐藏、App 无从发现这笔写入）
+                raise ValueError(f"member is removed: {member_name}")
             fields = _apply_quota(conn, row["id"], week_used_pct,
                                   week_reset_at, extra_tokens_left, "dispatcher")
             audit(conn, me["name"], "member_quota_set",
@@ -2162,10 +2166,15 @@ def build_server():
             raise ValueError(f"no such room: {room}")
         assignee = None
         if assignee_name:
-            a = conn.execute("SELECT id FROM members WHERE name=?", (assignee_name,)).fetchone()
+            a = conn.execute("SELECT id, removed_at FROM members WHERE name=?", (assignee_name,)).fetchone()
             if not a:
                 conn.close()
                 raise ValueError(f"no such member: {assignee_name}")
+            if a["removed_at"] is not None:
+                # staging49：已移除成员不得再被指派（member_remove 已解除其
+                # 在途指派，但按名新建卡此前不查 removed_at，能把卡挂回死人）
+                conn.close()
+                raise ValueError(f"member is removed: {assignee_name}")
             assignee = a["id"]
         now = time.time()
         cur = conn.execute(
@@ -2221,9 +2230,12 @@ def build_server():
             r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
             if not r:
                 raise ValueError(f"no such room: {room}")
-            a = conn.execute("SELECT id, role FROM members WHERE name=?", (member_name,)).fetchone()
+            a = conn.execute("SELECT id, role, removed_at FROM members WHERE name=?", (member_name,)).fetchone()
             if not a:
                 raise ValueError(f"no such member: {member_name}")
+            if a["removed_at"] is not None:
+                # staging49：已移除成员不得再被排班（同 task_create 口径）
+                raise ValueError(f"member is removed: {member_name}")
             if a["role"] != "member" or member_name == "owner":
                 raise ValueError(f"cannot schedule for {member_name}: not an AI member")
             cur = conn.execute(
@@ -2259,9 +2271,12 @@ def build_server():
         conn = db()
         try:
             if assignee:
-                a = conn.execute("SELECT id FROM members WHERE name=?", (assignee,)).fetchone()
+                a = conn.execute("SELECT id, removed_at FROM members WHERE name=?", (assignee,)).fetchone()
                 if not a:
                     raise ValueError(f"no such member: {assignee}")
+                if a["removed_at"] is not None:
+                    # staging49：已移除成员不得再设为模板默认指派
+                    raise ValueError(f"member is removed: {assignee}")
             now = _now()
             conn.execute(
                 "INSERT INTO task_templates(name,title_tpl,body_tpl,assignee,updated_at,updated_by)"
@@ -2332,8 +2347,21 @@ def build_server():
             raise ValueError(f"template '{name}' requires an arg")
         title = t["title_tpl"].replace("{arg}", arg)
         body = t["body_tpl"].replace("{arg}", arg)
+        # staging49：模板可能建于成员被移除之前，真正建卡前对生效指派再验
+        # 一次 removed_at（task_create 内部同口径兜底，此处提前拒、语义一致；
+        # 成员不存在时不在此报错，仍由 task_create 报 no such member）。
+        eff_assignee = assignee_override or t["assignee"]
+        if eff_assignee:
+            conn = db()
+            try:
+                a = conn.execute("SELECT removed_at FROM members WHERE name=?",
+                                 (eff_assignee,)).fetchone()
+            finally:
+                conn.close()
+            if a and a["removed_at"] is not None:
+                raise ValueError(f"member is removed: {eff_assignee}")
         out = task_create(room=room, title=title, body=body,
-                          assignee_name=assignee_override or t["assignee"])
+                          assignee_name=eff_assignee)
         conn = db()
         try:
             audit(conn, me["name"], "template_fire",
@@ -2629,21 +2657,26 @@ def build_server():
         且 updated_at 落在本周内的任务计数（staging38，D12：App 成员详情
         「本周已交活」的数据源；task_list 有条数上限算不出全局口径）。
         staging47 起另带 provider 与 login_state（L1 登录容器的数据源；
-        老成员两字段为空）。"""
+        老成员两字段为空）。
+        staging49：连接改走 try/finally 关闭——原实现整个函数无 conn.close()，
+        每次调用泄漏一个连接（查询异常时同样漏），本轮只补关闭、不动返回结构。"""
         me = authenticate()
         require(me)
         conn = db()
-        rows = conn.execute(
-            "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
-            " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at,"
-            " quota_source, provider, login_state"
-            " FROM members WHERE removed_at IS NULL ORDER BY id"
-        ).fetchall()
-        wk = _week_start_cst()
-        counts = {r["assignee"]: r["n"] for r in conn.execute(
-            "SELECT assignee, COUNT(*) AS n FROM tasks"
-            " WHERE status='done' AND assignee IS NOT NULL AND updated_at>=?"
-            " GROUP BY assignee", (wk,)).fetchall()}
+        try:
+            rows = conn.execute(
+                "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
+                " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at,"
+                " quota_source, provider, login_state"
+                " FROM members WHERE removed_at IS NULL ORDER BY id"
+            ).fetchall()
+            wk = _week_start_cst()
+            counts = {r["assignee"]: r["n"] for r in conn.execute(
+                "SELECT assignee, COUNT(*) AS n FROM tasks"
+                " WHERE status='done' AND assignee IS NOT NULL AND updated_at>=?"
+                " GROUP BY assignee", (wk,)).fetchall()}
+        finally:
+            conn.close()
         out = []
         for r in rows:
             d = dict(r)
@@ -2656,23 +2689,28 @@ def build_server():
         return {"members": out}
 
     @mcp.tool
-    def task_list(status: str = "", assignee_name: str = "", offset: int = 0) -> dict:
+    def task_list(status: str = "", assignee_name: str = "", offset: int = 0,
+                  room: str = "") -> dict:
         """列任务（可按状态/被指派人过滤）。运行时靠它找指派给自己成员的活。
         每行带 fail_class（最近失败类别）、next_claim_at（下次可认领时间，
         epoch 秒）与 backoff_remaining_sec（退避剩余秒数，0=可认领），
         供看板展示与调度员人工干预（task_clear_backoff）。
         另带 created_by（创建者成员名，供 App「我派的」筛选）与 review_note
         （最近一次验收意见：通过备注或打回理由，供跨端展示）。
-        排序：加急（urgent）恒置顶，其余按 id 升序（定稿 §15.3）。"""
+        排序：加急（urgent）恒置顶，其余按 id 升序（定稿 §15.3）。
+        staging49：每行新增 room（所属房间名，JOIN rooms）；可选参数 room
+        给了则按房间名过滤（房间名不存在 → 空列表不报错，与 status 过滤
+        口径一致）。room 参数追加在签名末尾、无参调用行为与旧版完全一致。"""
         me = authenticate()
         require(me)
         conn = db()
         q = """SELECT t.id, t.title, t.body, t.status, mb.name AS assignee, t.attempts,
                       t.result, t.envelope, t.lease_expires, t.updated_at,
                       t.fail_class, t.next_claim_at, t.sched_at, t.urgent,
-                      cr.name AS created_by, t.review_note
+                      cr.name AS created_by, t.review_note, rm.name AS room
                FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee
-               LEFT JOIN members cr ON cr.id=t.created_by WHERE 1=1"""
+               LEFT JOIN members cr ON cr.id=t.created_by
+               JOIN rooms rm ON rm.id=t.room_id WHERE 1=1"""
         args = []
         if status:
             q += " AND t.status=?"
@@ -2680,6 +2718,9 @@ def build_server():
         if assignee_name:
             q += " AND mb.name=?"
             args.append(assignee_name)
+        if room:
+            q += " AND rm.name=?"
+            args.append(room)
         # staging42 / P2：排序口径不变（urgent 置顶 + id 升序，定稿 §15.3），
         # 只加 offset 分页参数，调用方（如 App 任务板）可翻页拉全量
         offset = max(0, int(offset))
@@ -2840,6 +2881,10 @@ def build_server():
                     "SELECT * FROM members WHERE name=?", (to_member,)).fetchone()
                 if not target:
                     raise ValueError(f"no such member: {to_member}")
+                if target["removed_at"] is not None:
+                    # staging49：已移除成员不得再作转交目标（其 token 已作废，
+                    # 永远无法 task_accept_transfer，卡只会挂到 pending 过期）
+                    raise ValueError(f"member is removed: {to_member}")
                 if target["role"] != "member":
                     raise ValueError(
                         f"transfer target must be a member (got {to_member} "
@@ -3648,6 +3693,11 @@ def build_server():
                              (member_name,)).fetchone()
             if not m:
                 raise ValueError(f"no such member: {member_name}")
+            if m["removed_at"] is not None:
+                # staging49：已移除成员不得再被派/收技能（assign 与 unassign
+                # 共用本函数，一并拒绝；member_remove 时其指派行已整表删除，
+                # 对已移除者 unassign 本就无行可动，拒绝不丢任何既有能力）
+                raise ValueError(f"member is removed: {member_name}")
             existing = conn.execute(
                 "SELECT enabled FROM member_skills WHERE member_id=? AND skill_id=?",
                 (m["id"], s["id"])).fetchone()
