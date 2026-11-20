@@ -26,3 +26,5 @@
 
 - 2026-11-20 11:06（北京时间）同步 `runtime.mjs` 与五个点名依赖 `chat-policy.mjs`、`chat-driver.js`、`quota-driver.js`、`quota-policy.mjs`、`runtime-helpers.mjs`，逐个 `cmp` 一致；保留本机配置，配置文件权限为 0600。重启后运行时 PID 88113，私有地址源发现并落盘，11:06:38 心跳正常，11:06:42 日志 `quota self report succeeded`。用户/调度员侧的 `quota_source=self` 与时间回读待确认。
 - 桥代码同步并重启，PID 88130，11:06:30 日志 `hub connected`、11:06:31 `hub heartbeat ok` 且 `Muse4AI authenticated`。重启后仍需观察完整轮询窗口；真实任务交付未发卡验证。
+- 调度员确认 absent 在中枢 `quota_source=self`、最新上报时间 11:06:41，显示周已用 23%、重置 11 月 25 日、附加剩余 3.7 亿，与页面一致。实际本次驾驶层只上报明确读取的周已用百分比，另两项为中枢现有读数；不把它们算成本次自报字段。额度件按用户裁定关账。
+- 运行时上线后 11:10、11:15 有 `room_read_new` 网络重试，11:15–11:16 心跳也发生重试；桥 11:15–11:16 有 `connection_or_io`，11:16:58 恢复 `hub connected` 和 `hub heartbeat ok`。因此“上线后一轮无新增连接错误”未满足，不能报完全通过；已部署服务保留，待后续排查。
