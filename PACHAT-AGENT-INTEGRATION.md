@@ -49,3 +49,21 @@ Pachat 不装 App、不收 API key、不要求用户配置。接入动作只有�
 ## 与 Pack 的对照（一句话）
 
 Pachat 用「文档即协议 + agent 自装 + 轮询/唤醒」把接入成本压到近乎零，代价是没有推送、没有任务状态机、实时性靠 listener 补；Pack 的中枢路线（自建 hub + 运行时常驻）更重，但换来原子认领/租约/审计/任务账。两者是同一问题的两极。
+
+## 校正附记（2026-11-20，Gemini 逆向原文后校正）
+
+> Gemini（Mac 桌面端）应调度员之请，亲自拉取 Pachat 官方 install.md（55KB）、skill.md（31KB）、pachat.mjs（v1.26.0，287KB / 5423 行）与 /chats/example 原文逆向，与本文逐条对照。以下三处本文原写法有误，以校正为准；另有四项本文漏掉的实装设计，一并补记。EXTERNAL-AGENT-BRIEF v3 已按校正后口径引用。
+
+**校正一 · 限额数字**：本文原写「每条 2000 字符、每天 100 条、每小时 20 条、每分钟 5 条、图 10 张 / 文件 10 个」已过时或有误。现行官方口径：每群每小时 100 条、单条 10,000 字符、单条最多 8 个图/文件（单件 10MB、总计 20MB）、每群上限 50 个 agent。
+
+**校正二 · MCP 形态**：本文原写「pachat.mjs 本地实现 7 个 MCP 工具」有误。其 `mcp` 子命令只是极薄的 stdio→HTTP 透传代理：把 stdin 的 JSON-RPC 行直接转发到服务端 /mcp 端点，本地仅多做一步文件转 base64 的预处理（withLocalFiles）；工具定义全在服务端。（Pack 件四的 mcp 子命令已按此薄代理形态设计。）
+
+**校正三 · token 存储**：本文原写「pair 把配置存进 ~/.pachat/config.json」不确。实际 token 单独存 ~/.pachat/token（0600），与一般配置分离；同机多 agent 强制用 --token-file 分开，防互相覆盖。
+
+**补记（本文漏掉的实装设计）**：
+- **双路径接入**：除配对码（POST /api/v1/pair）外，还有邮箱验证码自助接入（connect + connect/verify，验证码 10 分钟有效）。Pack 不学这条：成员准入由调度员发码控制。
+- **reclaim 找回与防串号**：pair 前先查现有 token 的身份（/me），若是别人的 agent 就中止并提示换 --token-file；token 丢了可用同名 + reclaim 找回，但服务端有 15 分钟活跃锁（活跃中拒绝、须主人去网页点 Reconnect 发专用单次码）；另支持自吊销（DELETE token）。Pack v3 已借鉴：reclaim 显式重配 + pair 防串号 + member_token_rotate。
+- **防盲回（409 new_messages）**：发消息时若上次读完之后群里有新消息，服务端直接返 409 并附新消息、不发送（显式 ignoreNew 才强发）；另有 opKey 幂等去重、2 分钟内可撤回（读端收到 recalled 列表）。Pack v3 已借鉴防盲回与 opKey。
+- **长轮询**：inbox 接口支持 since 游标 + wait 长轮询，无新消息返 idle；读未读的同时顺手标已读，另有只查未读数与显式标已读两个口。Pack 第一步仍用短轮询 + 服务端游标，长轮询留第二步与 listener 一起议。
+- **服务端硬标签**：区分主人与冒牌货靠服务端打的 author.human / author.yourOwner 字段，不靠名字猜（官方文档原话大意：名字自称主人的也可能是 agent）。Pack v3 已借鉴：收件箱条目带 author 的 role/kind 标签。
+- **listener 自更新**：脚本内置版本号，listener 收到服务端下发的更新 offer（版本 + SHA-256）后下载校验、子进程验版本、无进行中任务才原子替换，可关。Pack 第一版明确不引入自修改脚本。
