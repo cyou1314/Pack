@@ -59,7 +59,7 @@ async function handoff(request, deps) {
   if (existing && (existing.state === 'busy' || deps.coord.leases?.has(existing.id) || deps.coord.pageRunsOn(existing.id) > 0)) throw Error('account is busy');
   const proxy = existing ? deps.repo.getProxy(existing.proxyId) : deps.repo.listProxies().find(p => p.health === 'healthy');
   if (!proxy || proxy.health !== 'healthy') throw Error('no healthy proxy');
-  let bytes;
+  let bytes, originalError;
   try {
     const result = await run('/usr/bin/security', ['find-generic-password', '-s', SERVICE, '-a', request.ticket, '-w'], { encoding: 'buffer', timeout: 90000, maxBuffer: 1024 * 1024 });
     bytes = result.stdout;
@@ -90,17 +90,21 @@ async function handoff(request, deps) {
     }
     const checked = await deps.coord.checkSession(account.id, true, 'l2-handoff');
     return { ok: true, account: account.alias, state: checked.state, encrypted: Number(counts.encrypted), check: checked.state === 'ready' ? 'ready' : 'not_ready' };
-  } finally {
+  } catch (error) { originalError = error; throw error; }
+  finally {
     bytes?.fill(0);
     try { await run('/usr/bin/security', ['delete-generic-password', '-s', SERVICE, '-a', request.ticket], { timeout: 10000, maxBuffer: 16384 }); }
-    catch { throw Error('temporary keychain cleanup failed'); }
+    catch {
+      if (!originalError) throw Error('temporary keychain cleanup failed');
+      console.error('[l2-handoff] temporary keychain cleanup failed after original error');
+    }
   }
 }
 
 async function memberOperation(request, deps) {
   const member = typeof request.member === 'string' ? request.member.trim() : '';
   if (!member || member.length > 32) throw Error('invalid member');
-  const account = deps.repo.listAccounts().find(a => a.alias === member);
+  const account = deps.repo.listAccounts().find(a => a.alias.toLocaleLowerCase('vi') === member.toLocaleLowerCase('vi'));
   if (request.op === 'status') return { ok: true, state: account ? account.state : 'not_found' };
   if (request.op !== 'remove' || member.toLowerCase() === 'absent') throw Error('invalid operation');
   if (!account) return { ok: true, state: 'not_found' };
@@ -136,7 +140,11 @@ async function startHandoff(deps) {
       const end = request.indexOf(10); if (end < 0) return;
       handled = true;
       let parsed; try { parsed = JSON.parse(request.subarray(0, end).toString('utf8')); } catch { socket.end('{"ok":false,"error":"invalid request"}\n'); return; }
-      (parsed.op ? memberOperation(parsed, deps) : handoff(parsed, deps)).then(result => socket.end(JSON.stringify(result) + '\n')).catch(() => socket.end('{"ok":false,"error":"会话交接或检查失败，请检查引擎及钥匙串授权"}\n'));
+      (parsed.op ? memberOperation(parsed, deps) : handoff(parsed, deps)).then(result => socket.end(JSON.stringify(result) + '\n')).catch(error => {
+        const safe = /^(invalid request|invalid member|invalid operation|account busy|account is busy|account changed|account removal incomplete|partition removal incomplete|no healthy proxy|cookie encryption is not enabled|cookie verification failed|cookie encryption verification failed|temporary keychain cleanup failed)$/.test(error?.message || '') ? error.message : 'internal or keychain error';
+        console.error(`[l2-handoff] request failed: ${safe}`);
+        socket.end('{"ok":false,"error":"会话交接或检查失败，请检查引擎及钥匙串授权"}\n');
+      });
     });
     socket.on('error', () => {});
   });

@@ -31,12 +31,13 @@ test('socket rejects unencrypted engine before any account or keychain use', asy
   stop();
 });
 
-test('status is read only, exact and missing is distinct from expired', async () => {
+test('status is read only, case insensitive and missing is distinct from expired', async () => {
   const { memberOperation } = require('./engine.cjs');
   let removed = false;
   const deps = { repo: { listAccounts: () => [{ id: 'one', alias: 'alice', state: 'needs_login' }] }, coord: { removeAccount: () => { removed = true; } } };
   assert.deepEqual(await memberOperation({ op: 'status', member: 'alice' }, deps), { ok: true, state: 'needs_login' });
-  assert.deepEqual(await memberOperation({ op: 'status', member: 'Alice' }, deps), { ok: true, state: 'not_found' });
+  assert.deepEqual(await memberOperation({ op: 'status', member: 'Alice' }, deps), { ok: true, state: 'needs_login' });
+  assert.deepEqual(await memberOperation({ op: 'status', member: 'missing' }, deps), { ok: true, state: 'not_found' });
   assert.equal(removed, false);
   await assert.rejects(memberOperation({ op: 'remove', member: 'absent' }, deps));
 });
