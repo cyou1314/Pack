@@ -1387,9 +1387,10 @@ EXT_EGRESS_PER_MIN = 60          # external 调 egress_check 的频控（次/分
 UNCLAIMED_GRACE_EXTERNAL = 2700  # external 指派卡巡检宽限（30–45 分钟取 45 分钟）
 # 工具面白名单：kind=external 只能调名单内工具，名单外（含日后新增的
 # 工具）一律拒绝并写审计（external_tool_denied）。Phase A 名单 = 件二
-# 「放行 + 限条件放行」两档；收件箱三工具（inbox_*）Phase B 加入。
+# 「放行 + 限条件放行」两档；staging52 / Phase B 加入收件箱三工具。
 EXTERNAL_ALLOWED_TOOLS = frozenset({
     "heartbeat", "member_list",
+    "inbox_pull", "inbox_mark_read", "inbox_send",
     "room_list", "room_summary_get", "room_read_new", "room_post",
     "message_edit", "message_delete",
     "attachment_put", "attachment_list", "attachment_get",
@@ -1463,6 +1464,166 @@ def _ext_rate_error(retry_after):
     return ValueError(json.dumps(
         {"error": "rate_limited", "retry_after": retry_after},
         ensure_ascii=False))
+
+
+# ---------------- 收件箱（staging52 / EXTERNAL-AGENT Phase B 件三） ----------------
+# 脚本版本门：pack-agent/<版本> 低于此版本的中枢明确拒绝（agent_outdated）。
+MIN_AGENT_VERSION = "1.0.0"
+INBOX_PULL_LIMIT = 100            # inbox_pull 单次上限（件三口径）
+INBOX_WINDOW_SECONDS = 10 * 86400  # inbox_pull 只回最近 10 天（件三口径）
+INBOX_CHECKIN_AUDIT_GAP = 300     # check-in 间隔 <5 分钟只审计不硬拦（件三口径）
+INBOX_BLIND_REPLY_PREVIEW = 20    # 防盲回附回的新消息摘要条数上限
+
+
+def _request_user_agent():
+    """取当前 HTTP 请求的 User-Agent（脚本版本门用）。拿不到（进程内
+    直调、无 HTTP 上下文、依赖缺失）一律返回 None，调用方按降级口径
+    处理，绝不因此让工具本体失败。"""
+    try:
+        from fastmcp.server.dependencies import get_http_request
+        req = get_http_request()
+        if req is not None:
+            return req.headers.get("user-agent")
+    except Exception:
+        pass
+    return None
+
+
+def _agent_version_gate():
+    """inbox 三工具的脚本版本门（件三）：只管带 pack-agent/<版本>
+    User-Agent 的调用方——低于 MIN_AGENT_VERSION 明确报错（脚本过旧，
+    请重新下载）。UA 缺失或非 pack-agent 客户端不在门禁对象内（降级
+    放行）：版本门针对的是合规脚本的旧版本，其他客户端（App、运行时、
+    测试 harness）不带这个 UA，硬拦会误伤。返回命中的 UA（供审计）。"""
+    ua = _request_user_agent()
+    if not ua:
+        return None
+    m = re.match(r"\s*pack-agent/(\d+)\.(\d+)\.(\d+)", ua)
+    if not m:
+        return ua
+    ver = tuple(int(x) for x in m.groups())
+    minv = tuple(int(x) for x in MIN_AGENT_VERSION.split("."))
+    if ver < minv:
+        raise ValueError(json.dumps(
+            {"error": "agent_outdated",
+             "min_version": MIN_AGENT_VERSION,
+             "your_version": ".".join(m.groups()),
+             "message": "脚本过旧，请重新下载 pack-agent.mjs"},
+            ensure_ascii=False))
+    return ua
+
+
+_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.\-/])[@\uFF20]([A-Za-z0-9_-]+)")
+
+
+def _mentions_member(body, my_name, all_names):
+    """消息是否 @ 了 my_name：与 room_watch.resolve_mention 同口径的
+    token 扫描（@ 前须为行首或非 [A-Za-z0-9_.-/] 字符；精确匹配优先、
+    唯一前缀匹配兜底、歧义 token 不算命中）。与 watcher 的差别仅在：
+    watcher 取第一个命中做任务指派，这里扫全部 token 只回答「有没有
+    @ 到我」这个布尔问题。"""
+    if not body:
+        return False
+    lowered = {n.lower(): n for n in all_names}
+    for tm in _MENTION_RE.finditer(body):
+        token = tm.group(1)
+        low = token.lower()
+        if low in lowered:
+            if lowered[low] == my_name:
+                return True
+            continue
+        cands = [n for n in all_names if n.lower().startswith(low)]
+        if len(cands) == 1 and cands[0] == my_name:
+            return True
+    return False
+
+
+def _inbox_resolve_room(me, room):
+    """收件箱三工具的房间解析：external 恒用绑定房（显式传了别的房
+    直接拒绝）；既有成员无绑定房，须显式给 room。返回 (room_id, name)。"""
+    conn = db()
+    try:
+        if _is_external(me):
+            r = conn.execute("SELECT id, name FROM rooms WHERE id=?",
+                             (me["bound_room_id"],)).fetchone()
+            if not r:
+                raise ValueError("bound room not found")
+            if room and room != r["name"]:
+                raise ValueError(
+                    "forbidden: external members may only access their bound room")
+            return r["id"], r["name"]
+        if not room:
+            raise ValueError("room is required for inbox tools")
+        r = conn.execute("SELECT id, name FROM rooms WHERE name=?",
+                         (room,)).fetchone()
+        if not r:
+            raise ValueError(f"no such room: {room}")
+        return r["id"], r["name"]
+    finally:
+        conn.close()
+
+
+def _read_cursor(conn, member_id, room_id, floor):
+    """读服务端已读游标（member_read_cursors）；无行按 floor 起步，
+    且永不低于 floor（external 的 floor = joined_msg_id 水位）。"""
+    row = conn.execute(
+        "SELECT cursor_id FROM member_read_cursors"
+        " WHERE member_id=? AND room_id=?",
+        (member_id, room_id)).fetchone()
+    if row is None:
+        return floor
+    return max(row["cursor_id"], floor)
+
+
+def _inbox_items(conn, rows, me, all_names):
+    """收件箱条目格式化（inbox_pull 与 inbox_send 防盲回附回共用）：
+    每条带 author 的 role/kind 服务端标签（件三身份硬标签）、@ 本人
+    标记、所在任务卡的当前状态摘要；已删消息只回占位（同 room_read_new）。"""
+    amap = {}
+    if rows:
+        mids = [x["id"] for x in rows]
+        q = ("SELECT id, message_id, mime, size, original_name FROM attachments "
+             "WHERE message_id IN (%s) ORDER BY id" % ",".join("?" * len(mids)))
+        for a in conn.execute(q, mids).fetchall():
+            amap.setdefault(a["message_id"], []).append(
+                {"id": a["id"], "mime": a["mime"], "size": a["size"],
+                 "filename": a["original_name"]})
+    tmap = {}
+    tids = [x["task_id"] for x in rows if x["task_id"]]
+    if tids:
+        q = ("SELECT id, status, title FROM tasks WHERE id IN (%s)"
+             % ",".join("?" * len(tids)))
+        for t in conn.execute(q, tids).fetchall():
+            tmap[t["id"]] = t
+    out = []
+    for x in rows:
+        deleted = bool(x["deleted_at"])
+        t = tmap.get(x["task_id"]) if x["task_id"] else None
+        out.append({
+            "id": x["id"], "author": x["author"],
+            "author_role": x["author_role"],
+            "author_kind": "external" if (x["author_kind"] or "") == "external"
+                           else "internal",
+            "kind": x["kind"],
+            "body": DELETED_PLACEHOLDER if deleted else x["body"],
+            "task_id": x["task_id"],
+            "task_status": t["status"] if t else None,
+            "task_title": t["title"] if t else None,
+            "reply_to_id": x["reply_to_id"],
+            "mentions_me": (not deleted) and _mentions_member(
+                x["body"], me["name"], all_names),
+            "created_at": x["created_at"],
+            "deleted": deleted, "edited": bool(x["edited_at"]),
+            "attachments": amap.get(x["id"], []),
+        })
+    return out
+
+
+_INBOX_MSG_SQL = (
+    "SELECT m.id, m.author_id, mb.name AS author, mb.role AS author_role,"
+    " mb.kind AS author_kind, m.kind, m.body, m.task_id, m.reply_to_id,"
+    " m.created_at, m.deleted_at, m.edited_at"
+    " FROM messages m JOIN members mb ON mb.id=m.author_id")
 
 
 # ---------------- MCP tools ----------------
@@ -2134,7 +2295,7 @@ def build_server():
         return {"name": name, "display_name": dn}
 
     def _room_post_impl(me, room: str, body: str, kind: str = "chat",
-                        attachment_ids: str = "") -> dict:
+                        attachment_ids: str = "", reply_to_id: int = 0) -> dict:
         """room_post 本体（身份已由 room_post 解析并传入）。完整性守卫：
         task_card 只能由 task_create 内部落库、decision 只能由
         规则引擎/审查内部落库或调度员客户端代发——成员经 room_post 伪造
@@ -2221,8 +2382,10 @@ def build_server():
                     conn.close()
                     raise _ext_rate_error(ra)
         cur = conn.execute(
-            "INSERT INTO messages(room_id,author_id,kind,body,created_at) VALUES(?,?,?,?,?)",
-            (r["id"], me["id"], kind, body, time.time()))
+            "INSERT INTO messages(room_id,author_id,kind,body,created_at,reply_to_id)"
+            " VALUES(?,?,?,?,?,?)",
+            (r["id"], me["id"], kind, body, time.time(),
+             int(reply_to_id) or None))
         mid = cur.lastrowid
         if attachment_ids:
             # 附件绑定（staging39）：与消息同事务；只能绑自己上传的、同房间、
@@ -2488,6 +2651,166 @@ def build_server():
                 "attachments": amap.get(x["id"], []),
             })
         return {"messages": out}
+
+    @mcp.tool
+    def inbox_pull(since_id: int = -1, room: str = "") -> dict:
+        """拉收件箱（staging52 / 件三）：默认拉绑定房内 id 大于服务端
+        已读游标的未读消息（最近 10 天、上限 100 条）；显式 since_id
+        可回看已读上下文。external 的下限恒受 joined_msg_id 水位硬
+        截断（游标与 since_id 都不得低于水位）。每条带 author 的
+        role/kind 服务端标签、@ 本人标记与任务卡状态摘要。本调用即
+        check-in 的一半：同时刷新 last_heartbeat；<5 分钟的重复 pull
+        只多记一笔审计、不硬拦（件三口径）。拉取本身不推进游标，
+        标已读走 inbox_mark_read。"""
+        me = authenticate()
+        require(me)
+        ua = _agent_version_gate()
+        room_id, room_name = _inbox_resolve_room(me, room)
+        now = time.time()
+        conn = db()
+        try:
+            conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?",
+                         (now, me["id"]))
+            floor = (me["joined_msg_id"] or 0) if _is_external(me) else 0
+            cursor = _read_cursor(conn, me["id"], room_id, floor)
+            if since_id is not None and int(since_id) >= 0:
+                eff = max(int(since_id), floor)
+            else:
+                eff = max(cursor, floor)
+            rows = conn.execute(
+                _INBOX_MSG_SQL + " WHERE m.room_id=? AND m.id>? AND m.created_at>=?"
+                " ORDER BY m.id ASC LIMIT ?",
+                (room_id, eff, now - INBOX_WINDOW_SECONDS,
+                 INBOX_PULL_LIMIT + 1)).fetchall()
+            has_more = len(rows) > INBOX_PULL_LIMIT
+            rows = rows[:INBOX_PULL_LIMIT]
+            all_names = [r["name"] for r in
+                         conn.execute("SELECT name FROM members").fetchall()]
+            items = _inbox_items(conn, rows, me, all_names)
+            prev = conn.execute(
+                "SELECT MAX(ts) AS t FROM audit WHERE actor=?"
+                " AND action='inbox_pull'", (me["name"],)).fetchone()["t"]
+            audit(conn, me["name"], "inbox_pull",
+                  f"room={room_name} n={len(items)} ua={ua or '-'}")
+            if prev and now - prev < INBOX_CHECKIN_AUDIT_GAP:
+                audit(conn, me["name"], "inbox_checkin_frequent",
+                      f"room={room_name} gap={int(now - prev)}s")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"room": room_name, "cursor": cursor,
+                "messages": items, "has_more": has_more}
+
+    @mcp.tool
+    def inbox_mark_read(up_to_id: int = 0, room: str = "") -> dict:
+        """标已读（staging52 / 件三）：把服务端已读游标推进到 up_to_id
+        （缺省 = 本房当前最大消息 id），只进不退；游标存
+        member_read_cursors，断线重拉不重复投递已读部分。"""
+        me = authenticate()
+        require(me)
+        _agent_version_gate()
+        room_id, room_name = _inbox_resolve_room(me, room)
+        conn = db()
+        try:
+            floor = (me["joined_msg_id"] or 0) if _is_external(me) else 0
+            cursor = _read_cursor(conn, me["id"], room_id, floor)
+            room_max = conn.execute(
+                "SELECT COALESCE(MAX(id),0) AS m FROM messages WHERE room_id=?",
+                (room_id,)).fetchone()["m"]
+            target = int(up_to_id) if up_to_id else room_max
+            new_cursor = max(cursor, min(target, room_max))
+            conn.execute(
+                "INSERT OR REPLACE INTO member_read_cursors"
+                "(member_id,room_id,cursor_id) VALUES(?,?,?)",
+                (me["id"], room_id, new_cursor))
+            audit(conn, me["name"], "inbox_mark_read",
+                  f"room={room_name} cursor={new_cursor}")
+            conn.commit()
+        finally:
+            conn.close()
+        return {"room": room_name, "cursor": new_cursor}
+
+    @mcp.tool
+    def inbox_send(body: str, reply_to_id: int = 0, attachment_ids: str = "",
+                   op_key: str = "", ignore_new: bool = False,
+                   room: str = "") -> dict:
+        """从收件箱发消息（staging52 / 件三）：发到绑定房（既有成员须
+        显式给 room），kind 恒 chat。可 reply_to_id（目标须在本房、且
+        对 external 不得低于入群水位）、可绑附件（口径同 room_post）。
+        防盲回：本房在调用方游标之后已有他人新消息时默认拒发、附回
+        新消息摘要（sent=False），ignore_new=True 才强发。op_key 幂等：
+        同 (member, op_key) 重发回原 message_id、不重复落库。落库走
+        _room_post_impl，与 room_post 共用房间绑定/kind/频控/附件绑定
+        口径（external 的发消息三窗口限流同样计入本路径）。全程在
+        _lock 内，保证「幂等查 → 防盲回查 → 落库 → 记 op_key」串行。"""
+        me = authenticate()
+        require(me)
+        _agent_version_gate()
+        with _lock:
+            return _inbox_send_impl(me, body, reply_to_id, attachment_ids,
+                                    op_key, ignore_new, room)
+
+    def _inbox_send_impl(me, body, reply_to_id, attachment_ids, op_key,
+                         ignore_new, room):
+        room_id, room_name = _inbox_resolve_room(me, room)
+        conn = db()
+        try:
+            if op_key:
+                prev = conn.execute(
+                    "SELECT message_id FROM message_op_keys"
+                    " WHERE member_id=? AND op_key=?",
+                    (me["id"], op_key)).fetchone()
+                if prev is not None and prev["message_id"] is not None:
+                    return {"sent": True, "message_id": prev["message_id"],
+                            "deduplicated": True}
+            floor = (me["joined_msg_id"] or 0) if _is_external(me) else 0
+            cursor = _read_cursor(conn, me["id"], room_id, floor)
+            if reply_to_id:
+                t = conn.execute("SELECT id, room_id FROM messages WHERE id=?",
+                                 (int(reply_to_id),)).fetchone()
+                if not t or t["room_id"] != room_id:
+                    raise ValueError(
+                        "reply_to_id must reference a message in this room")
+                if _is_external(me) and t["id"] <= floor:
+                    raise ValueError(
+                        "reply_to_id is before your join watermark")
+            if not ignore_new:
+                total = conn.execute(
+                    "SELECT COUNT(*) AS n FROM messages"
+                    " WHERE room_id=? AND id>? AND author_id<>?",
+                    (room_id, cursor, me["id"])).fetchone()["n"]
+                if total:
+                    rows = conn.execute(
+                        _INBOX_MSG_SQL + " WHERE m.room_id=? AND m.id>?"
+                        " AND m.author_id<>? ORDER BY m.id ASC LIMIT ?",
+                        (room_id, cursor, me["id"],
+                         INBOX_BLIND_REPLY_PREVIEW)).fetchall()
+                    all_names = [r["name"] for r in conn.execute(
+                        "SELECT name FROM members").fetchall()]
+                    items = _inbox_items(conn, rows, me, all_names)
+                    audit(conn, me["name"], "inbox_send_blind_blocked",
+                          f"room={room_name} new={total}")
+                    conn.commit()
+                    return {"sent": False, "blocked": "new_messages",
+                            "new_count": total, "new_messages": items,
+                            "cursor": cursor}
+        finally:
+            conn.close()
+        out = _room_post_impl(me, room_name, body, "chat", attachment_ids,
+                              reply_to_id=int(reply_to_id or 0))
+        if op_key:
+            conn = db()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO message_op_keys"
+                    "(member_id,op_key,message_id,created_at) VALUES(?,?,?,?)",
+                    (me["id"], op_key, out["message_id"], time.time()))
+                audit(conn, me["name"], "inbox_send",
+                      f"room={room_name} msg={out['message_id']} op_key=1")
+                conn.commit()
+            finally:
+                conn.close()
+        return {"sent": True, "message_id": out["message_id"]}
 
     @mcp.tool
     def attachment_put(room: str, filename: str, mime: str, data_base64: str) -> dict:
