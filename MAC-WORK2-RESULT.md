@@ -27,3 +27,4 @@
 - App `swift build` 通过，新生产包已签名并启动（PID 88668），旧包保存在 `~/commander-work/Pack-before-mac-work.app`。安装包可执行文件的 Mach-O UUID 与构建产物一致；界面任务板待用户核对。
 - L2 助手重新打入引擎产物；与原 headless 产物的差异仅为助手三修，gateway 文件一致。原 headless 构建已备份在 `~/commander-work/l2-work3-backup/`。无活动任务时替换，启动引擎 PID 89617，health HTTP 200，L2 socket 存在，l1-check-1119 的只读状态为 cooling_down；真实交接等待用户操作。第一次 nohup shell 启动没有留下引擎进程，改用 Python 独立会话启动成功。
 - 代理：Clash Verge 用户配置 `mixed-port: 7897`、系统 TCP 表显示 `127.0.0.1:7897 LISTEN`；引擎数据库中 absent 与 l1-check-1119 所用 P01 均为 HTTP `127.0.0.1:7897`。因此两个端口一致；先前普通权限 lsof 未看到系统服务监听，不能据此认定端口未监听。未修改代理配置。
+- 调度员在新版生产 App 确认任务板四列正常、已完成 22 张与中枢一致，额度环显示 23% 和 370M。11:14 交接失败发生在 L2 新助手就绪前，不作为新版回归结论；新助手就绪后的真实交接正在等待群主操作。
