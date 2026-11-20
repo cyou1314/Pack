@@ -1,0 +1,4 @@
+.venv/
+offer.txt
+answer.txt
+__pycache__/
