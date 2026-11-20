@@ -31,6 +31,20 @@ test('socket rejects unencrypted engine before any account or keychain use', asy
   stop();
 });
 
+test('socket responds after client half-closes while asynchronous work continues', async () => {
+  let accounts = [{id:'half-close-test', alias:'temporary', state:'ready'}];
+  const deps = {sessionData:temp, repo:{listAccounts:()=>accounts}, coord:{leases:new Map(),pageRunsOn:()=>0,removeAccount:async()=>{accounts=[];return {removed:true};}}};
+  const stop = await startHandoff(deps);
+  try {
+    const response = await new Promise((resolve, reject) => {
+      const c = net.createConnection(path.join(temp, 'handoff.sock')); let text = '';
+      c.on('connect', () => c.end(JSON.stringify({op:'remove', member:'temporary'}) + '\n'));
+      c.on('data', chunk => { text += chunk; }); c.on('end', () => resolve(JSON.parse(text))); c.on('error', reject);
+    });
+    assert.deepEqual(response, {ok:true, state:'removed'});
+  } finally { stop(); }
+});
+
 test('status is read only, case insensitive and missing is distinct from expired', async () => {
   const { memberOperation } = require('./engine.cjs');
   let removed = false;

@@ -28,3 +28,10 @@
 - L2 助手重新打入引擎产物；与原 headless 产物的差异仅为助手三修，gateway 文件一致。原 headless 构建已备份在 `~/commander-work/l2-work3-backup/`。无活动任务时替换，启动引擎 PID 89617，health HTTP 200，L2 socket 存在，l1-check-1119 的只读状态为 cooling_down；真实交接等待用户操作。第一次 nohup shell 启动没有留下引擎进程，改用 Python 独立会话启动成功。
 - 代理：Clash Verge 用户配置 `mixed-port: 7897`、系统 TCP 表显示 `127.0.0.1:7897 LISTEN`；引擎数据库中 absent 与 l1-check-1119 所用 P01 均为 HTTP `127.0.0.1:7897`。因此两个端口一致；先前普通权限 lsof 未看到系统服务监听，不能据此认定端口未监听。未修改代理配置。
 - 调度员在新版生产 App 确认任务板四列正常、已完成 22 张与中枢一致，额度环显示 23% 和 370M。11:14 交接失败发生在 L2 新助手就绪前，不作为新版回归结论；新助手就绪后的真实交接正在等待群主操作。
+
+## 第三轮：L2 真实交接故障
+
+- 群主反馈 11:23 交接显示“本机引擎未响应”；11:24 再点后等待 45 秒以上没有新结果。用户要求暂停点击。
+- 只读取证：助手进程监听 `~/.pack/l2-ipc/handoff.sock`，权限 0600，health HTTP 200；通过同一 socket 的只读 status 请求正常返回。新助手日志有 `account is busy` 和 8 组 `temporary keychain cleanup failed after original error` / `request failed: internal or keychain error`，说明有请求进入过助手并发生钥匙串相关失败；这些日志不带时间戳和请求编号，无法逐一对应三次点击，也无法从现有日志确定 11:24 卡在 App 哪个步骤。
+- 隔离复现发现 App 关闭写端后，Node 默认 `allowHalfOpen=false` 会提前关闭助手回复端：延迟回复的模拟中，助手收到请求但 nc 以 0 字节退出，服务端随后发现连接已关闭。将助手设为 `allowHalfOpen=true` 后，新增实际 socket 半关闭异步回复测试通过，L2 测试共 6/6。新构建与此前构建的差异只有这个选项，已装入并启动引擎 PID 91769，health 200、只读 status 正常；真实交接尚未复验。
+- 在收到 11:24 “仍在等待”补充之前，为部署上述修复曾重启引擎；若那次调用当时仍在助手内执行，重启可能中断它。当前未见 `nc` 或 `security` 子进程；仅凭此不能断言 11:24 请求是否到达、何时结束或 UI 是否仍等待。按用户要求不再发起交接，待界面状态和后续裁定。

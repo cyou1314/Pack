@@ -129,7 +129,9 @@ async function startHandoff(deps) {
     fs.unlinkSync(SOCKET);
   }
   const active = new Set();
-  const server = net.createServer(socket => {
+  // App closes its write side after the request; keep our write side open
+  // until asynchronous Keychain and session work has produced a reply.
+  const server = net.createServer({ allowHalfOpen: true }, socket => {
     active.add(socket); socket.once('close', () => active.delete(socket));
     socket.setTimeout(240000, () => socket.destroy());
     let request = Buffer.alloc(0), handled = false;
