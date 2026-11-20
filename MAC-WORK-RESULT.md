@@ -28,3 +28,10 @@
 - 桥代码同步并重启，PID 88130，11:06:30 日志 `hub connected`、11:06:31 `hub heartbeat ok` 且 `Muse4AI authenticated`。重启后仍需观察完整轮询窗口；真实任务交付未发卡验证。
 - 调度员确认 absent 在中枢 `quota_source=self`、最新上报时间 11:06:41，显示周已用 23%、重置 11 月 25 日、附加剩余 3.7 亿，与页面一致。实际本次驾驶层只上报明确读取的周已用百分比，另两项为中枢现有读数；不把它们算成本次自报字段。额度件按用户裁定关账。
 - 运行时上线后 11:10、11:15 有 `room_read_new` 网络重试，11:15–11:16 心跳也发生重试；桥 11:15–11:16 有 `connection_or_io`，11:16:58 恢复 `hub connected` 和 `hub heartbeat ok`。因此“上线后一轮无新增连接错误”未满足，不能报完全通过；已部署服务保留，待后续排查。
+
+## 第三轮：引擎守护
+
+- 11:33 已按原 Electron 命令、工作目录和 roaming/local/端口环境建立 `com.muse.pack-headless-engine` 用户代理，KeepAlive=true、ThrottleInterval=10，stdout/stderr 继续写 `~/pack-headless-l2/engine.log`。切换前桥无活动任务、引擎 busy 为 0，原 nohup PID 91769 退出且 47821 释放后加载代理。
+- 启动 PID 92006、health 200；按派单 kill 一次后 launchd 自动拉起 PID 92042（runs=2），health 200。只读 status 显示 absent 与 l1-check-1119 都仍登记且均为 ready。
+- 桥闲置时不会主动再次查询引擎；确认没有活动任务后重启桥，11:33:45 日志出现 `hub connected`、`hub heartbeat ok` 和 `bridge up: absent; Muse4AI authenticated`，实际证明桥重连中枢并用现有 key 访问了新引擎。桥 PID 92084。
+- L2 真实交接结果仍未复验；依用户要求暂停再次点击，详见 `MAC-WORK2-RESULT.md`。
