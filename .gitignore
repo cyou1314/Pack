@@ -36,3 +36,16 @@ hub/.member_*_token
 hub-staging*/tokens.json
 hub-staging*/hub.py.regression-bak
 __pycache__/
+
+# Test-run artifacts under tests/hub-staging*/ (dirs moved under tests/;
+# the hub-staging*/ patterns above predate the move and no longer match)
+tests/hub-staging*/pack.db
+tests/hub-staging*/pack.db-*
+tests/hub-staging*/.dispatcher_token
+tests/hub-staging*/.room_watch_state.json
+tests/hub-staging*/attachments/
+tests/hub-staging*/direct_env*/
+tests/hub-staging*/mig53_*/
+tests/hub-staging*/*.log
+tests/hub-staging*/tokens.json
+tests/hub-staging*/test_fixtures.json

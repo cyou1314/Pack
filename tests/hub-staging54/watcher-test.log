@@ -1,7 +1,0 @@
-2026-11-20 19:19:48 watch start rooms=[]
-2026-11-20 19:19:48 init room pack-main last_id=177
-2026-11-20 19:19:48 init room room-b last_id=3
-2026-11-20 19:19:48 init room fx-room2 last_id=0
-2026-11-20 19:20:09 permanent reject msg 178 (room-b) for codex-a: ToolError("Error calling tool 'task_create': permanent: external member codex-a is bound to another room")
-2026-11-20 19:20:40 permanent reject msg 180 (pack-main) for codex-a: ToolError("Error calling tool 'task_create': permanent: executor-pinned tasks cannot be assigned to external member codex-a")
-2026-11-20 19:20:50 converted msg 182 (pack-main) -> task 19 for codex-a
