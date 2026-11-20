@@ -82,8 +82,8 @@ enum MemberHandoff {
         do { try process.run() } catch { throw MemberHandoffError.helper("无法启动本机引擎交接通道。") }
         do { try input.fileHandleForWriting.write(contentsOf: request) }
         catch { process.terminate(); throw MemberHandoffError.helper("本机引擎交接通道不可用。") }
-        let response = output.fileHandleForReading.readDataToEndOfFile()
         try? input.fileHandleForWriting.close()
+        let response = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0, !response.isEmpty else { throw MemberHandoffError.helper("本机引擎未响应；请检查引擎和钥匙串授权。") }
         return response
