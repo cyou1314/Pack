@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import {completeWithEnvelope, discoverPublishedHub, settleTaskMemory, loadTaskMemory, transferFromReply, transferInstructions} from './pack-contracts.mjs';
 import {classifyChat, quotaAllowsChat} from './chat-policy.mjs';
+import {listActiveTasks, approvalDecision, validHost, isHubNetworkFailure} from './runtime-helpers.mjs';
+import {parseQuotaSnapshot, quotaDue} from './quota-policy.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -17,7 +19,7 @@ import {classifyChat, quotaAllowsChat} from './chat-policy.mjs';
  *   profileId, spaceName, pollSeconds, egoBin }
  * Smoke mode: node runtime.mjs --smoke "message"  (runs driver once)
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { format } from "node:util";
@@ -43,7 +45,6 @@ let rpcId = 0;
 async function rpc(method, params) {
   const headers = {
     "Content-Type": "application/json",
-    Connection: "close",
     Accept: "application/json, text/event-stream",
     Authorization: `Bearer ${cfg.memberToken}`,
   };
@@ -57,15 +58,16 @@ async function rpc(method, params) {
       body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
     });
   } catch (e) {
-    if (e instanceof TypeError || ["AbortError", "TimeoutError"].includes(e.name)) e.hubNetworkFailure = true;
+    if (isHubNetworkFailure(e)) e.hubNetworkFailure = true;
     throw e;
   }
+  if (!res.ok) throw new Error(`hub HTTP ${res.status}`);
   const sid = res.headers.get("mcp-session-id");
   if (sid) sessionId = sid;
   let text;
   try { text = await res.text(); }
   catch (e) {
-    if (e instanceof TypeError || ["AbortError", "TimeoutError"].includes(e.name)) e.hubNetworkFailure = true;
+    if (isHubNetworkFailure(e)) e.hubNetworkFailure = true;
     throw e;
   }
   let payload = null;
@@ -135,8 +137,7 @@ async function mcpInit() {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Connection: "close",
-      Accept: "application/json, text/event-stream",
+        Accept: "application/json, text/event-stream",
       Authorization: `Bearer ${cfg.memberToken}`,
       ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
     },
@@ -148,7 +149,7 @@ function runDriver(message, signal, chat = null) {
   // ego-browser nodejs reads program source from stdin (no file argument),
   // so compose: task injection + primitives (Mac-local) + core flow.
   const primitives = readFileSync(path.join(DIR, "driver-primitives.js"), "utf8");
-  const core = readFileSync(path.join(DIR, chat ? "chat-driver.js" : "driver-core.js"), "utf8");
+  const core = readFileSync(path.join(DIR, chat?.action === "quota" ? "quota-driver.js" : chat ? "chat-driver.js" : "driver-core.js"), "utf8");
   const task = { profileId: cfg.profileId, spaceName: cfg.spaceName, message, ...(chat || {}) };
   const source = `globalThis.PACK_TASK = ${JSON.stringify(task)};\n${primitives}\n${core}`;
   return new Promise((resolve, reject) => {
@@ -176,11 +177,30 @@ let failStreak = 0;
 // The free tunnel URL rotates; the hub publishes its current URL to the
 // repo file runtime/hub-url.txt. On repeated failures, fetch it and move.
 async function discoverHubUrl() {
-  try { const url=await discoverPublishedHub({addrToken:cfg.addrToken, onSource:(domain,status)=>console.log(`hub source ${domain} HTTP ${status}`)}); if(url!==cfg.hubUrl){console.log(`hub url discovered: ${url}`);cfg.hubUrl=url;sessionId=null;} }
+  try { const url=await discoverPublishedHub({addrToken:cfg.addrToken, onSource:(domain,status)=>console.log(`hub source ${domain} HTTP ${status}`)}); if(url!==cfg.hubUrl){
+    const configPath = path.join(DIR, "config.json"), disk = JSON.parse(readFileSync(configPath, "utf8"));
+    disk.hubUrl = url;
+    const tmp = configPath + ".tmp";
+    writeFileSync(tmp, JSON.stringify(disk, null, 2) + "\n", {mode:0o600});
+    chmodSync(tmp, 0o600); renameSync(tmp, configPath);
+    console.log('hub address updated and saved');cfg.hubUrl=url;sessionId=null;
+  } }
   catch(e) { console.error('hub discovery failed:',e.message); }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let quotaLastSuccess = 0, quotaLastAttempt = 0, quotaRequested = false;
+async function collectQuota() {
+  quotaLastAttempt = Date.now();
+  try {
+    const result = await runDriver("", null, {action:"quota"});
+    const data = result.ok ? parseQuotaSnapshot(result.quota) : {};
+    if (data.week_used_pct === undefined) throw Error('quota unavailable');
+    await tool('member_quota_report', data);
+    quotaLastSuccess = Date.now(); quotaRequested = false;
+    console.log('quota self report succeeded');
+  } catch { console.error('quota self report unavailable'); }
+}
 const chatPath = path.join(DIR, "chat-state.json");
 let chatState;
 try { chatState = JSON.parse(readFileSync(chatPath, "utf8")); }
@@ -190,12 +210,12 @@ function saveChatState() {
   writeFileSync(tmp, JSON.stringify(chatState, null, 2) + "\n", {mode:0o600});
   renameSync(tmp, chatPath);
 }
-const chatSeed = "你是 absent，这是 ♾️ 群聊房间 pack-main。群主的话会原样转进来；请以 absent 身份简短自然地回话，不接任务语义，单条回复控制在 200 字内。";
+const chatSeed = `你是 ${cfg.memberName}，这是 ♾️ 群聊房间 pack-main。群主的话会原样转进来；请以 ${cfg.memberName} 身份简短自然地回话，不接任务语义，单条回复控制在 200 字内。`;
 let chatFailures = 0, chatRetryAt = 0, chatLoginRequired = false;
 async function processChat(message, members) {
   try {
     const member = members.find(m => m.name === cfg.memberName);
-    if (!quotaAllowsChat(member)) { console.log(`chat ${message.id} skipped: weekly quota >=90% or unavailable`); return; }
+    if (!quotaAllowsChat(member)) { console.log(`chat ${message.id} skipped: weekly quota >=90% or unavailable`); chatState.last_chat_id = message.id; saveChatState(); return; }
     if (!chatState.chatUrl) {
       const seed = await runDriver(chatSeed, null, {action:"seed"});
       if (!seed.ok || !seed.chatUrl) throw Error(seed.error || "chat_seed_failed");
@@ -204,17 +224,16 @@ async function processChat(message, members) {
     const result = await runDriver(message.body, null, {action:"send", chatUrl:chatState.chatUrl});
     if (!result.ok || !result.reply) throw Error(result.error || "chat_reply_empty");
     await tool("room_post", {room:"pack-main", kind:"chat", body:Array.from(result.reply).slice(0,200).join("")});
+    quotaRequested = true;
     chatFailures = 0; chatRetryAt = 0;
     console.log(`chat ${message.id} replied`);
+    chatState.last_chat_id = message.id; saveChatState();
   } catch(e) {
     if (e.message === "login_required") chatLoginRequired = true;
     chatFailures++;
     chatRetryAt = Date.now() + (chatFailures >= 3 ? 10 * 60_000 : 60_000);
     if (chatFailures >= 3) chatFailures = 0;
     console.error(`chat ${message.id} failed; backoff:`, e.message);
-  } finally {
-    chatState.last_chat_id = message.id;
-    saveChatState();
   }
 }
 async function checkChat(busy) {
@@ -262,14 +281,15 @@ async function completeSafely(task, claimToken, receipt, expectedAttempt = task.
       await completeWithEnvelope({call:tool}, { taskId: task.id, claimToken, result: receipt.reply,
         envelope: { verdict:"done", summary:Array.from(receipt.reply).slice(0,500).join(""), artifacts, self_check:{ran:true,evidence:"驾驶层返回经核对的助手回复"}, known_issues:["Muse 会话自主浏览无法逐次执行出口检查",...(receipt.memorySettlement?.issue?[receipt.memorySettlement.issue]:[])], followups:[] } });
       receipt.state = "completed"; saveReceipts();
+      quotaRequested = true;
       console.log(`task ${task.id} delivered from saved receipt`);
       return;
     } catch (e) {
       console.error(`task ${task.id} completion retry:`, e.message);
       await sleep(POLL_MS);
       try {
-        const result = await tool("task_list", {});
-        const current = result.tasks.find(t => t.id === task.id);
+        const result = await listActiveTasks(tool, {status:"open,claimed,working,review,done", assignee_name:cfg.memberName});
+        const current = result.find(t => t.id === task.id);
         const summary=Array.from(receipt.reply).slice(0,500).join("").trim();
         if (current && ["review", "done"].includes(current.status) && current.result === summary) {
           receipt.state = "completed"; saveReceipts();
@@ -291,16 +311,14 @@ async function completeSafely(task, claimToken, receipt, expectedAttempt = task.
 }
 
 const approvedWaits = new Map();
-let lastMsgId = 0;
-
 async function checkApprovals() {
-  const r = await tool("room_read_new", { room: "pack-main", since_id: lastMsgId, limit: 50 });
-  for (const m of r.messages) {
-    lastMsgId = Math.max(lastMsgId, m.id);
-    const match = m.body.match(/批准\s*任务#(\d+)/);
-    if (match && m.author === "dispatcher") {
-      const w = approvedWaits.get(Number(match[1]));
-      if (w) w.granted = true;
+  for (const [taskId, wait] of approvedWaits) {
+    if (wait.decision) continue;
+    const r = await tool("room_read_new", {room:wait.room, since_id:wait.cursor, limit:50});
+    for (const m of r.messages || []) {
+      wait.cursor = Math.max(wait.cursor, m.id);
+      const decision = approvalDecision(m.body);
+      if (m.author === "dispatcher" && decision?.taskId === taskId) wait.decision = decision.decision;
     }
   }
 }
@@ -362,20 +380,20 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
   if (transferred && !state.transferChecked) {
     let cursor=0; const relevant=[], taskRef=new RegExp('任务#'+task.id+'(?!\\d)');
     for (;;) {
-      const history=await tool("room_read_new", {room:"pack-main",since_id:cursor,limit:200});
+      const history=await tool("room_read_new", {room:task.room || "pack-main",since_id:cursor,limit:200});
       const page=history.messages || []; relevant.push(...page.filter(m=>taskRef.test(m.body || "")));
       if (page.length<200) break; cursor=page.at(-1).id;
     }
     const req=relevant.filter(m=>m.kind==="approval_request").at(-1);
-    const result=relevant.filter(m=>m.author==="dispatcher" && /^(批准|拒绝)\s*任务#/.test(m.body || "")).at(-1);
+    const result=relevant.filter(m=>m.author==="dispatcher" && approvalDecision(m.body)?.taskId===task.id).at(-1);
     let decision=(result && (!req || result.id>req.id)) ? (result.body.startsWith("批准")?"批准":"拒绝") : null;
     if (req && !decision) {
       cursor=req.id;
       for (let i=0;i<360 && !decision;i++) {
         await sleep(20000);
         try {
-          const messages=await tool("room_read_new",{room:"pack-main",since_id:cursor,limit:50});
-          for (const m of messages.messages || []) { cursor=Math.max(cursor,m.id); const x=(m.body || "").match(/(批准|拒绝)\s*任务#(\d+)/); if (m.author==="dispatcher" && x && Number(x[2])===task.id) decision=x[1]; }
+          const messages=await tool("room_read_new",{room:task.room || "pack-main",since_id:cursor,limit:50});
+          for (const m of messages.messages || []) { cursor=Math.max(cursor,m.id); const x=approvalDecision(m.body); if (m.author==="dispatcher" && x && x.taskId===task.id) decision=x.decision; }
           await tool("task_update",{task_id:task.id,claim_token:ctok,note:""});
         } catch (e) { if (!e.hubNetworkFailure) throw e; console.error("transfer approval wait hiccup (continuing):", e.message); }
       }
@@ -385,27 +403,27 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
     }
     if (req && decision==="批准") {
       const u=(req.body || "").match(/https?:\/\/[^\s<>"'，。；）】]+/i)?.[0];
-      if(u) transferApprovedHosts.add(new URL(u.replace(/[.,;!?\)\]]+$/, "")).host.toLowerCase());
+      if(u) { const host = validHost(u.replace(/[.,;!?\)\]]+$/, "")); if (host) transferApprovedHosts.add(host); }
     }
     state.transferChecked = true;
   }
   if (transferred) needsApproval = false;
   if (needsApproval && !state.approvalDone) {
-    const w = state.approvalWait ||= { granted: false };
-    if (!state.approvalRequested) await tool("room_post", {
-      room: "pack-main", kind: "approval_request",
+    const w = state.approvalWait ||= { decision: null, room: task.room || "pack-main", cursor: 0 };
+    if (!state.approvalRequested) { const request = await tool("room_post", {
+      room: w.room, kind: "approval_request",
       body: `任务#${task.id}「${task.title}」需要群主批准才能执行，请调度员确认。`,
-    });
+    }); w.cursor = request.message_id; }
     state.approvalRequested = true;
     approvedWaits.set(task.id, w);
     await tool("task_update", { task_id: task.id, claim_token: ctok, note: "已提交批准，等待中" });
-    for (let i = 0; i < 360 && !w.granted; i++) {
+    for (let i = 0; i < 360 && !w.decision; i++) {
       await sleep(20000);
       try {
         await checkApprovals();
         // Abort the wait if the dispatcher cancelled (or closed) the task.
-        const lt = await tool("task_list", {});
-        const cur = (lt.tasks || []).find((t) => t.id === task.id);
+        const lt = await listActiveTasks(tool, {assignee_name:cfg.memberName});
+        const cur = lt.find((t) => t.id === task.id);
         if (!cur || (cur.status !== "claimed" && cur.status !== "working")) {
           console.log(`task ${task.id} left active state (${cur && cur.status}); approval wait aborted`);
           approvedWaits.delete(task.id);
@@ -417,8 +435,8 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
       }
     }
     approvedWaits.delete(task.id);
-    if (!w.granted) {
-      await tool("task_block", { task_id: task.id, claim_token: ctok, reason: "等待批准超时（2 小时）" });
+    if (w.decision !== "批准") {
+      await tool("task_block", { task_id: task.id, claim_token: ctok, reason: w.decision === "拒绝" ? "批准请求被拒绝" : "等待批准超时（2 小时）" });
       return;
     }
     state.approvalDone = true;
@@ -426,21 +444,22 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
   const urls = [...new Set((`${task.title}\n${task.body}`.match(/https?:\/\/[^\s<>"'，。；）】]+/gi) || []).map(x => x.replace(/[.,;!?\)\]]+$/, "")))];
   const approvedHosts = transferApprovedHosts;
   for (const url of urls) {
-    const host = new URL(url).host.toLowerCase();
+    const host = validHost(url);
+    if (!host) continue;
     if (approvedHosts.has(host)) continue;
     const d = await tool("egress_check", {url, task_id:task.id});
     console.log(`task ${task.id} egress host=${d.host} decision=${d.decision}`);
     if (d.decision === "allow") continue;
     if (d.decision !== "ask") { await tool("task_block", {task_id:task.id, claim_token:ctok, reason:"出口检查拒绝"}); return; }
-    const req = await tool("room_post", {room:"pack-main",kind:"approval_request",body:`任务#${task.id}「${task.title}」需要群主批准：抓取 ${url}`});
+    const req = await tool("room_post", {room:task.room || "pack-main",kind:"approval_request",body:`任务#${task.id}「${task.title}」需要群主批准：抓取 ${url}`});
     let cursor = req.message_id, decision = null;
     for (let i=0; i<360 && decision===null; i++) {
       await sleep(20000);
       try {
-        const messages = await tool("room_read_new", {room:"pack-main",since_id:cursor,limit:50});
+        const messages = await tool("room_read_new", {room:task.room || "pack-main",since_id:cursor,limit:50});
         for (const m of messages.messages || []) {
-          cursor = Math.max(cursor,m.id); const x=(m.body||"").match(/(批准|拒绝)\s*任务#(\d+)/);
-          if (m.author==="dispatcher" && x && Number(x[2])===task.id) decision=x[1];
+          cursor = Math.max(cursor,m.id); const x=approvalDecision(m.body);
+          if (m.author==="dispatcher" && x && x.taskId===task.id) decision=x.decision;
         }
         await tool("task_update", {task_id:task.id,claim_token:ctok,note:""});
       } catch (e) { if (!e.hubNetworkFailure) throw e; console.error("egress approval wait hiccup (continuing):", e.message); }
@@ -519,8 +538,6 @@ async function main() {
     }
   }
   console.log(`pack-runtime up: member=${cfg.memberName} hub=${cfg.hubUrl}`);
-  const boot = await tool("room_read_new", { room: "pack-main", since_id: 0, limit: 200 });
-  for (const m of boot.messages) lastMsgId = Math.max(lastMsgId, m.id);
   if (!chatState) {
     const rooms = await tool("room_list", {});
     const room = (rooms.rooms || []).find(r => r.name === "pack-main");
@@ -535,8 +552,8 @@ async function main() {
       await tool("heartbeat");
       if (!heartbeatLogged) { console.log("hub heartbeat ok"); heartbeatLogged = true; }
       await checkApprovals();
-      const r = await tool("task_list", {});
-      for (const t of r.tasks) {
+      const r = await listActiveTasks(tool);
+      for (const t of r) {
         if (/\[(?:M4A|ENG)(?:-image)?\]/.test(t.body || "")) continue;
         if (t.status !== "open" && !(["claimed", "working"].includes(t.status) && t.assignee === cfg.memberName && t.lease_expires == null)) continue;
         // A single browser space must process at most one task at a time.
@@ -547,6 +564,10 @@ async function main() {
         processTask(t).catch((e) => console.error("task", t.id, e.message)).finally(() => busy.delete(t.id));
       }
       await checkChat(busy);
+      if (quotaDue(Date.now(), quotaLastSuccess, quotaLastAttempt, quotaRequested, busy.size > 0)) {
+        busy.add('quota');
+        collectQuota().finally(() => busy.delete('quota'));
+      }
     } catch (e) {
       console.error("poll error:", e.message);
       heartbeatLogged = false;

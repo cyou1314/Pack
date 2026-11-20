@@ -21,6 +21,8 @@ globalThis.fetch = async (url, opt={}) => {
       if (name==='task_list') result={tasks:[{id:1,status:'open',assignee:'absent',body:'ordinary'},{id:2,status:'open',assignee:'another',body:'[M4A] other'},t]};
       else if(name==='task_claim') { if(args.task_id!==t.id || claimed) throw Error('wrong claim'); claimed=true; t.status='claimed'; t.attempts=1; result={claim_token:'fake-claim'}; }
       else if(name==='task_update') { if(args.claim_token!=='fake-claim') throw Error('invalid token'); t.status='working'; }
+      else if(name==='run_start') { result={fence:1}; }
+      else if(name==='memory_read') { result={scope:args.scope,text:'',version_id:null,origin:null}; }
       else if(name==='room_post') { result={message_id:10}; }
       else if(name==='room_read_new') { approvalReads++; result={messages:[{id:10+approvalReads,author:approvalReads === 1 ? 'other' : 'dispatcher',body:'批准 任务#9876'}]}; }
       else if(name==='task_complete') {
