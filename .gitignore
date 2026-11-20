@@ -46,6 +46,7 @@ tests/hub-staging*/.room_watch_state.json
 tests/hub-staging*/attachments/
 tests/hub-staging*/direct_env*/
 tests/hub-staging*/mig53_*/
+tests/hub-staging*/mig56_*/
 tests/hub-staging*/*.log
 tests/hub-staging*/tokens.json
 tests/hub-staging*/test_fixtures.json

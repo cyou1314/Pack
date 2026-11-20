@@ -920,6 +920,13 @@ def init():
     msgcols3 = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
     if "payload" not in msgcols3:
         conn.execute("ALTER TABLE messages ADD COLUMN payload TEXT")
+    # staging56 / 搬运四 成员级访问模式预设：members.access_mode
+    # （full / workspace / readonly）。只走迁移补列、存量 NULL 不回填，
+    # 读取侧一律归一（NULL/脏值按 full，见 _member_access_mode），
+    # 老成员零行为变化。
+    mcols4 = [r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
+    if "access_mode" not in mcols4:
+        conn.execute("ALTER TABLE members ADD COLUMN access_mode TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO hub_settings(key,value) VALUES('external_enabled','1')")
     # H2 房间归档标记。
@@ -1523,6 +1530,66 @@ def _ext_check(me, tool_name):
         f"forbidden: tool {tool_name} is not available to external members")
 
 
+# ---------------- 成员级访问模式预设（staging56 / 搬运四） ----------------
+# 每个成员一个模式（members.access_mode，调度员经 member_access_mode_set
+# 设置）：full = 现行行为；workspace = 只禁出圈/系统级写工具；readonly =
+# 只许只读工具。闸门在 _gated_tool 包装器内、external 白名单闸之后
+# （_mode_check），两闸独立、任一拒即拒。模式每次调用现查（me 来自
+# authenticate 的当次 DB 查询），set 后下一次调用即生效、不缓存。
+ACCESS_MODES = ("full", "workspace", "readonly")
+# readonly 放行名单：纯读工具 + heartbeat 一个明示例外（心跳是存在性
+# 信号、非内容写，禁掉会让只读成员看起来掉线；明确备案）。名单外一律
+# 拒（含日后新增工具，默认拒，与 external 白名单同哲学）。
+# external_gate 不在名单内：它同名同工具兼有只读查询形态（enabled 不
+# 给）与写形态（给了 enabled），而模式闸按工具名判定、无法区分形态，
+# 按施工单口径整工具移出名单（且它本是调度员专属、成员进不去）。
+READONLY_ALLOWED_TOOLS = frozenset({
+    "member_list", "room_list", "room_summary_get", "room_read_new",
+    "inbox_pull", "task_list", "task_transfers_list", "task_audit",
+    "run_list", "rule_list", "egress_rule_list", "template_list",
+    "skill_list", "skill_read", "memory_read", "attachment_list",
+    "attachment_get", "desktop_status", "pair_code_list", "heartbeat",
+})
+# workspace 禁止名单：出圈/系统级写工具。其余（含任务认领、房间发言、
+# 收件箱、附件）照常。注意禁的是 egress_check 工具入口，不是 egress
+# 规则引擎本身。
+WORKSPACE_DENIED_TOOLS = frozenset({
+    "egress_check", "skill_publish", "skill_assign", "skill_unassign",
+    "skill_rollback",
+})
+
+
+def _member_access_mode(me):
+    """成员当前访问模式归一：列缺失/NULL/脏值一律按 full（老 DB、
+    老成员零行为变化）。"""
+    mode = (me or {}).get("access_mode") or "full"
+    return mode if mode in ACCESS_MODES else "full"
+
+
+def _mode_check(me, tool_name):
+    """访问模式闸门（_gated_tool 包装器在 authenticate 与 _ext_check
+    之后调用）：readonly 只许 READONLY_ALLOWED_TOOLS；workspace 只禁
+    WORKSPACE_DENIED_TOOLS；full 不拦。拒绝写审计 access_mode_denied
+    （detail 含 tool 与 mode），沿用 _ext_check 的开连接写审计范式
+    （闸门判定本身只读，唯一的写是这条审计）。"""
+    mode = _member_access_mode(me)
+    if mode == "full":
+        return
+    if mode == "readonly" and tool_name in READONLY_ALLOWED_TOOLS:
+        return
+    if mode == "workspace" and tool_name not in WORKSPACE_DENIED_TOOLS:
+        return
+    conn = db()
+    try:
+        audit(conn, me["name"], "access_mode_denied",
+              f"tool={tool_name} mode={mode}")
+        conn.commit()
+    finally:
+        conn.close()
+    raise ValueError(
+        f"forbidden: tool {tool_name} is not available in {mode} access mode")
+
+
 def _ext_msg_retry_after(conn, member_id, now):
     """external 普通发消息三窗口计数（kind<>'approval_request' 的消息，
     含 task_update 落的 report 行）：任一窗口已达上限返回该窗口的
@@ -1718,7 +1785,9 @@ def build_server():
 
     # staging51 工具面白名单闸门：把 mcp.tool 换成本地包装——每个工具
     # 入口先 authenticate 一次，kind=external 且工具不在
-    # EXTERNAL_ALLOWED_TOOLS 内即拒绝 + 审计（_ext_check）。包装对既有
+    # EXTERNAL_ALLOWED_TOOLS 内即拒绝 + 审计（_ext_check）。staging56
+    # 起在 _ext_check 之后再过访问模式闸（_mode_check），两闸独立。
+    # 包装对既有
     # 成员零行为变化（非 external 直接放行）；日后新增工具默认对
     # external 关闭，须显式评估后才进名单。functools.wraps + 显式
     # __signature__ 保证 FastMCP 的参数 schema 与原函数逐字一致；
@@ -1732,6 +1801,10 @@ def build_server():
             _me = authenticate()
             if _is_external(_me):
                 _ext_check(_me, fn.__name__)
+            if _me is not None:
+                # staging56：访问模式闸（_ext_check 之后；external 成员
+                # 先过白名单审计、再过模式审计，两闸不双写同一拒绝）。
+                _mode_check(_me, fn.__name__)
             return fn(*args, **kwargs)
         wrapper.__signature__ = inspect.signature(fn)
         return _register_tool(wrapper)
@@ -2320,6 +2393,48 @@ def build_server():
             finally:
                 conn.close()
         return {"name": name, "token": tok}
+
+    @mcp.tool
+    def member_access_mode_set(name: str, mode: str) -> dict:
+        """调度员设置成员的访问模式预设（staging56 / 搬运四）：
+        full（默认，现行行为）/ workspace（禁 egress_check 与技能
+        发布面等出圈写工具）/ readonly（只许只读工具 + heartbeat）。
+        模式由 _gated_tool 的 _mode_check 在每次调用现查，set 后下一
+        次调用即生效。防自锁：dispatcher 本人（role=dispatcher）与
+        owner 不进模式系统——给他们设模式会锁死调度链路、群主令牌
+        不受中枢模式管辖，一律拒绝（参照 member_token_rotate 不许
+        轮换 dispatcher 的教训）。成员须存在且未移除。写审计。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        if mode not in ACCESS_MODES:
+            raise ValueError(
+                f"bad access mode: {mode} (want full/workspace/readonly)")
+        with _lock:
+            conn = db()
+            try:
+                row = conn.execute(
+                    "SELECT id, removed_at, role, access_mode FROM members"
+                    " WHERE name=?", (name,)).fetchone()
+                if not row:
+                    raise ValueError(f"no such member: {name}")
+                if row["removed_at"] is not None:
+                    raise ValueError(f"member removed: {name}")
+                if row["role"] == "dispatcher":
+                    raise ValueError(
+                        "cannot set access mode for the dispatcher")
+                if row["role"] == "owner":
+                    raise ValueError("cannot set access mode for the owner")
+                old = (row["access_mode"]
+                       if row["access_mode"] in ACCESS_MODES else "full")
+                conn.execute(
+                    "UPDATE members SET access_mode=? WHERE id=?",
+                    (mode, row["id"]))
+                audit(conn, me["name"], "member_access_mode_set",
+                      f"{name}: {old} -> {mode}")
+                conn.commit()
+            finally:
+                conn.close()
+        return {"name": name, "access_mode": mode}
 
     @mcp.tool
     def external_gate(enabled: bool = None, reason: str = "") -> dict:
@@ -3809,6 +3924,8 @@ def build_server():
         「本周已交活」的数据源；task_list 有条数上限算不出全局口径）。
         staging47 起另带 provider 与 login_state（L1 登录容器的数据源；
         老成员两字段为空）。
+        staging56 起另带 access_mode（归一为 full/workspace/readonly；
+        external 脱敏视图沿用件二口径不带此字段）。
         staging49：连接改走 try/finally 关闭——原实现整个函数无 conn.close()，
         每次调用泄漏一个连接（查询异常时同样漏），本轮只补关闭、不动返回结构。"""
         me = authenticate()
@@ -3818,7 +3935,8 @@ def build_server():
             rows = conn.execute(
                 "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
                 " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at,"
-                " quota_source, provider, login_state, kind, display_name, bound_room_id"
+                " quota_source, provider, login_state, kind, display_name, bound_room_id,"
+                " access_mode"
                 " FROM members WHERE removed_at IS NULL ORDER BY id"
             ).fetchall()
             wk = _week_start_cst()
@@ -3841,6 +3959,10 @@ def build_server():
             d["kind"] = d.get("kind") or "internal"
             if not d.get("display_name"):
                 d["display_name"] = d["name"]
+            # staging56：access_mode 归一回读（NULL/脏值一律 full）。
+            d["access_mode"] = (d.get("access_mode")
+                                if d.get("access_mode") in ACCESS_MODES
+                                else "full")
             out.append(d)
         if _is_external(me):
             # 件二脱敏视图：external 只看得到身份类字段，额度、
