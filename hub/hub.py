@@ -1936,9 +1936,13 @@ def build_server():
         return {"room": room, "summary": data, "updated_at": now, "updated_by": me["name"]}
 
     @mcp.tool
-    def room_read_new(room: str, since_id: int = 0, limit: int = 50) -> dict:
+    def room_read_new(room: str, since_id: int = 0, limit: int = 50,
+                      tail: bool = False) -> dict:
         """读房间里 id 大于 since_id 的新消息（含作者名）。limit 钳制在
-        1..200（staging40 / S1）：调用方传超大 limit 不再整表拉取。"""
+        1..200（staging40 / S1）：调用方传超大 limit 不再整表拉取。
+        staging50：tail=True 时在同一 since_id 过滤内取最新 limit 条
+        （Gemini 审计建议，App 一次拿最近消息甩掉 200 条截断），返回仍按
+        id 升序；默认 False 时行为与旧版逐字一致。"""
         me = authenticate()
         require(me)
         limit = max(1, min(int(limit), 200))
@@ -1947,12 +1951,21 @@ def build_server():
         if not r:
             conn.close()
             raise ValueError(f"no such room: {room}")
-        rows = conn.execute(
-            """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
-                      m.deleted_at, m.edited_at
-               FROM messages m JOIN members mb ON mb.id=m.author_id
-               WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?""",
-            (r["id"], since_id, limit)).fetchall()
+        if tail:
+            rows = conn.execute(
+                """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
+                          m.deleted_at, m.edited_at
+                   FROM messages m JOIN members mb ON mb.id=m.author_id
+                   WHERE m.room_id=? AND m.id>? ORDER BY m.id DESC LIMIT ?""",
+                (r["id"], since_id, limit)).fetchall()
+            rows = list(reversed(rows))
+        else:
+            rows = conn.execute(
+                """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
+                          m.deleted_at, m.edited_at
+                   FROM messages m JOIN members mb ON mb.id=m.author_id
+                   WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?""",
+                (r["id"], since_id, limit)).fetchall()
         amap = {}
         if rows:
             mids = [x["id"] for x in rows]
@@ -2700,7 +2713,8 @@ def build_server():
         排序：加急（urgent）恒置顶，其余按 id 升序（定稿 §15.3）。
         staging49：每行新增 room（所属房间名，JOIN rooms）；可选参数 room
         给了则按房间名过滤（房间名不存在 → 空列表不报错，与 status 过滤
-        口径一致）。room 参数追加在签名末尾、无参调用行为与旧版完全一致。"""
+        口径一致）。room 参数追加在签名末尾、无参调用行为与旧版完全一致。
+        staging50：status 支持逗号分隔多状态（IN 查询），单状态行为不变。"""
         me = authenticate()
         require(me)
         conn = db()
@@ -2713,8 +2727,15 @@ def build_server():
                JOIN rooms rm ON rm.id=t.room_id WHERE 1=1"""
         args = []
         if status:
-            q += " AND t.status=?"
-            args.append(status)
+            # staging50：status 可传逗号分隔多状态（Gemini 审计建议），一次
+            # 取全活跃态供运行时/桥接免翻页；单状态与旧行为逐字一致。
+            parts = [s.strip() for s in status.split(",") if s.strip()]
+            if len(parts) > 1:
+                q += " AND t.status IN (%s)" % ",".join("?" * len(parts))
+                args.extend(parts)
+            elif parts:
+                q += " AND t.status=?"
+                args.append(parts[0])
         if assignee_name:
             q += " AND mb.name=?"
             args.append(assignee_name)
