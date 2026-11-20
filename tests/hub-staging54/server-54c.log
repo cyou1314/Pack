@@ -1,0 +1,1397 @@
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.8                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      pack-hub, 4.1.8                             │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.2.3                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[11/20/26 19:21:57] INFO     Starting MCP server 'pack-hub'     transport.py:358
+                             with transport 'http' on                           
+                             http://127.0.0.1:18799/mcp                         
+INFO:     Started server process [37470]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:18799 (Press CTRL+C to quit)
+init ok
+INFO:     127.0.0.1:38088 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38088 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38090 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38090 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38090 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38102 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38102 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38102 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38112 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38112 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38112 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38120 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38120 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38120 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38130 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38130 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38130 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38144 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38144 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38144 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38146 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38146 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38146 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38162 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38162 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38162 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38168 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38168 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38168 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38180 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38180 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38180 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38190 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38190 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38190 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38204 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:02] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2458 in _room_post_impl                        │
+                    │                                                          │
+                    │   2455 │   │   │   │   │   │   │   │    (int(m.group(1)) │
+                    │   2456 │   │   │   if not t:                             │
+                    │   2457 │   │   │   │   conn.close()                      │
+                    │ ❱ 2458 │   │   │   │   raise ValueError("question must r │
+                    │   2459 │   │   │   if me["role"] != "dispatcher" and (   │
+                    │   2460 │   │   │   │   │   t["assignee"] != me["id"] or  │
+                    │        "working")):                                      │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question must reference an existing task        
+INFO:     127.0.0.1:38204 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38212 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:03] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2458 in _room_post_impl                        │
+                    │                                                          │
+                    │   2455 │   │   │   │   │   │   │   │    (int(m.group(1)) │
+                    │   2456 │   │   │   if not t:                             │
+                    │   2457 │   │   │   │   conn.close()                      │
+                    │ ❱ 2458 │   │   │   │   raise ValueError("question must r │
+                    │   2459 │   │   │   if me["role"] != "dispatcher" and (   │
+                    │   2460 │   │   │   │   │   t["assignee"] != me["id"] or  │
+                    │        "working")):                                      │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question must reference an existing task        
+INFO:     127.0.0.1:38212 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38220 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:04] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2462 in _room_post_impl                        │
+                    │                                                          │
+                    │   2459 │   │   │   if me["role"] != "dispatcher" and (   │
+                    │   2460 │   │   │   │   │   t["assignee"] != me["id"] or  │
+                    │        "working")):                                      │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │ ❱ 2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │   2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question only from the member executing that    
+                    task                                                        
+INFO:     127.0.0.1:38220 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38232 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:05] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2462 in _room_post_impl                        │
+                    │                                                          │
+                    │   2459 │   │   │   if me["role"] != "dispatcher" and (   │
+                    │   2460 │   │   │   │   │   t["assignee"] != me["id"] or  │
+                    │        "working")):                                      │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │ ❱ 2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │   2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question only from the member executing that    
+                    task                                                        
+INFO:     127.0.0.1:38232 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38244 - "POST /mcp HTTP/1.1" 200 OK
+                    Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2414 in _room_post_impl                        │
+                    │                                                          │
+                    │   2411 │   │   │   raise ValueError(f"kind not allowed v │
+                    │   2412 │   │   if kind in ("question", "question_answer" │
+                    │   2413 │   │   │   │   and len(body or "") > QUESTION_BO │
+                    │ ❱ 2414 │   │   │   raise ValueError(                     │
+                    │   2415 │   │   │   │   f"{kind} body too long: > {QUESTI │
+                    │   2416 │   │   conn = db()                               │
+                    │   2417 │   │   r = conn.execute("SELECT id FROM rooms WH │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question body too long: > 2000 chars            
+INFO:     127.0.0.1:38244 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38260 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:06] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:527 in _validate_question_payload              │
+                    │                                                          │
+                    │    524 │   bool。两者至少居其一（有 options 或 allow_inp │
+                    │    525 │   返回规范化后的 JSON 文本（键序固定 options, a │
+                    │    526 │   try:                                          │
+                    │ ❱  527 │   │   p = json.loads(raw or "")                 │
+                    │    528 │   except Exception:                             │
+                    │    529 │   │   raise ValueError("question payload must b │
+                    │    530 │   if not isinstance(p, dict):                   │
+                    │                                                          │
+                    │ /usr/lib/python3.12/json/__init__.py:346 in loads        │
+                    │                                                          │
+                    │   343 │   if (cls is None and object_hook is None and    │
+                    │   344 │   │   │   parse_int is None and parse_float is N │
+                    │   345 │   │   │   parse_constant is None and object_pair │
+                    │ ❱ 346 │   │   return _default_decoder.decode(s)          │
+                    │   347 │   if cls is None:                                │
+                    │   348 │   │   cls = JSONDecoder                          │
+                    │   349 │   if object_hook is not None:                    │
+                    │                                                          │
+                    │ /usr/lib/python3.12/json/decoder.py:337 in decode        │
+                    │                                                          │
+                    │   334 │   │   containing a JSON document).               │
+                    │   335 │   │                                              │
+                    │   336 │   │   """                                        │
+                    │ ❱ 337 │   │   obj, end = self.raw_decode(s, idx=_w(s, 0) │
+                    │   338 │   │   end = _w(s, end).end()                     │
+                    │   339 │   │   if end != len(s):                          │
+                    │   340 │   │   │   raise JSONDecodeError("Extra data", s, │
+                    │                                                          │
+                    │ /usr/lib/python3.12/json/decoder.py:355 in raw_decode    │
+                    │                                                          │
+                    │   352 │   │   try:                                       │
+                    │   353 │   │   │   obj, end = self.scan_once(s, idx)      │
+                    │   354 │   │   except StopIteration as err:               │
+                    │ ❱ 355 │   │   │   raise JSONDecodeError("Expecting value │
+                    │   356 │   │   return obj, end                            │
+                    │   357                                                    │
+                    ╰──────────────────────────────────────────────────────────╯
+                    JSONDecodeError: Expecting value: line 1 column 1 (char 0)  
+                                                                                
+                    During handling of the above exception, another exception   
+                    occurred:                                                   
+                                                                                
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:529 in _validate_question_payload              │
+                    │                                                          │
+                    │    526 │   try:                                          │
+                    │    527 │   │   p = json.loads(raw or "")                 │
+                    │    528 │   except Exception:                             │
+                    │ ❱  529 │   │   raise ValueError("question payload must b │
+                    │    530 │   if not isinstance(p, dict):                   │
+                    │    531 │   │   raise ValueError("question payload must b │
+                    │    532 │   opts = p.get("options")                       │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question payload must be a JSON object string   
+INFO:     127.0.0.1:38260 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36396 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:07] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:527 in _validate_question_payload              │
+                    │                                                          │
+                    │    524 │   bool。两者至少居其一（有 options 或 allow_inp │
+                    │    525 │   返回规范化后的 JSON 文本（键序固定 options, a │
+                    │    526 │   try:                                          │
+                    │ ❱  527 │   │   p = json.loads(raw or "")                 │
+                    │    528 │   except Exception:                             │
+                    │    529 │   │   raise ValueError("question payload must b │
+                    │    530 │   if not isinstance(p, dict):                   │
+                    │                                                          │
+                    │ /usr/lib/python3.12/json/__init__.py:346 in loads        │
+                    │                                                          │
+                    │   343 │   if (cls is None and object_hook is None and    │
+                    │   344 │   │   │   parse_int is None and parse_float is N │
+                    │   345 │   │   │   parse_constant is None and object_pair │
+                    │ ❱ 346 │   │   return _default_decoder.decode(s)          │
+                    │   347 │   if cls is None:                                │
+                    │   348 │   │   cls = JSONDecoder                          │
+                    │   349 │   if object_hook is not None:                    │
+                    │                                                          │
+                    │ /usr/lib/python3.12/json/decoder.py:337 in decode        │
+                    │                                                          │
+                    │   334 │   │   containing a JSON document).               │
+                    │   335 │   │                                              │
+                    │   336 │   │   """                                        │
+                    │ ❱ 337 │   │   obj, end = self.raw_decode(s, idx=_w(s, 0) │
+                    │   338 │   │   end = _w(s, end).end()                     │
+                    │   339 │   │   if end != len(s):                          │
+                    │   340 │   │   │   raise JSONDecodeError("Extra data", s, │
+                    │                                                          │
+                    │ /usr/lib/python3.12/json/decoder.py:355 in raw_decode    │
+                    │                                                          │
+                    │   352 │   │   try:                                       │
+                    │   353 │   │   │   obj, end = self.scan_once(s, idx)      │
+                    │   354 │   │   except StopIteration as err:               │
+                    │ ❱ 355 │   │   │   raise JSONDecodeError("Expecting value │
+                    │   356 │   │   return obj, end                            │
+                    │   357                                                    │
+                    ╰──────────────────────────────────────────────────────────╯
+                    JSONDecodeError: Expecting value: line 1 column 1 (char 0)  
+                                                                                
+                    During handling of the above exception, another exception   
+                    occurred:                                                   
+                                                                                
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:529 in _validate_question_payload              │
+                    │                                                          │
+                    │    526 │   try:                                          │
+                    │    527 │   │   p = json.loads(raw or "")                 │
+                    │    528 │   except Exception:                             │
+                    │ ❱  529 │   │   raise ValueError("question payload must b │
+                    │    530 │   if not isinstance(p, dict):                   │
+                    │    531 │   │   raise ValueError("question payload must b │
+                    │    532 │   opts = p.get("options")                       │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question payload must be a JSON object string   
+INFO:     127.0.0.1:36396 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36412 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:08] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:531 in _validate_question_payload              │
+                    │                                                          │
+                    │    528 │   except Exception:                             │
+                    │    529 │   │   raise ValueError("question payload must b │
+                    │    530 │   if not isinstance(p, dict):                   │
+                    │ ❱  531 │   │   raise ValueError("question payload must b │
+                    │    532 │   opts = p.get("options")                       │
+                    │    533 │   allow_input = p.get("allow_input", False)     │
+                    │    534 │   if not isinstance(allow_input, bool):         │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question payload must be a JSON object          
+INFO:     127.0.0.1:36412 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36418 - "POST /mcp HTTP/1.1" 200 OK
+                    Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:539 in _validate_question_payload              │
+                    │                                                          │
+                    │    536 │   if opts is not None:                          │
+                    │    537 │   │   if not isinstance(opts, list) or not (    │
+                    │    538 │   │   │   │   QUESTION_OPTIONS_MIN <= len(opts) │
+                    │ ❱  539 │   │   │   raise ValueError(                     │
+                    │    540 │   │   │   │   f"question options must be {QUEST │
+                    │        items")                                           │
+                    │    541 │   │   for o in opts:                            │
+                    │    542 │   │   │   if not isinstance(o, str) or not o.st │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question options must be 2-6 items              
+INFO:     127.0.0.1:36418 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36422 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:09] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:539 in _validate_question_payload              │
+                    │                                                          │
+                    │    536 │   if opts is not None:                          │
+                    │    537 │   │   if not isinstance(opts, list) or not (    │
+                    │    538 │   │   │   │   QUESTION_OPTIONS_MIN <= len(opts) │
+                    │ ❱  539 │   │   │   raise ValueError(                     │
+                    │    540 │   │   │   │   f"question options must be {QUEST │
+                    │        items")                                           │
+                    │    541 │   │   for o in opts:                            │
+                    │    542 │   │   │   if not isinstance(o, str) or not o.st │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question options must be 2-6 items              
+INFO:     127.0.0.1:36422 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36432 - "POST /mcp HTTP/1.1" 200 OK
+                    Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:544 in _validate_question_payload              │
+                    │                                                          │
+                    │    541 │   │   for o in opts:                            │
+                    │    542 │   │   │   if not isinstance(o, str) or not o.st │
+                    │    543 │   │   │   │   │   or len(o) > QUESTION_OPTION_M │
+                    │ ❱  544 │   │   │   │   raise ValueError(                 │
+                    │    545 │   │   │   │   │   f"question options must be no │
+                    │    546 │   │   │   │   │   f"{QUESTION_OPTION_MAXLEN} ch │
+                    │    547 │   if not opts and not allow_input:              │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question options must be non-empty strings of at
+                    most 60 chars                                               
+INFO:     127.0.0.1:36432 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36440 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:10] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:544 in _validate_question_payload              │
+                    │                                                          │
+                    │    541 │   │   for o in opts:                            │
+                    │    542 │   │   │   if not isinstance(o, str) or not o.st │
+                    │    543 │   │   │   │   │   or len(o) > QUESTION_OPTION_M │
+                    │ ❱  544 │   │   │   │   raise ValueError(                 │
+                    │    545 │   │   │   │   │   f"question options must be no │
+                    │    546 │   │   │   │   │   f"{QUESTION_OPTION_MAXLEN} ch │
+                    │    547 │   if not opts and not allow_input:              │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question options must be non-empty strings of at
+                    most 60 chars                                               
+INFO:     127.0.0.1:36440 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36448 - "POST /mcp HTTP/1.1" 200 OK
+                    Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:544 in _validate_question_payload              │
+                    │                                                          │
+                    │    541 │   │   for o in opts:                            │
+                    │    542 │   │   │   if not isinstance(o, str) or not o.st │
+                    │    543 │   │   │   │   │   or len(o) > QUESTION_OPTION_M │
+                    │ ❱  544 │   │   │   │   raise ValueError(                 │
+                    │    545 │   │   │   │   │   f"question options must be no │
+                    │    546 │   │   │   │   │   f"{QUESTION_OPTION_MAXLEN} ch │
+                    │    547 │   if not opts and not allow_input:              │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question options must be non-empty strings of at
+                    most 60 chars                                               
+INFO:     127.0.0.1:36448 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36450 - "POST /mcp HTTP/1.1" 200 OK
+                    Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:539 in _validate_question_payload              │
+                    │                                                          │
+                    │    536 │   if opts is not None:                          │
+                    │    537 │   │   if not isinstance(opts, list) or not (    │
+                    │    538 │   │   │   │   QUESTION_OPTIONS_MIN <= len(opts) │
+                    │ ❱  539 │   │   │   raise ValueError(                     │
+                    │    540 │   │   │   │   f"question options must be {QUEST │
+                    │        items")                                           │
+                    │    541 │   │   for o in opts:                            │
+                    │    542 │   │   │   if not isinstance(o, str) or not o.st │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question options must be 2-6 items              
+INFO:     127.0.0.1:36450 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36466 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:11] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:548 in _validate_question_payload              │
+                    │                                                          │
+                    │    545 │   │   │   │   │   f"question options must be no │
+                    │    546 │   │   │   │   │   f"{QUESTION_OPTION_MAXLEN} ch │
+                    │    547 │   if not opts and not allow_input:              │
+                    │ ❱  548 │   │   raise ValueError(                         │
+                    │    549 │   │   │   "question payload needs options or al │
+                    │    550 │   return json.dumps({"options": opts or [], "al │
+                    │    551 │   │   │   │   │     ensure_ascii=False)         │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question payload needs options or               
+                    allow_input=true                                            
+INFO:     127.0.0.1:36466 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36468 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:12] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 13 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2464 in _room_post_impl                        │
+                    │                                                          │
+                    │   2461 │   │   │   │   conn.close()                      │
+                    │   2462 │   │   │   │   raise ValueError("question only f │
+                    │   2463 │   │   │   try:                                  │
+                    │ ❱ 2464 │   │   │   │   msg_payload = _validate_question_ │
+                    │   2465 │   │   │   except ValueError:                    │
+                    │   2466 │   │   │   │   conn.close()                      │
+                    │   2467 │   │   │   │   raise                             │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:535 in _validate_question_payload              │
+                    │                                                          │
+                    │    532 │   opts = p.get("options")                       │
+                    │    533 │   allow_input = p.get("allow_input", False)     │
+                    │    534 │   if not isinstance(allow_input, bool):         │
+                    │ ❱  535 │   │   raise ValueError("question payload allow_ │
+                    │    536 │   if opts is not None:                          │
+                    │    537 │   │   if not isinstance(opts, list) or not (    │
+                    │    538 │   │   │   │   QUESTION_OPTIONS_MIN <= len(opts) │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question payload allow_input must be a boolean  
+INFO:     127.0.0.1:36468 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36484 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36484 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36484 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36500 - "POST /mcp HTTP/1.1" 200 OK
+                    Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2471 in _room_post_impl                        │
+                    │                                                          │
+                    │   2468 │   │   │   q0, a0 = _question_state(conn, t["id" │
+                    │   2469 │   │   │   if q0 is not None and a0 is None:     │
+                    │   2470 │   │   │   │   conn.close()                      │
+                    │ ❱ 2471 │   │   │   │   raise ValueError("task already ha │
+                    │   2472 │   │   │   msg_task_id = t["id"]                 │
+                    │   2473 │   │   if kind == "question_answer":             │
+                    │   2474 │   │   │   if me["role"] != "dispatcher" and me[ │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: task already has an unanswered question         
+INFO:     127.0.0.1:36500 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36512 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36512 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36512 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36522 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36522 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36522 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36536 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36536 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36536 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36552 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36552 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36552 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36558 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36558 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36558 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36574 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:14] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2476 in _room_post_impl                        │
+                    │                                                          │
+                    │   2473 │   │   if kind == "question_answer":             │
+                    │   2474 │   │   │   if me["role"] != "dispatcher" and me[ │
+                    │   2475 │   │   │   │   conn.close()                      │
+                    │ ❱ 2476 │   │   │   │   raise ValueError("question_answer │
+                    │   2477 │   │   │   if not reply_to_id:                   │
+                    │   2478 │   │   │   │   conn.close()                      │
+                    │   2479 │   │   │   │   raise ValueError("question_answer │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question_answer is dispatcher/owner-only        
+INFO:     127.0.0.1:36574 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36584 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:15] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2479 in _room_post_impl                        │
+                    │                                                          │
+                    │   2476 │   │   │   │   raise ValueError("question_answer │
+                    │   2477 │   │   │   if not reply_to_id:                   │
+                    │   2478 │   │   │   │   conn.close()                      │
+                    │ ❱ 2479 │   │   │   │   raise ValueError("question_answer │
+                    │   2480 │   │   │   tgt = conn.execute("SELECT * FROM mes │
+                    │   2481 │   │   │   │   │   │   │      (int(reply_to_id), │
+                    │   2482 │   │   │   if not tgt or tgt["kind"] != "questio │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question_answer requires reply_to_id            
+INFO:     127.0.0.1:36584 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36586 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:16] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2484 in _room_post_impl                        │
+                    │                                                          │
+                    │   2481 │   │   │   │   │   │   │      (int(reply_to_id), │
+                    │   2482 │   │   │   if not tgt or tgt["kind"] != "questio │
+                    │   2483 │   │   │   │   conn.close()                      │
+                    │ ❱ 2484 │   │   │   │   raise ValueError("reply_to_id mus │
+                    │   2485 │   │   │   if tgt["room_id"] != r["id"]:         │
+                    │   2486 │   │   │   │   conn.close()                      │
+                    │   2487 │   │   │   │   raise ValueError(                 │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: reply_to_id must reference a question message   
+INFO:     127.0.0.1:36586 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36602 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:17] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2484 in _room_post_impl                        │
+                    │                                                          │
+                    │   2481 │   │   │   │   │   │   │      (int(reply_to_id), │
+                    │   2482 │   │   │   if not tgt or tgt["kind"] != "questio │
+                    │   2483 │   │   │   │   conn.close()                      │
+                    │ ❱ 2484 │   │   │   │   raise ValueError("reply_to_id mus │
+                    │   2485 │   │   │   if tgt["room_id"] != r["id"]:         │
+                    │   2486 │   │   │   │   conn.close()                      │
+                    │   2487 │   │   │   │   raise ValueError(                 │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: reply_to_id must reference a question message   
+INFO:     127.0.0.1:36602 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32918 - "POST /mcp HTTP/1.1" 200 OK
+                    Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2487 in _room_post_impl                        │
+                    │                                                          │
+                    │   2484 │   │   │   │   raise ValueError("reply_to_id mus │
+                    │   2485 │   │   │   if tgt["room_id"] != r["id"]:         │
+                    │   2486 │   │   │   │   conn.close()                      │
+                    │ ❱ 2487 │   │   │   │   raise ValueError(                 │
+                    │   2488 │   │   │   │   │   "reply_to_id must reference a │
+                    │   2489 │   │   │   dup = conn.execute(                   │
+                    │   2490 │   │   │   │   "SELECT id FROM messages WHERE ki │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: reply_to_id must reference a question in this   
+                    room                                                        
+INFO:     127.0.0.1:32918 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32924 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:18] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2414 in _room_post_impl                        │
+                    │                                                          │
+                    │   2411 │   │   │   raise ValueError(f"kind not allowed v │
+                    │   2412 │   │   if kind in ("question", "question_answer" │
+                    │   2413 │   │   │   │   and len(body or "") > QUESTION_BO │
+                    │ ❱ 2414 │   │   │   raise ValueError(                     │
+                    │   2415 │   │   │   │   f"{kind} body too long: > {QUESTI │
+                    │   2416 │   │   conn = db()                               │
+                    │   2417 │   │   r = conn.execute("SELECT id FROM rooms WH │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question_answer body too long: > 2000 chars     
+INFO:     127.0.0.1:32924 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32926 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32926 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32926 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32940 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:19] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2494 in _room_post_impl                        │
+                    │                                                          │
+                    │   2491 │   │   │   │   " AND reply_to_id=?", (tgt["id"], │
+                    │   2492 │   │   │   if dup:                               │
+                    │   2493 │   │   │   │   conn.close()                      │
+                    │ ❱ 2494 │   │   │   │   raise ValueError("question alread │
+                    │   2495 │   │   │   msg_task_id = tgt["task_id"]          │
+                    │   2496 │   │   │   if msg_task_id is None:               │
+                    │   2497 │   │   │   │   mq = TASK_REF_RE.search(tgt["body │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question already answered                       
+INFO:     127.0.0.1:32940 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32952 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32952 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32952 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32954 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32954 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32954 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32960 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32960 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32960 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32968 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:20] Error calling tool 'message_edit'                           
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 11 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:1735 in wrapper                                │
+                    │                                                          │
+                    │   1732 │   │   │   _me = authenticate()                  │
+                    │   1733 │   │   │   if _is_external(_me):                 │
+                    │   1734 │   │   │   │   _ext_check(_me, fn.__name__)      │
+                    │ ❱ 1735 │   │   │   return fn(*args, **kwargs)            │
+                    │   1736 │   │   wrapper.__signature__ = inspect.signature │
+                    │   1737 │   │   return _register_tool(wrapper)            │
+                    │   1738                                                   │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:3211 in message_edit                           │
+                    │                                                          │
+                    │   3208 │   │   │   raise ValueError("forbidden: message  │
+                    │   3209 │   │   if m["kind"] != "chat":                   │
+                    │   3210 │   │   │   conn.close()                          │
+                    │ ❱ 3211 │   │   │   raise ValueError(f"only chat messages │
+                    │   3212 │   │   if m["deleted_at"]:                       │
+                    │   3213 │   │   │   conn.close()                          │
+                    │   3214 │   │   │   raise ValueError(f"message {message_i │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: only chat messages can be edited (kind=question)
+INFO:     127.0.0.1:32968 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32972 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:21] Error calling tool 'message_delete'                         
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 11 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:1735 in wrapper                                │
+                    │                                                          │
+                    │   1732 │   │   │   _me = authenticate()                  │
+                    │   1733 │   │   │   if _is_external(_me):                 │
+                    │   1734 │   │   │   │   _ext_check(_me, fn.__name__)      │
+                    │ ❱ 1735 │   │   │   return fn(*args, **kwargs)            │
+                    │   1736 │   │   wrapper.__signature__ = inspect.signature │
+                    │   1737 │   │   return _register_tool(wrapper)            │
+                    │   1738                                                   │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:3170 in message_delete                         │
+                    │                                                          │
+                    │   3167 │   │   │   raise ValueError("forbidden: message  │
+                    │   3168 │   │   if m["kind"] != "chat":                   │
+                    │   3169 │   │   │   conn.close()                          │
+                    │ ❱ 3170 │   │   │   raise ValueError(f"only chat messages │
+                    │   3171 │   │   if m["deleted_at"]:                       │
+                    │   3172 │   │   │   conn.close()                          │
+                    │   3173 │   │   │   raise ValueError(f"message {message_i │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: only chat messages can be deleted               
+                    (kind=question)                                             
+INFO:     127.0.0.1:32972 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32982 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32978 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32982 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:22] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2494 in _room_post_impl                        │
+                    │                                                          │
+                    │   2491 │   │   │   │   " AND reply_to_id=?", (tgt["id"], │
+                    │   2492 │   │   │   if dup:                               │
+                    │   2493 │   │   │   │   conn.close()                      │
+                    │ ❱ 2494 │   │   │   │   raise ValueError("question alread │
+                    │   2495 │   │   │   msg_task_id = tgt["task_id"]          │
+                    │   2496 │   │   │   if msg_task_id is None:               │
+                    │   2497 │   │   │   │   mq = TASK_REF_RE.search(tgt["body │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: question already answered                       
+INFO:     127.0.0.1:32978 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32982 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33010 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32994 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32994 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:23] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2471 in _room_post_impl                        │
+                    │                                                          │
+                    │   2468 │   │   │   q0, a0 = _question_state(conn, t["id" │
+                    │   2469 │   │   │   if q0 is not None and a0 is None:     │
+                    │   2470 │   │   │   │   conn.close()                      │
+                    │ ❱ 2471 │   │   │   │   raise ValueError("task already ha │
+                    │   2472 │   │   │   msg_task_id = t["id"]                 │
+                    │   2473 │   │   if kind == "question_answer":             │
+                    │   2474 │   │   │   if me["role"] != "dispatcher" and me[ │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: task already has an unanswered question         
+INFO:     127.0.0.1:33010 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32994 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33012 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33012 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33012 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33014 - "POST /pair HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33016 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:24] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2434 in _room_post_impl                        │
+                    │                                                          │
+                    │   2431 │   │   │   │   │   │     f"kind={kind} room={roo │
+                    │   2432 │   │   │   │   │   conn.commit()                 │
+                    │   2433 │   │   │   │   conn.close()                      │
+                    │ ❱ 2434 │   │   │   │   raise ValueError(f"kind not allow │
+                    │   2435 │   │   if kind == "approval_request":            │
+                    │   2436 │   │   │   m = TASK_REF_RE.search(body or "")    │
+                    │   2437 │   │   │   t = None                              │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: kind not allowed for external members: question 
+INFO:     127.0.0.1:33016 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33026 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:25] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2595 in room_post                              │
+                    │                                                          │
+                    │   2592 │   │   │   reply_to_id = 0                       │
+                    │   2593 │   │   if _is_external(me) or kind in ("question │
+                    │   2594 │   │   │   with _lock:                           │
+                    │ ❱ 2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │   2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2434 in _room_post_impl                        │
+                    │                                                          │
+                    │   2431 │   │   │   │   │   │     f"kind={kind} room={roo │
+                    │   2432 │   │   │   │   │   conn.commit()                 │
+                    │   2433 │   │   │   │   conn.close()                      │
+                    │ ❱ 2434 │   │   │   │   raise ValueError(f"kind not allow │
+                    │   2435 │   │   if kind == "approval_request":            │
+                    │   2436 │   │   │   m = TASK_REF_RE.search(body or "")    │
+                    │   2437 │   │   │   t = None                              │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: kind not allowed for external members:          
+                    question_answer                                             
+INFO:     127.0.0.1:33026 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33028 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33028 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33028 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33036 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33036 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33036 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33042 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33042 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33042 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55758 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55758 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55758 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55772 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55772 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55772 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55776 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:27] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2597 in room_post                              │
+                    │                                                          │
+                    │   2594 │   │   │   with _lock:                           │
+                    │   2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │ ❱ 2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │   2599 │                                                 │
+                    │   2600 │   @mcp.tool                                     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2406 in _room_post_impl                        │
+                    │                                                          │
+                    │   2403 │   │   if kind == "task_card":                   │
+                    │   2404 │   │   │   raise ValueError("kind task_card is h │
+                    │   2405 │   │   if kind == "decision" and me["role"] != " │
+                    │ ❱ 2406 │   │   │   raise ValueError("kind decision is di │
+                    │   2407 │   │   if kind not in ("chat", "approval_request │
+                    │   2408 │   │   │   │   │   │   "question", "question_ans │
+                    │   2409 │   │   │   # F2 (staging43): kind 白名单——report │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: kind decision is dispatcher-only                
+INFO:     127.0.0.1:55776 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55778 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55778 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55778 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55780 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:28] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2597 in room_post                              │
+                    │                                                          │
+                    │   2594 │   │   │   with _lock:                           │
+                    │   2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │ ❱ 2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │   2599 │                                                 │
+                    │   2600 │   @mcp.tool                                     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2411 in _room_post_impl                        │
+                    │                                                          │
+                    │   2408 │   │   │   │   │   │   "question", "question_ans │
+                    │   2409 │   │   │   # F2 (staging43): kind 白名单——report │
+                    │   2410 │   │   │   # 任意字符串一律拒绝，防视觉冒充（第  │
+                    │ ❱ 2411 │   │   │   raise ValueError(f"kind not allowed v │
+                    │   2412 │   │   if kind in ("question", "question_answer" │
+                    │   2413 │   │   │   │   and len(body or "") > QUESTION_BO │
+                    │   2414 │   │   │   raise ValueError(                     │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: kind not allowed via room_post: report          
+INFO:     127.0.0.1:55780 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55792 - "POST /mcp HTTP/1.1" 200 OK
+[11/20/26 19:22:29] Error calling tool 'room_post'                              
+                    ╭─────────── Traceback (most recent call last) ────────────╮
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/server/server.py:1510 in call_tool     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/hub/.venv/lib/python3.12/site │
+                    │ -packages/fastmcp/tools/base.py:452 in _run              │
+                    │                                                          │
+                    │                 ... 12 frames hidden ...                 │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2597 in room_post                              │
+                    │                                                          │
+                    │   2594 │   │   │   with _lock:                           │
+                    │   2595 │   │   │   │   return _room_post_impl(me, room,  │
+                    │   2596 │   │   │   │   │   │   │   │   │      reply_to_i │
+                    │ ❱ 2597 │   │   return _room_post_impl(me, room, body, ki │
+                    │   2598 │   │   │   │   │   │   │      reply_to_id, paylo │
+                    │   2599 │                                                 │
+                    │   2600 │   @mcp.tool                                     │
+                    │                                                          │
+                    │ /home/hatch/workspace/pack/repo-mirror/tests/hub-staging │
+                    │ 54/hub.py:2404 in _room_post_impl                        │
+                    │                                                          │
+                    │   2401 │   │   if len(body or "") > 20000:               │
+                    │   2402 │   │   │   raise ValueError("message body too lo │
+                    │   2403 │   │   if kind == "task_card":                   │
+                    │ ❱ 2404 │   │   │   raise ValueError("kind task_card is h │
+                    │   2405 │   │   if kind == "decision" and me["role"] != " │
+                    │   2406 │   │   │   raise ValueError("kind decision is di │
+                    │   2407 │   │   if kind not in ("chat", "approval_request │
+                    ╰──────────────────────────────────────────────────────────╯
+                    ValueError: kind task_card is hub-internal                  
+INFO:     127.0.0.1:55792 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55802 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55802 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55802 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55808 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55808 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55808 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [37470]

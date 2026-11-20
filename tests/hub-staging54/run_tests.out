@@ -1,0 +1,374 @@
+PASS tools == 74 (no new tools)  got 74
+PASS single group: open ranks 0,1,2  [0, 1, 2]
+PASS urgent jumps queue: ranks shift  [0, 1, 2, 3]
+PASS working stays in queue with same rank  status=working ahead=1
+PASS second group ranks start at 0 despite alice's 4 active  [0, 1]
+PASS alice ranks untouched by bob's tasks
+PASS unassigned pool ranks 0,1 in full list  [0, 1]
+PASS urgent in pool jumps pool queue only  pool=[0, 1, 2]
+PASS review -> queue_ahead null, queue closes up  A2=None A3=2
+PASS done -> queue_ahead null (field present)
+PASS blocked -> null and frees rank  B1=None B2=0
+PASS cancelled -> queue_ahead null
+PASS every row carries old keys + queue_ahead  rows=9
+PASS list order unchanged (urgent DESC, id ASC)
+PASS multi-status filter still works  n=5
+PASS room filter returns only that room; rank is global per-assignee  ahead=3 (alice actives ahead: A0,A1,A3)
+PASS full cross-check vs independent SQL computation  bad=[] rows=10
+PASS page1 has 100 rows, ranks 0..99  n=100
+PASS page2 ranks continue 100..104 (not page-local 0..4)  [100, 101, 102, 103, 104]
+PASS unfiltered page2 keeps per-group full-queue ranks  carol rows on page2=15
+== 20/20 PASS
+PASS tools == 74  got 74
+PASS new tools present
+PASS fixture: pre-join max message id  max=2 m2=2
+PASS pair create for internal name rejected  Error calling tool 'pair_code_create': member name taken by an internal member: 
+PASS pair create for owner rejected  Error calling tool 'pair_code_create': member name taken by an internal member: 
+PASS pair create bad name rejected  Error calling tool 'pair_code_create': member_name must be a short id (no whites
+PASS pair create bad provider rejected  Error calling tool 'pair_code_create': provider must be one of ['codex', 'gemini
+PASS pair create bad room rejected  Error calling tool 'pair_code_create': no such room: no-such-room
+PASS pair_code_list shows unused, no secret material
+PASS wrong code -> 400 generic
+PASS garbage payload -> 400
+PASS redeem ok  st=200
+PASS external member row fields
+PASS joined_msg_id == pre-join max  joined=2 max=2
+PASS avatar combo auto-assigned
+PASS read cursor initialized at watermark
+PASS second redeem of same code -> 400
+PASS external token heartbeat ok
+PASS patrol: internal assignee escalated after 240s grace
+PASS patrol: external assignee NOT escalated at 600s (grace 2700s)
+PASS patrol: external escalated after 2700s grace
+PASS patrol: escalated external task stays assigned (no relay to external)
+PASS whitelist: all 52 banned tools denied for external
+PASS whitelist: every denial audited  delta=52
+PASS whitelist denials caused no side effects
+PASS internal member still role-blocked from dispatcher tools
+PASS internal member still cannot task_create
+PASS room_list for external only bound room
+PASS external room_read_new other room rejected
+PASS external room_post other room rejected
+PASS external room_summary_get other room rejected
+PASS external room_summary_get bound room ok
+PASS watermark: since_id=0 returns only post-join messages  ids=[4, 5, 6, 7]
+PASS watermark: tail=True also truncated
+PASS watermark: pre-join attachment_get rejected  Error calling tool 'attachment_get': forbidden: attachment predates external mem
+PASS isolation: other-room attachment_get rejected
+PASS post-join attachment_get ok
+PASS watermark: attachment_list hides pre-join, shows post-join
+PASS external attachment_list other room rejected
+PASS external attachment_put other room rejected
+PASS member_list sanitized for external  keys=['avatar', 'display_name', 'kind', 'last_heartbeat', 'name', 'provider', 'role']
+PASS member_list new fields (dispatcher view)
+PASS task_list for external: only own tasks  ids=[5]
+PASS task_list for external: caller filters overridden
+PASS claim: external cannot claim other's task
+PASS claim: external cannot claim unassigned task
+PASS run_start ok for external holder
+PASS task_update ok
+PASS task_complete -> review
+PASS dispatcher review closes external task
+PASS task_create pinned(title) to external -> permanent reject  Error calling tool 'task_create': permanent: executor-pinned tasks cannot be ass
+PASS task_create pinned(body) to external -> permanent reject  Error calling tool 'task_create': permanent: executor-pinned tasks cannot be ass
+PASS task_create cross-room to external -> permanent reject  Error calling tool 'task_create': permanent: external member codex-a is bound to
+PASS claim: external cannot claim executor-pinned task
+PASS task_block ok
+PASS task_release reopens blocked external task
+PASS re-claim after release ok
+PASS forge: external task_card via room_post rejected
+PASS forge: external decision via room_post rejected
+PASS forge: internal task_card via room_post rejected
+PASS forge: internal decision via room_post rejected
+PASS forge: borrowed claim_token rejected (external)
+PASS forge: borrowed claim_token rejected (internal)
+PASS external edits own message ok
+PASS external deletes own message ok
+PASS external cannot edit others' message
+PASS rate: first 5 posts in a minute ok
+PASS rate: 6th post in a minute hard-rejected with retry_after  Error calling tool 'room_post': {"error": "rate_limited", "retry_after": 60}
+PASS rate: 21st post within an hour rejected (hour window)
+PASS rate: rejections audited
+PASS rate: dispatcher unaffected
+PASS rate: 101st post within a day rejected (day window)
+PASS approval: 5 requests on one task ok
+PASS approval: 6th request on same task rejected (per-task cap)  Error calling tool 'room_post': {"error": "approval_request_cap", "scope": "task
+PASS approval: 5 more on second task ok (10/hour)
+PASS approval: 11th request within an hour rejected (member cap)  Error calling tool 'room_post': {"error": "approval_request_cap", "scope": "memb
+PASS approval: caps audited
+PASS approval: ordinary chat not blocked by approval cap
+PASS approval: request for other's task rejected (existing guard)
+PASS note: 4001 chars rejected for external  Error calling tool 'task_update': note too long for external members: > 4000 cha
+PASS note: 4000 chars ok
+PASS note: 6th note within a minute rate-limited
+PASS note: notes share the message rate window
+PASS note: empty note (lease renew) not rate-limited
+PASS attach: external >5MB upload never succeeds  Server returned an error response
+PASS attach: external 3MB ok over HTTP
+PASS attach: internal 2MB ok over HTTP
+PASS attach: 10 uploads/day ok
+PASS attach: 11th upload in a day rejected  Error calling tool 'attachment_put': external attachment quota: daily upload cap
+PASS attach: quota rejections audited
+PASS attach: room quota accounting intact (<500MB)
+PASS egress: 60 checks/min ok
+PASS egress: 61st check within a minute throttled
+PASS egress: throttle audited
+PASS egress: internal member not throttled by external cap
+PASS relay: quota-block relayed to internal candidate, not external  relayed_to=carol
+PASS relay: task now pending-acceptance under carol
+PASS pair: expired code rejected
+PASS pair: list shows expired
+PASS pair: revoked code rejected
+PASS pair: double revoke rejected
+PASS pair: revoke nonexistent rejected
+PASS pair: second code redeems first (member created)
+PASS pair: code locked after 5 failed attempts  status=locked fails=5
+PASS pair: lock audited at high priority
+PASS pair: locked code stays rejected
+PASS reclaim: redeem ok
+PASS reclaim: old token dead
+PASS reclaim: new token works
+PASS reclaim: watermark + cursor untouched, provider refreshed
+PASS reclaim: plain code for active external rejected at create
+PASS rotate: old token dead
+PASS rotate: new token works
+PASS rotate: nonexistent member rejected
+PASS rename: returns new display_name
+PASS rename: only display_name changed
+PASS rename: member cannot rename (dispatcher-only)
+PASS gate: set off
+PASS gate: query shows off
+PASS gate off: external token rejected everywhere
+PASS gate off: /pair closed (403)  st=403
+PASS gate off: pair_code_create blocked
+PASS gate off: internal members unaffected
+PASS gate off: dispatcher unaffected
+PASS gate: set back on
+PASS gate on: external token works again
+PASS gate on: /pair works again
+PASS remove: internal token dead immediately
+PASS remove: pair create for removed name reserved-rejected  Error calling tool 'pair_code_create': member name reserved by removed member: t
+PASS remove: external token dead immediately
+PASS remove: rotate removed member rejected
+PASS remove: rename removed member rejected
+PASS regression: internal envelope complete ok
+PASS regression: quota self-report ok
+PASS regression: reading other's memory forbidden
+PASS regression: own memory write/read ok
+PASS regression: tail read returns latest ascending
+PASS regression: multi-status task_list ok
+PASS regression: egress_check ok
+PASS secrets: no pair code / member token in audit, messages or server log  leaked=0
+PASS secrets: pair codes stored as sha256 only
+PASS secrets: member tokens stored as sha256 only
+== 142/142 PASS
+PASS fix5: reclaim for nonexistent member rejected at create  Error calling tool 'pair_code_create': reclaim target is not an existing external member: fx-ghost
+PASS fix5: reclaim for internal member rejected at create  Error calling tool 'pair_code_create': member name taken by an internal member: fx-carol
+PASS fix5: reclaim with mismatched room rejected at create  Error calling tool 'pair_code_create': reclaim room mismatch: member fx-ext is bound to room_id 1, n
+PASS fix5: rejected reclaim creates no pair code row
+PASS fix5: legal reclaim redeems, same member  st=200
+PASS fix5: reclaim kills old token
+PASS fix5: reclaimed token works
+PASS fix1: member transfer to external rejected  Error calling tool 'task_transfer': transfer target cannot be an external member
+PASS fix1: dispatcher forced transfer to external rejected  Error calling tool 'task_transfer': transfer target cannot be an external member
+PASS fix1: rejected transfers left task + transfer table untouched  n_tr=0
+PASS fix1: transfer to internal member still works
+PASS fix3: rotating dispatcher token rejected  Error calling tool 'member_token_rotate': cannot rotate the dispatcher's token with this tool
+PASS fix3: dispatcher token hash unchanged
+PASS fix6: schedule cross-room for external -> permanent reject  Error calling tool 'task_schedule': permanent: external member fx-ext is bound to another room
+PASS fix6: schedule pinned(title) for external -> permanent reject  Error calling tool 'task_schedule': permanent: executor-pinned tasks cannot be assigned to external 
+PASS fix6: schedule pinned(body) for external -> permanent reject  Error calling tool 'task_schedule': permanent: executor-pinned tasks cannot be assigned to external 
+PASS fix6: legal schedule for external created
+PASS fix6: rejected schedules created no tasks
+== 18/18 PASS
+PASS conc run1: 8 parallel redeems of one code -> exactly 1 success  oks=1 members=1
+PASS conc run1: losing redeems counted as failures  fail_count=7
+PASS conc run2: 8 parallel redeems of one code -> exactly 1 success  oks=1 members=1
+PASS conc run2: losing redeems counted as failures  fail_count=7
+PASS conc: two codes racing for one name -> exactly 1 success  oks=1 members=1
+PASS conc: parallel claim -> exactly one winner  r1=True r2=False
+PASS conc: parallel delete same message -> exactly 1 success  succ=1
+PASS conc: 10 parallel external posts -> exactly 5 pass, 5 rate-limited  succ=5 limited=5
+== 8/8 PASS
+PASS watcher: cross-room @ to external -> rejection posted in that room
+PASS watcher: rejection explains the bound room  这条没转成任务：它只在自己绑定的房间里接活，这个房间的 @ 到不了它（@codex-a）
+PASS watcher: no task created for cross-room @
+PASS watcher: rejection posted exactly once (no retry loop)  n=1
+PASS watcher: engine-marked @ to external -> rejection posted
+PASS watcher: rejection explains engine-marked ban  这条没转成任务：带引擎标记的任务不能派给外部成员（@codex-a）
+PASS watcher: no task created for pinned @
+PASS watcher: normal @ still converts to a task
+PASS watcher: converted task assigned to codex-a
+PASS watcher: dispatcher @ does not create a task
+== 10/10 PASS
+PASS fixture: joined watermark == last pre-join msg  joined=186
+PASS pull: only post-join messages  ids=[187, 188, 189]
+PASS pull: @ flag on mention msg
+PASS pull: no @ flag on plain msg
+PASS pull: author server labels
+PASS pull: task card carries status summary  [{'id': 189, 'author': 'dispatcher', 'author_role': 'dispatcher', 'author_kind': 'internal', 'kind': 'task_card', 'body': '任务#20 s52 文本任务', 'task_id': 20, 'task_status': 'open', 'task_title': 's52 文本任务', 'reply_to_id': None, 'payload': None, 'mentions_me': False, 'created_at': 1795173262.1894062, 'deleted': False, 'edited': False, 'attachments': []}]
+PASS pull: refreshes last_heartbeat (check-in)  hb=1795173262.4418302
+PASS pull: cursor reported == joined  cursor=186
+PASS pull: repeat pull returns same unread (no auto-ack)
+PASS mark_read: cursor advances to room max  189 vs 189
+PASS mark_read: pull after ack is empty
+PASS mark_read: never retreats
+PASS pull since_id: can re-read acked post-join
+PASS pull since_id=0: watermark still floors (no pre-join leak)
+PASS pull: external naming another room rejected  Error calling tool 'inbox_pull': forbidden: external members may only 
+PASS pull: internal member without room rejected
+PASS pull: internal member with explicit room works, own cursor
+PASS send: ok after ack (no new msgs)  {'sent': True, 'message_id': 190}
+PASS send: reply_to_id persisted, kind=chat
+PASS send: visible in room for others
+PASS blind: send blocked when new msgs after cursor  {'sent': False, 'blocked': 'new_messages', 'new_count': 1, 'new_messages': [{'id': 191, 'author': 'dispatcher', 'author_role': 'dispatcher', 'author_kind': 'internal', 'kind': 'chat', 'body': '你睡着时来的新消息', 'task_id': None, 'task_status': None, 'task_title': None, 'reply_to_id': None, 'payload': None, 'mentions_me': False, 'created_at': 1795173265.9157038, 'deleted': False, 'edited': False, 'attachments': []}], 'cursor': 189}
+PASS blind: new messages attached back
+PASS blind: blocked send not persisted
+PASS blind: ignore_new=True forces send
+PASS op_key: retry returns original message_id  {'sent': True, 'message_id': 193} vs {'sent': True, 'message_id': 193, 'deduplicated': True}
+PASS op_key: only one row persisted  n=1
+PASS reply_to: pre-join target rejected (watermark)  Error calling tool 'inbox_send': reply_to_id is before your join water
+PASS reply_to: other-room target rejected  Error calling tool 'inbox_send': reply_to_id must reference a message 
+PASS send: attachment bound
+PASS send: attachment row points at the message
+PASS send: cannot bind someone else's attachment  Error calling tool 'inbox_send': attachment 17 cannot be bound
+PASS whitelist: inbox_pull allowed for external
+PASS whitelist: memory_read still denied for external  Error calling tool 'memory_read': forbidden: tool memory_read is not a
+PASS version gate: pack-agent/0.9.0 rejected as outdated  Error calling tool 'inbox_pull': {"error": "agent_outdated", "min_version": "1.0.0", "your
+PASS version gate: pack-agent/1.0.0 passes
+PASS version gate: pack-agent/2.3.4 passes
+PASS version gate: send also gated
+PASS audit: frequent check-in audited, not blocked  n=7
+PASS audit: inbox_pull audited
+PASS rate: 6th message via inbox_send hard-rejected (shared window)  Error calling tool 'inbox_send': {"error": "rate_limited", "retry_after": 59}
+PASS rate: 6th message via room_post also rejected (same window)  Error calling tool 'room_post': {"error": "rate_limited", "retry_after": 59}
+PASS rate: rejection audited
+== 42/42 PASS
+PASS node available  /usr/bin/node
+PASS pair: exit 0
+PASS pair: config written
+PASS pair: config mode 0600  0o600
+PASS pair: config identity
+PASS pair: token not echoed to stdout
+PASS inbox: pulls dispatcher messages  ['脚本测试普通消息', '@script-ext 看这里']
+PASS inbox: mention flagged
+PASS check-in: todo exit code 2 with pending mention  rc=2 out=check-in: unread=2 mentions=1 open_tasks=0 todo=true
+{"todo":true,"unread":2,"me
+PASS send: blind-reply blocked exit 3  rc=3 out={"sent":false,"blocked":"new_messages","new_count":2,"new_messages":[{"id":202,"
+PASS mcp proxy: mark_read round-trips  {"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"{\"room\":\"pack-main\",\"cursor\":203}","type
+PASS send: succeeds after mark_read  rc=0 {'sent': True, 'message_id': 204}
+PASS read: fetches the @ message by id
+PASS anti-mixup: pairing another member into same profile refused (exit 4)  rc=4 err=refusing to overwrite profile "prod": it belongs to script-ext, the new code is 
+PASS anti-mixup: existing config untouched
+PASS mark-read: new mention makes check-in todo again  rc=2
+PASS mark-read: CLI advances cursor  rc=0 out={"room":"pack-main","cursor":205}
+PASS mark-read: inbox empty after mark-read  n=0
+PASS mark-read: check-in quiet after mark-read (no dead loop)  rc=0 out=check-in: unread=0 mentions=0 open_tasks=0 todo=false
+{"todo":false,"unread":0,"
+PASS profiles: second profile pairs independently
+PASS profiles: configs isolated
+PASS check-in: quiet profile exits 0  rc=0 out=check-in: unread=0 mentions=0 open_tasks=0 todo=false
+{"todo":false,"unread":0,"
+== 22/22 PASS
+PASS tools == 74 (no new tools)  got 74
+/home/hatch/workspace/pack/repo-mirror/tests/hub-staging54/test_staging53.py:31: FastMCPDeprecationWarning: Accessing `Tool.inputSchema` is deprecated; MCP SDK v2 renamed this field to `input_schema`. Update your code to read `.input_schema` instead.
+  props = set(rp.inputSchema.get("properties", {}).keys())
+PASS room_post schema has payload + reply_to_id  props=['attachment_ids', 'body', 'kind', 'payload', 'reply_to_id', 'room']
+PASS question without task ref rejected  Error calling tool 'room_post': question must reference an existing task
+PASS question for nonexistent task rejected  Error calling tool 'room_post': question must reference an existing task
+PASS question by non-executor rejected  Error calling tool 'room_post': question only from the member executing that task
+PASS question on unclaimed task rejected  Error calling tool 'room_post': question only from the member executing that task
+PASS question body >2000 rejected  Error calling tool 'room_post': question body too long: > 2000 chars
+PASS question payload rejected: empty payload  Error calling tool 'room_post': question payload must be a JSON object string
+PASS question payload rejected: non-json payload  Error calling tool 'room_post': question payload must be a JSON object string
+PASS question payload rejected: json array payload  Error calling tool 'room_post': question payload must be a JSON object
+PASS question payload rejected: one option  Error calling tool 'room_post': question options must be 2-6 items
+PASS question payload rejected: seven options  Error calling tool 'room_post': question options must be 2-6 items
+PASS question payload rejected: option >60 chars  Error calling tool 'room_post': question options must be non-empty strings of at most 60 c
+PASS question payload rejected: empty-string option  Error calling tool 'room_post': question options must be non-empty strings of at most 60 c
+PASS question payload rejected: non-string option  Error calling tool 'room_post': question options must be non-empty strings of at most 60 c
+PASS question payload rejected: neither options nor input  Error calling tool 'room_post': question options must be 2-6 items
+PASS question payload rejected: no options, allow_input false  Error calling tool 'room_post': question payload needs options or allow_input=true
+PASS question payload rejected: allow_input non-bool  Error calling tool 'room_post': question payload allow_input must be a boolean
+PASS no question rows leaked from guard probes  n=0
+PASS question stored: kind/task_id/payload  payload={"options": ["方案甲", "方案乙"], "allow_input": true}
+PASS second unanswered question on same task rejected  Error calling tool 'room_post': task already has an unanswered question
+PASS room_read_new carries payload for question  got {"options": ["方案甲", "方案乙"], "allow_input": true}
+PASS room_read_new payload is null for chat  chats=0
+PASS inbox_pull carries payload for question
+PASS pure-input question stored normalized  payload={"options": [], "allow_input": true}
+PASS dispatcher may question on unclaimed task
+PASS answer by ordinary member rejected  Error calling tool 'room_post': question_answer is dispatcher/owner-only
+PASS answer without reply_to_id rejected  Error calling tool 'room_post': question_answer requires reply_to_id
+PASS answer pointing at chat rejected  Error calling tool 'room_post': reply_to_id must reference a question message
+PASS answer pointing at nonexistent rejected  Error calling tool 'room_post': reply_to_id must reference a question message
+PASS answer in wrong room rejected  Error calling tool 'room_post': reply_to_id must reference a question in this room
+PASS answer body >2000 rejected  Error calling tool 'room_post': question_answer body too long: > 2000 chars
+PASS answer stored: kind/reply_to_id/task_id
+PASS duplicate answer rejected  Error calling tool 'room_post': question already answered
+PASS owner may answer
+PASS owner may answer dispatcher's question
+PASS new question allowed after previous answered
+PASS question cannot be edited  Error calling tool 'message_edit': only chat messages can be edited (kind=question)
+PASS question cannot be deleted  Error calling tool 'message_delete': only chat messages can be deleted (kind=question)
+PASS concurrent answers: exactly one wins  r=[False, True]
+PASS concurrent questions: exactly one wins  r=[False, True]
+PASS external question rejected  Error calling tool 'room_post': kind not allowed for external members: question
+PASS external question_answer rejected  Error calling tool 'room_post': kind not allowed for external members: question_answer
+PASS external kind denials audited  0->2
+PASS external inbox: question payload carried through
+PASS external inbox: answer present, payload null
+PASS external inbox: pre-watermark question invisible
+PASS external room_read_new: payload present above watermark
+PASS external room_read_new: pre-watermark question invisible
+PASS approval_request still works for executor
+PASS decision still dispatcher-only
+PASS dispatcher decision still works
+PASS kind=report still rejected via room_post
+PASS kind=task_card still rejected via room_post
+PASS chat via room_post still ignores reply_to_id (old behavior)
+PASS chat via room_post does not store payload
+== 56/56 PASS
+init ok
+PASS migration: messages.payload exists after init
+PASS payload ok: options+input
+PASS payload ok: pure input normalized
+PASS payload ok: options only, allow_input defaults false
+PASS payload ok: extra keys dropped
+PASS payload ok: option at exactly 60 chars
+PASS payload rejected: empty string
+PASS payload rejected: none
+PASS payload rejected: garbage
+PASS payload rejected: json array
+PASS payload rejected: json string
+PASS payload rejected: empty object
+PASS payload rejected: one option
+PASS payload rejected: seven options
+PASS payload rejected: option 61 chars
+PASS payload rejected: empty option
+PASS payload rejected: blank option
+PASS payload rejected: non-string option
+PASS payload rejected: options not a list
+PASS payload rejected: allow_input string
+PASS payload rejected: allow_input int
+PASS payload rejected: options empty + no input
+PASS payload rejected: options null + no input
+PASS state: answered question found with its answer
+PASS state: legacy question found via body regex, unanswered
+PASS state: chat mention is not a question
+PASS state: latest question wins, its own answer state
+PASS state: no question -> (None, None)
+PASS state: answer to another question does not count
+== 29/29 PASS
+init ok
+PASS direct: external >5MB rejected by hub check  attachment too large for external members: > 5MB
+PASS direct: >5MB rejection audited (external_attachment_quota)  n=1
+PASS direct: external exactly 5MiB ok  5242880
+PASS direct: external 10 x 5MiB ok (50MiB total)
+PASS direct: beyond 50MiB member total rejected  external attachment quota: member attachment quota exceeded (50MB total)
+PASS direct: total-quota rejection audited
+PASS direct: member total is exactly 50MiB  52428800
+PASS direct: internal 6MB ok (global path)
+PASS direct: internal 11MB rejected by global 10MB cap  attachment too large
+== 9/9 PASS
+== staging54=0 | main51=0 fixes=0 concurrency=0 watcher=0 inbox52=0 script=0 staging53=0 | qstate=0 direct=0
