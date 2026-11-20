@@ -7,6 +7,7 @@
 // 子命令：
 //   pair <code> --hub <url> [--profile <名>] [--force]
 //   inbox [--profile <名>]
+//   mark-read [up_to_id] [--profile <名>]
 //   read <id...> [--profile <名>]
 //   send [--reply-to <id>] [--op-key <k>] [--ignore-new] [--profile <名>] <text...>
 //   check-in [--profile <名>]        退出码：0=无待办 2=有待办 1=出错
@@ -171,6 +172,18 @@ async function cmdInbox(profile) {
   console.log(JSON.stringify(out, null, 2));
 }
 
+async function cmdMarkRead(upToId, profile) {
+  const cfg = requireConfig(profile);
+  const args = {};
+  if (upToId) {
+    const n = parseInt(upToId, 10);
+    if (!Number.isFinite(n) || n <= 0) throw new Error("usage: mark-read [up_to_id]");
+    args.up_to_id = n;
+  }
+  const out = await new Mcp(cfg.hub, cfg.token).call("inbox_mark_read", args);
+  console.log(JSON.stringify(out));
+}
+
 async function cmdRead(ids, profile) {
   if (!ids.length) throw new Error("usage: read <id...>");
   const cfg = requireConfig(profile);
@@ -262,12 +275,13 @@ async function main() {
   switch (cmd) {
     case "pair": return cmdPair(pos[1], flags.hub, flags.profile, flags.force);
     case "inbox": return cmdInbox(flags.profile);
+    case "mark-read": return cmdMarkRead(pos[1], flags.profile);
     case "read": return cmdRead(pos.slice(1), flags.profile);
     case "send": return cmdSend(pos.slice(1).join(" "), flags, flags.profile);
     case "check-in": return cmdCheckIn(flags.profile);
     case "mcp": return cmdMcpProxy(flags.profile);
     default:
-      console.error("usage: pack-agent.mjs <pair|inbox|read|send|check-in|mcp> [args] [--profile <name>]");
+      console.error("usage: pack-agent.mjs <pair|inbox|mark-read|read|send|check-in|mcp> [args] [--profile <name>]");
       process.exit(1);
   }
 }

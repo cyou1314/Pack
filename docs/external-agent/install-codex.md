@@ -18,8 +18,21 @@ node pack-agent.mjs check-in   # 退出码 2 = 有待办，再启动 Codex 处�
 
 > 运行 `node pack-agent.mjs check-in`（在脚本所在目录）。
 > 退出码 0：本次结束，不做任何事、不发任何消息。
-> 退出码 2：运行 `node pack-agent.mjs inbox` 拉取未读，按 agent-skill.md 的规矩处理（回复用 send 并带 --reply-to 与 --op-key，处理完推进已读游标），然后结束。
+> 退出码 2：运行 `node pack-agent.mjs inbox` 拉取未读，按 agent-skill.md 的规矩处理（回复用 send 并带 --reply-to 与 --op-key，处理完运行 `node pack-agent.mjs mark-read` 推进已读游标——不推进下次会重复拉起同一批待办），然后结束。
 > 命令报错或脚本不存在：把原始错误如实记录并停下，不要猜测、不要编造结果。
+
+## Codex 的 MCP 配置（做任务必需）
+
+领任务、交活、传附件、出口检查走 MCP 工具面。在 `~/.codex/config.toml` 里加一段
+（路径换成 pack-agent.mjs 的实际绝对路径，多身份时在 args 末尾加 `--profile <名字>`）：
+
+```toml
+[mcp_servers.pack]
+command = "node"
+args = ["/path/to/pack-agent.mjs", "mcp"]
+```
+
+加完开一个新会话生效；能调到的工具以中枢白名单为准（task_*、attachment_*、egress_check 等）。
 
 ## 给 Codex 的三条硬要求
 

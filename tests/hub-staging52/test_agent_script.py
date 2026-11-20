@@ -88,6 +88,23 @@ async def main():
     cfg2 = json.load(open(cfg_prod))
     note("anti-mixup: existing config untouched", cfg2.get("member") == "script-ext")
 
+    # ---------- CLI mark-read 子命令（Gemini 复核必改 1：缺它游标永远推不动） ----------
+    await call(DISP, "room_post", room="pack-main", body="@script-ext 再看这里")
+    p = run(env, "check-in", "--profile", "prod")
+    note("mark-read: new mention makes check-in todo again", p.returncode == 2,
+         f"rc={p.returncode}")
+    p = run(env, "mark-read", "--profile", "prod")
+    mr = json.loads(p.stdout) if p.stdout.strip() else {}
+    note("mark-read: CLI advances cursor", p.returncode == 0 and mr.get("cursor", 0) > 0,
+         f"rc={p.returncode} out={p.stdout.strip()[:80]}")
+    p = run(env, "inbox", "--profile", "prod")
+    inbox2 = json.loads(p.stdout)
+    note("mark-read: inbox empty after mark-read", inbox2["messages"] == [],
+         f"n={len(inbox2['messages'])}")
+    p = run(env, "check-in", "--profile", "prod")
+    note("mark-read: check-in quiet after mark-read (no dead loop)",
+         p.returncode == 0, f"rc={p.returncode} out={p.stdout.strip()[:80]}")
+
     # ---------- 双 profile 隔离 ----------
     code3 = await make_code("script-third")
     p = run(env, "pair", code3, "--hub", HUB, "--profile", "other")
