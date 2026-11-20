@@ -35,3 +35,8 @@
 - 启动 PID 92006、health 200；按派单 kill 一次后 launchd 自动拉起 PID 92042（runs=2），health 200。只读 status 显示 absent 与 l1-check-1119 都仍登记且均为 ready。
 - 桥闲置时不会主动再次查询引擎；确认没有活动任务后重启桥，11:33:45 日志出现 `hub connected`、`hub heartbeat ok` 和 `bridge up: absent; Muse4AI authenticated`，实际证明桥重连中枢并用现有 key 访问了新引擎。桥 PID 92084。
 - L2 真实交接结果仍未复验；依用户要求暂停再次点击，详见 `MAC-WORK2-RESULT.md`。
+
+## 第三轮：闲聊活体验收
+
+- 已同步并校验 `chat-policy.mjs` 和 `chat-driver.js` 及其依赖。群主在房间发送普通消息后，运行时 11:36:42 记录 `chat 182 replied`；用户确认房间已收到 absent 回复，内容准确、速度尚可。11:36:53 运行时随后再次自报额度成功。
+- 带 @ 的转卡仍沿用既有 watcher；本次未另发 @ 任务卡实测。L2 交接仍按用户要求暂停。
