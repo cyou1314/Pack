@@ -13,6 +13,12 @@
   前缀对上多个成员时不猜，调度员在房间里回一行请群主写全名。
 - 指派给第一个被 @ 的成员；任务正文 = 去掉该 @ 提及后的原文
   （[ENG]/[M4A] 等路由标记原样保留，由对应执行体认领）。
+- staging51 两道防线（EXTERNAL-AGENT 件二）：①task_create 的永久性
+  拒绝（跨房 @ 外部成员、正文带引擎标记的 @、指派人不存在/已移除）
+  不进重试循环——把拒因回帖到房间并越过该消息；瞬时失败仍走既有
+  重试。②调度员（author=dispatcher）的消息本就不在本 watcher 的
+  处理面内（只认 author=owner），调度员 @ 外部成员做问答不会被
+  转成任务卡——此口径由既有过滤天然成立，本轮只留注记防误改。
 - 每条消息只处理一次：进度持久化在 .room_watch_state.json，
   首启时从当前最新消息开始（不追溯历史）。
 
@@ -151,6 +157,26 @@ def save_state(st):
 
 
 
+def _permanent_reason(e):
+    """task_create 永久性拒绝判定（staging51 防线一）：重试不会改变
+    结果的错误——中枢以 "permanent:" 前缀标出 external 违规（跨房
+    指派 / 引擎标记卡），另含指派人不存在 / 已移除。命中返回给房间
+    看的简短中文拒因；未命中返回 None（按瞬时失败走既有重试）。"""
+    s = str(e)
+    if "permanent:" not in s and "no such member" not in s \
+            and "member is removed" not in s:
+        return None
+    if "bound to another room" in s:
+        return "它只在自己绑定的房间里接活，这个房间的 @ 到不了它"
+    if "executor-pinned" in s:
+        return "带引擎标记的任务不能派给外部成员"
+    if "member is removed" in s:
+        return "该成员已被移除"
+    if "no such member" in s:
+        return "没有这个成员"
+    return "该指派不被允许（永久性拒绝）"
+
+
 async def _post_best_effort(c, room, body, tag):
     """确认/提示回帖：尽力而为。回帖失败只记日志，不让外层把已提交的
     开卡动作整条重试（会重复开卡）。"""
@@ -204,8 +230,19 @@ async def _handle_message(c, room, m, targets, tpl_names):
     cleaned = re.sub(r"\s+", " ", cleaned)
     task_body = cleaned if cleaned else body
     title = task_body[:40]
-    r = parse(await c.call_tool("task_create", {
-        "room": room, "title": title, "body": task_body, "assignee_name": name}))
+    try:
+        r = parse(await c.call_tool("task_create", {
+            "room": room, "title": title, "body": task_body, "assignee_name": name}))
+    except Exception as e:
+        # staging51 防线一：永久性拒绝回帖拒因并越过（不进重试循环）；
+        # 其余错误原样上抛，沿用 W4 的失败计数重试口径。
+        reason = _permanent_reason(e)
+        if reason is None:
+            raise
+        await _post_best_effort(c, room,
+            f"这条没转成任务：{reason}（@{name}）", "mention-perm")
+        log(f"permanent reject msg {m['id']} ({room}) for {name}: {e!r}")
+        return
     tid = r["task_id"]
     await _post_best_effort(c, room, f"已转任务 #{tid} → @{name}", "mention-ok")
     log(f"converted msg {m['id']} ({room}) -> task {tid} for {name}")

@@ -48,8 +48,10 @@
   python hub.py serve    # 起服务 127.0.0.1:8794 /mcp
 """
 import base64
+import functools
 import hashlib
 import hmac
+import inspect
 import json
 import os
 import re
@@ -192,6 +194,26 @@ CREATE TABLE IF NOT EXISTS attachments(
   message_id INTEGER, created_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_attach_msg ON attachments(message_id);
 CREATE INDEX IF NOT EXISTS idx_attach_room ON attachments(room_id, id);
+CREATE TABLE IF NOT EXISTS pair_codes(
+  id INTEGER PRIMARY KEY, code_hash TEXT UNIQUE NOT NULL,
+  member_name TEXT NOT NULL, provider TEXT NOT NULL DEFAULT '',
+  bound_room_id INTEGER NOT NULL, display_name TEXT,
+  reclaim INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
+  redeemed_member_id INTEGER, redeemed_at REAL, revoked_at REAL,
+  fail_count INTEGER NOT NULL DEFAULT 0, locked_at REAL);
+CREATE TABLE IF NOT EXISTS member_read_cursors(
+  member_id INTEGER NOT NULL, room_id INTEGER NOT NULL,
+  cursor_id INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (member_id, room_id));
+CREATE TABLE IF NOT EXISTS hub_settings(
+  key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS message_op_keys(
+  member_id INTEGER NOT NULL, op_key TEXT NOT NULL, message_id INTEGER,
+  created_at REAL NOT NULL, PRIMARY KEY (member_id, op_key));
+CREATE TABLE IF NOT EXISTS pair_attempts(
+  id INTEGER PRIMARY KEY, ts REAL NOT NULL, success INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_pair_attempts_ts ON pair_attempts(ts);
 """
 
 
@@ -803,6 +825,22 @@ def init():
     # 供自报防伪造口径判读与审计对照（老数据留空 = 来源未知）。
     if "quota_source" not in mcols2:
         conn.execute("ALTER TABLE members ADD COLUMN quota_source TEXT")
+    # staging51 / EXTERNAL-AGENT Phase A：外部成员四列（kind 空 = 既有
+    # Muse 成员；display_name 空回退 name；bound_room_id / joined_msg_id
+    # 仅 external 有值）+ messages.reply_to_id（件三 reply-to 支撑列，
+    # Phase A 只加列）+ hub_settings 总开关默认值。新表（pair_codes /
+    # member_read_cursors / hub_settings / message_op_keys / pair_attempts）
+    # 已在 SCHEMA 里 CREATE TABLE IF NOT EXISTS 建好。
+    mcols3 = [r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
+    for col, ddl in (("kind", "TEXT"), ("display_name", "TEXT"),
+                     ("bound_room_id", "INTEGER"), ("joined_msg_id", "INTEGER")):
+        if col not in mcols3:
+            conn.execute(f"ALTER TABLE members ADD COLUMN {col} {ddl}")
+    msgcols2 = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    if "reply_to_id" not in msgcols2:
+        conn.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER")
+    conn.execute(
+        "INSERT OR IGNORE INTO hub_settings(key,value) VALUES('external_enabled','1')")
     # H2 房间归档标记。
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
     if "archived_at" not in rcols:
@@ -839,8 +877,16 @@ def authenticate():
     tok = auth[7:].strip()
     conn = db()
     row = conn.execute("SELECT * FROM members WHERE token_hash=?", (hash_token(tok),)).fetchone()
+    # staging51 总开关：external_enabled 关时 external 成员 token 一律
+    # 不认（与已移除同等对待），Muse 成员不受影响（件二总开关口径）。
+    ext_blocked = False
+    if row and row["removed_at"] is None \
+            and "kind" in row.keys() and (row["kind"] or "") == "external":
+        ext_blocked = not _external_enabled(conn)
     conn.close()
     if row and row["removed_at"] is not None:
+        return None
+    if ext_blocked:
         return None
     return dict(row) if row else None
 
@@ -941,9 +987,10 @@ def _auto_relay(conn, t, from_name, reason_label):
     合格口径（保守）：role=member 且非 owner、非原持有人；心跳新鲜；额度数据
     新鲜且周已用 <90%（数据缺失/过期 = 不合格，未知不当可用）；标题带执行体
     标记的任务执行体钉死、不接力；转交链未达 TRANSFER_CAP；无既有 pending
-    转交。多名合格时取周已用最低者。"""
-    title = (t["title"] or "").lstrip()
-    if any(title.startswith(m) for m in EXECUTOR_MARKERS):
+    转交。多名合格时取周已用最低者。staging51：候选排除 kind=external
+    （外部成员不参与自动接力，件二）；钉死判定改走公用 helper
+    _is_executor_pinned（标题开头或正文包含，四处统一口径）。"""
+    if _is_executor_pinned(t["title"], t["body"]):
         return None
     chain = conn.execute("SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=?",
                          (t["id"],)).fetchone()["n"]
@@ -956,7 +1003,7 @@ def _auto_relay(conn, t, from_name, reason_label):
         return None
     now = _now()
     cand = conn.execute(
-        """SELECT * FROM members WHERE role='member' AND removed_at IS NULL AND name<>? AND name<>'owner'
+        """SELECT * FROM members WHERE role='member' AND removed_at IS NULL AND (kind IS NULL OR kind<>'external') AND name<>? AND name<>'owner'
              AND last_heartbeat IS NOT NULL AND last_heartbeat>=?
              AND quota_updated_at IS NOT NULL AND quota_updated_at>=?
              AND quota_week_used_pct IS NOT NULL AND quota_week_used_pct<?
@@ -1115,20 +1162,24 @@ def sweep_once():
     # 与已有 pending 转交（正在等人接受）的卡一律不碰。
     unclaimed = conn.execute(
         """SELECT t.*, m.name AS a_name, m.last_heartbeat AS a_hb,
-                  m.quota_week_used_pct AS a_pct, m.quota_updated_at AS a_quota_at
+                  m.quota_week_used_pct AS a_pct, m.quota_updated_at AS a_quota_at,
+                  m.kind AS a_kind
              FROM tasks t JOIN members m ON m.id=t.assignee
             WHERE t.status='open' AND t.assignee IS NOT NULL AND m.removed_at IS NULL
               AND (t.next_claim_at IS NULL OR t.next_claim_at<=?)""",
         (now,)).fetchall()
     for t in unclaimed:
-        title = (t["title"] or "").lstrip()
-        body = t["body"] or ""
-        if any(title.startswith(mk) for mk in EXECUTOR_MARKERS) or \
-           any(mk in body for mk in EXECUTOR_MARKERS):
+        if _is_executor_pinned(t["title"], t["body"]):
             continue
         eligible_at = max(t["updated_at"] or 0, t["next_claim_at"] or 0,
                           t["sched_at"] or 0)
-        if eligible_at + UNCLAIMED_GRACE > now:
+        # staging51：external 靠定时 check-in（默认 15 分钟）维持在线，
+        # 240s 宽限必误报——其指派卡宽限放宽到 UNCLAIMED_GRACE_EXTERNAL
+        # （45 分钟，覆盖 3 个签到周期）再升级；接力路径仍排除 external
+        # （_auto_relay 候选已排除），超限走既有升级提示兜底。
+        grace = UNCLAIMED_GRACE_EXTERNAL if (t["a_kind"] or "") == "external" \
+            else UNCLAIMED_GRACE
+        if eligible_at + grace > now:
             continue
         cond_a = t["a_hb"] is None or (now - t["a_hb"]) > UNCLAIMED_HEARTBEAT_STALE
         cond_b = (t["a_quota_at"] is not None
@@ -1311,6 +1362,109 @@ def _validate_envelope(raw):
     return env, []
 
 
+# ---------------- 外部成员接入（staging51 / EXTERNAL-AGENT Phase A） ----------------
+# 外部 agent（kind='external'）凭配对码自助入群当成员：身份与房间绑定在
+# 配对时由调度员预定，服务端硬隔离（房间绑定 + 入群水位 + 工具面白名单
+# + 独立配额/频控）全部钉在服务端老接口上，不靠行为手册软约束。
+# 既有 Muse 成员（kind 空）行为逐字不变：下面每个挂点都先判 kind。
+# 限额类常量一律写死（与既有口径同例：改参数 = 改中枢代码 + 群主批准）。
+
+PAIR_CODE_TTL = 24 * 3600        # 配对码有效期 24 小时
+PAIR_CODE_FAIL_LOCK = 5          # 单码兑换失败达此数即锁定该码（锁死已接受）
+PAIR_GLOBAL_FAIL_WINDOW = 600    # 全局兑换失败滑窗（秒）
+PAIR_GLOBAL_FAIL_MAX = 30        # 滑窗内失败上限，超限拒绝一切兑换（防扫）
+PAIR_PROVIDERS = ("codex", "gemini", "generic")
+# external 发消息频控（messages 表窗口实时计数，approval_request 不计入）：
+# (窗口秒, 上限) 三档——5/分、20/时、100/天。
+EXT_MSG_LIMITS = ((60, 5), (3600, 20), (86400, 100))
+EXT_APPROVAL_PER_TASK = 5        # approval_request 独立硬顶：单任务
+EXT_APPROVAL_PER_HOUR = 10       # approval_request 独立硬顶：单成员每小时
+EXT_NOTE_MAX_CHARS = 4000        # external 的 task_update note 长度上限
+EXT_ATTACH_MAX_BYTES = 5 * 1024 * 1024    # external 附件单文件上限
+EXT_ATTACH_DAILY_UPLOADS = 10             # external 每成员每天上传次数（滚动 24h）
+EXT_ATTACH_MEMBER_QUOTA = 50 * 1024 * 1024  # external 名下附件总量上限
+EXT_EGRESS_PER_MIN = 60          # external 调 egress_check 的频控（次/分钟）
+UNCLAIMED_GRACE_EXTERNAL = 2700  # external 指派卡巡检宽限（30–45 分钟取 45 分钟）
+# 工具面白名单：kind=external 只能调名单内工具，名单外（含日后新增的
+# 工具）一律拒绝并写审计（external_tool_denied）。Phase A 名单 = 件二
+# 「放行 + 限条件放行」两档；收件箱三工具（inbox_*）Phase B 加入。
+EXTERNAL_ALLOWED_TOOLS = frozenset({
+    "heartbeat", "member_list",
+    "room_list", "room_summary_get", "room_read_new", "room_post",
+    "message_edit", "message_delete",
+    "attachment_put", "attachment_list", "attachment_get",
+    "task_list", "task_claim", "task_update", "task_complete", "task_block",
+    "run_start", "run_finish", "egress_check",
+})
+
+
+def _is_external(me):
+    """me（authenticate 返回的成员 dict）是否为外部成员。老成员 kind 为
+    NULL、老 DB 未迁移时键可能缺失，一律按非 external 处理。"""
+    return bool(me) and (me.get("kind") or "") == "external"
+
+
+def _is_executor_pinned(title, body):
+    """引擎标记判定（件二抽公用 helper，四处统一）：标题 lstrip 后以
+    执行体标记开头，或正文包含标记。带标记的卡是 GUI/引擎类任务，
+    执行体钉死——不接力、不许 external 认领/被指派。"""
+    t = (title or "").lstrip()
+    if any(t.startswith(mk) for mk in EXECUTOR_MARKERS):
+        return True
+    b = body or ""
+    return any(mk in b for mk in EXECUTOR_MARKERS)
+
+
+def _external_enabled(conn):
+    """总开关 hub_settings.external_enabled（默认开）。表缺失（极早期
+    DB）按开处理，不让开关本身成为单点故障。"""
+    try:
+        s = conn.execute(
+            "SELECT value FROM hub_settings WHERE key='external_enabled'").fetchone()
+    except sqlite3.OperationalError:
+        return True
+    return not (s and s["value"] == "0")
+
+
+def _ext_check(me, tool_name):
+    """工具面白名单闸门（require 层）：external 调用名单外工具一律
+    拒绝并写审计。由 build_server 的工具包装器在每个工具入口调用。"""
+    if tool_name in EXTERNAL_ALLOWED_TOOLS:
+        return
+    conn = db()
+    try:
+        audit(conn, me["name"], "external_tool_denied", f"tool={tool_name}")
+        conn.commit()
+    finally:
+        conn.close()
+    raise ValueError(
+        f"forbidden: tool {tool_name} is not available to external members")
+
+
+def _ext_msg_retry_after(conn, member_id, now):
+    """external 普通发消息三窗口计数（kind<>'approval_request' 的消息，
+    含 task_update 落的 report 行）：任一窗口已达上限返回该窗口的
+    retry_after（秒，取最大值），未超限返回 None。调用方须保证
+    「计数→落库」在 _lock 内串行（room_post / task_update 对 external
+    整体走 _lock），否则并发可越窗。"""
+    worst = None
+    for window, limit in EXT_MSG_LIMITS:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS o FROM messages"
+            " WHERE author_id=? AND kind<>'approval_request' AND created_at>=?",
+            (member_id, now - window)).fetchone()
+        if row["n"] >= limit and row["o"] is not None:
+            ra = int(row["o"] + window - now) + 1
+            worst = ra if worst is None else max(worst, ra)
+    return worst
+
+
+def _ext_rate_error(retry_after):
+    return ValueError(json.dumps(
+        {"error": "rate_limited", "retry_after": retry_after},
+        ensure_ascii=False))
+
+
 # ---------------- MCP tools ----------------
 
 def build_server():
@@ -1318,6 +1472,28 @@ def build_server():
     # FastMCP 4 内部已禁用 SDK 的 DNS 重绑定保护、Host 守卫默认关；
     # 中枢真正的门是每成员 Bearer token（见 authenticate）。
     mcp = FastMCP("pack-hub")
+
+    # staging51 工具面白名单闸门：把 mcp.tool 换成本地包装——每个工具
+    # 入口先 authenticate 一次，kind=external 且工具不在
+    # EXTERNAL_ALLOWED_TOOLS 内即拒绝 + 审计（_ext_check）。包装对既有
+    # 成员零行为变化（非 external 直接放行）；日后新增工具默认对
+    # external 关闭，须显式评估后才进名单。functools.wraps + 显式
+    # __signature__ 保证 FastMCP 的参数 schema 与原函数逐字一致；
+    # 模板 template_fire 直调 task_create 的路径同样过闸（身份为
+    # dispatcher 时直接放行）。
+    _register_tool = mcp.tool
+
+    def _gated_tool(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            _me = authenticate()
+            if _is_external(_me):
+                _ext_check(_me, fn.__name__)
+            return fn(*args, **kwargs)
+        wrapper.__signature__ = inspect.signature(fn)
+        return _register_tool(wrapper)
+
+    mcp.tool = _gated_tool
 
     @mcp.tool
     def member_register(name: str, profile: str = "", avatar_combo: str = "",
@@ -1709,17 +1885,268 @@ def build_server():
         return out
 
     @mcp.tool
-    def room_post(room: str, body: str, kind: str = "chat", attachment_ids: str = "") -> dict:
-        """在房间发一条消息。kind: chat/system/report/approval_request。
-        完整性守卫：task_card 只能由 task_create 内部落库、decision 只能由
+    def pair_code_create(member_name: str, provider: str, room: str,
+                         display_name: str = "", reclaim: bool = False) -> dict:
+        """调度员生成配对码（staging51 / 件一）：码在生成时即绑定预定
+        身份（内部名 / provider / 绑定房间，可选 display_name 预绑与
+        reclaim 标记），兑换方不能自报名字。码为长随机串、24 小时
+        过期、一码一成员，中枢只存哈希；明文码只在本返回值里出现一次
+        （调度员据此组装「一段话」）。名字三口径在生成与兑换两处同查：
+        Muse 成员占用 → 拒；已移除名 → 保留拒；在册 external → 仅
+        reclaim 码可覆盖（普通码拒）。external_gate 关闭时同步拒绝。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        name = (member_name or "").strip()
+        if not name or len(name) > 64 or any(ch.isspace() for ch in name) \
+                or "/" in name or "\\" in name or "@" in name or "＠" in name:
+            raise ValueError(
+                "member_name must be a short id (no whitespace/slashes/@)")
+        if provider not in PAIR_PROVIDERS:
+            raise ValueError(f"provider must be one of {list(PAIR_PROVIDERS)}")
+        if len(display_name or "") > 80:
+            raise ValueError("display_name too long: > 80 chars")
+        code = "pk-pair-" + secrets.token_urlsafe(32)
+        now = time.time()
+        exp = now + PAIR_CODE_TTL
+        with _lock:
+            conn = db()
+            try:
+                if not _external_enabled(conn):
+                    audit(conn, me["name"], "pair_code_gate_blocked",
+                          f"member={name}")
+                    conn.commit()
+                    raise ValueError(
+                        "external access is disabled (external_gate off)")
+                r = conn.execute("SELECT id FROM rooms WHERE name=?",
+                                 (room,)).fetchone()
+                if not r:
+                    raise ValueError(f"no such room: {room}")
+                old = conn.execute(
+                    "SELECT removed_at, kind, bound_room_id"
+                    " FROM members WHERE name=?",
+                    (name,)).fetchone()
+                if reclaim and old is None:
+                    # staging51 红队修复：reclaim 是给在册 external 换
+                    # token 的通道，目标不存在时发码即拒——否则兑换
+                    # 端会把 reclaim 码当新成员通道静默建号，掩盖
+                    # 调度员笔误。
+                    raise ValueError(
+                        f"reclaim target is not an existing external"
+                        f" member: {name}")
+                if old is not None:
+                    if old["removed_at"] is not None:
+                        raise ValueError(
+                            f"member name reserved by removed member: {name}")
+                    if (old["kind"] or "") != "external":
+                        raise ValueError(
+                            f"member name taken by an internal member: {name}")
+                    if not reclaim:
+                        raise ValueError(
+                            f"member {name} is an active external member;"
+                            " use reclaim=True to rotate its token")
+                    if old["bound_room_id"] != r["id"]:
+                        # staging51 红队修复：reclaim 只换 token、不
+                        # 改绑房间；发码时传入房间与成员现绑定不一致
+                        # 直接拒，免得兑换端静默保留旧 bound_room_id
+                        # 造成「以为换了房」的误解。
+                        raise ValueError(
+                            f"reclaim room mismatch: member {name} is"
+                            f" bound to room_id {old['bound_room_id']},"
+                            f" not room {room}")
+                cur = conn.execute(
+                    "INSERT INTO pair_codes(code_hash,member_name,provider,"
+                    "bound_room_id,display_name,reclaim,created_by,created_at,"
+                    "expires_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (hash_token(code), name, provider, r["id"],
+                     display_name or None, 1 if reclaim else 0,
+                     me["name"], now, exp))
+                cid = cur.lastrowid
+                audit(conn, me["name"], "pair_code_create",
+                      f"code_id={cid} member={name} provider={provider}"
+                      f" room_id={r['id']} reclaim={1 if reclaim else 0}")
+                conn.commit()
+            finally:
+                conn.close()
+        return {"pair_code": code, "code_id": cid, "member_name": name,
+                "provider": provider, "room": room,
+                "display_name": display_name or name,
+                "reclaim": bool(reclaim), "expires_at": exp}
+
+    @mcp.tool
+    def pair_code_list() -> dict:
+        """调度员查配对码台账（件一）：状态 unused / redeemed / expired /
+        revoked / locked；只回元数据，码的明文与哈希永不回读。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        conn = db()
+        try:
+            rows = conn.execute(
+                "SELECT c.*, r.name AS room_name FROM pair_codes c"
+                " JOIN rooms r ON r.id=c.bound_room_id"
+                " ORDER BY c.id DESC LIMIT 200").fetchall()
+        finally:
+            conn.close()
+        now = time.time()
+        out = []
+        for x in rows:
+            if x["revoked_at"]:
+                st = "revoked"
+            elif x["redeemed_at"]:
+                st = "redeemed"
+            elif x["locked_at"]:
+                st = "locked"
+            elif x["expires_at"] <= now:
+                st = "expired"
+            else:
+                st = "unused"
+            out.append({
+                "code_id": x["id"], "member_name": x["member_name"],
+                "provider": x["provider"], "room": x["room_name"],
+                "room_id": x["bound_room_id"],
+                "display_name": x["display_name"],
+                "reclaim": bool(x["reclaim"]), "status": st,
+                "created_by": x["created_by"], "created_at": x["created_at"],
+                "expires_at": x["expires_at"],
+                "redeemed_member_id": x["redeemed_member_id"],
+                "redeemed_at": x["redeemed_at"],
+                "revoked_at": x["revoked_at"],
+                "fail_count": x["fail_count"], "locked_at": x["locked_at"]})
+        return {"pair_codes": out}
+
+    @mcp.tool
+    def pair_code_revoke(code_id: int) -> dict:
+        """调度员吊销一个未兑换的配对码（件一）；已兑换/已吊销的拒绝。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        with _lock:
+            conn = db()
+            try:
+                row = conn.execute("SELECT * FROM pair_codes WHERE id=?",
+                                   (code_id,)).fetchone()
+                if not row:
+                    raise ValueError(f"no such pair code: {code_id}")
+                if row["redeemed_at"]:
+                    raise ValueError(f"pair code {code_id} already redeemed")
+                if row["revoked_at"]:
+                    raise ValueError(f"pair code {code_id} already revoked")
+                cur = conn.execute(
+                    "UPDATE pair_codes SET revoked_at=? WHERE id=?"
+                    " AND revoked_at IS NULL AND redeemed_at IS NULL",
+                    (time.time(), code_id))
+                if cur.rowcount != 1:
+                    raise ValueError(
+                        f"pair code {code_id} cannot be revoked now")
+                audit(conn, me["name"], "pair_code_revoke",
+                      f"code_id={code_id} member={row['member_name']}")
+                conn.commit()
+            finally:
+                conn.close()
+        return {"code_id": code_id, "revoked": True}
+
+    @mcp.tool
+    def member_token_rotate(name: str) -> dict:
+        """调度员应急轮换成员的 token（件一）：生成新 token 覆写
+        哈希、旧 token 立即失效，新明文只在本返回值出现一次；token
+        泄露止血不必移除成员。成员须存在且未移除。dispatcher 本人
+        除外：其 token 与本地 .dispatcher_token 文件绑定，误轮换会
+        打断线上调度链路，换它走运维流程。写审计。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        tok = "pk-mem-" + secrets.token_urlsafe(32)
+        with _lock:
+            conn = db()
+            try:
+                row = conn.execute(
+                    "SELECT id, removed_at, role FROM members WHERE name=?",
+                    (name,)).fetchone()
+                if not row:
+                    raise ValueError(f"no such member: {name}")
+                if row["removed_at"] is not None:
+                    raise ValueError(f"member removed: {name}")
+                if row["role"] == "dispatcher":
+                    # staging51 红队修复：调度员自身 token 与本地
+                    # .dispatcher_token 文件绑定（watcher 与全部调度员
+                    # 客户端同源），误轮换会直接打断线上调度链路——
+                    # 本工具不许碰，调度员换 token 走运维流程。
+                    raise ValueError(
+                        "cannot rotate the dispatcher's token with this tool")
+                conn.execute("UPDATE members SET token_hash=? WHERE id=?",
+                             (hash_token(tok), row["id"]))
+                audit(conn, me["name"], "member_token_rotate", name)
+                conn.commit()
+            finally:
+                conn.close()
+        return {"name": name, "token": tok}
+
+    @mcp.tool
+    def external_gate(enabled: bool = None, reason: str = "") -> dict:
+        """调度员总开关（件二）：hub_settings.external_enabled。
+        enabled 不给 = 只查询；给了 = 设置并写审计。关闭时 authenticate
+        拒一切 external、POST /pair 与 pair_code_create 同步关，Muse
+        成员完全不受影响；可逆止血，不必逐个移除成员。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        with _lock:
+            conn = db()
+            try:
+                cur = _external_enabled(conn)
+                if enabled is None:
+                    return {"external_enabled": cur}
+                conn.execute(
+                    "INSERT INTO hub_settings(key,value)"
+                    " VALUES('external_enabled',?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("1" if enabled else "0",))
+                audit(conn, me["name"], "external_gate_set",
+                      f"enabled={1 if enabled else 0}"
+                      + (f" reason={reason}" if reason else ""))
+                conn.commit()
+                return {"external_enabled": bool(enabled)}
+            finally:
+                conn.close()
+
+    @mcp.tool
+    def member_rename(name: str, display_name: str) -> dict:
+        """调度员改成员展示名（件二）：只改 display_name，内部 name
+        永不变（task_transfers / member_memory / desktop_lock / audit
+        均按 name 字符串关联，改 name 会断链）。成员须存在且未移除。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        dn = (display_name or "").strip()
+        if not dn or len(dn) > 80:
+            raise ValueError("display_name must be 1-80 chars")
+        with _lock:
+            conn = db()
+            try:
+                row = conn.execute(
+                    "SELECT id, removed_at FROM members WHERE name=?",
+                    (name,)).fetchone()
+                if not row:
+                    raise ValueError(f"no such member: {name}")
+                if row["removed_at"] is not None:
+                    raise ValueError(f"member removed: {name}")
+                conn.execute("UPDATE members SET display_name=? WHERE id=?",
+                             (dn, row["id"]))
+                audit(conn, me["name"], "member_rename", f"{name} -> {dn}")
+                conn.commit()
+            finally:
+                conn.close()
+        return {"name": name, "display_name": dn}
+
+    def _room_post_impl(me, room: str, body: str, kind: str = "chat",
+                        attachment_ids: str = "") -> dict:
+        """room_post 本体（身份已由 room_post 解析并传入）。完整性守卫：
+        task_card 只能由 task_create 内部落库、decision 只能由
         规则引擎/审查内部落库或调度员客户端代发——成员经 room_post 伪造
         这两类消息一律拒绝（staging21 对抗复检实证的缺口）。
         approval_request 同理设门（staging35，第 1 轮深查 F1）：必须引用
         存在的任务（任务#N）；非调度员还必须是该任务的当前执行者
         （assignee 本人且任务 claimed/working）——否则整笔拒绝、不落库，
-        伪造的待批项进不了批准中心、也喂不到 _approval_state。"""
-        me = authenticate()
-        require(me)
+        伪造的待批项进不了批准中心、也喂不到 _approval_state。
+        staging51：external 另加房间绑定、kind 限制与频控（普通消息三
+        窗口硬拒、approval_request 独立硬顶）；external 调用由 room_post
+        在 _lock 内进入本函数，保证「计数→落库」串行不越窗。"""
+        ext = _is_external(me)
         if len(body or "") > 20000:
             raise ValueError("message body too long: > 20000 chars")
         if kind == "task_card":
@@ -1735,6 +2162,14 @@ def build_server():
         if not r:
             conn.close()
             raise ValueError(f"no such room: {room}")
+        if ext:
+            if r["id"] != me["bound_room_id"]:
+                conn.close()
+                raise ValueError(
+                    "forbidden: external members may only post in their bound room")
+            if kind not in ("chat", "approval_request"):
+                conn.close()
+                raise ValueError(f"kind not allowed for external members: {kind}")
         if kind == "approval_request":
             m = TASK_REF_RE.search(body or "")
             t = None
@@ -1748,6 +2183,43 @@ def build_server():
                     t["assignee"] != me["id"] or t["status"] not in ("claimed", "working")):
                 conn.close()
                 raise ValueError("approval_request only from the member executing that task")
+        if ext:
+            # 频控在落库前判定：普通消息走三窗口（approval_request 不
+            # 计入），approval_request 走独立硬顶（单任务 + 单成员每小时）。
+            nowx = time.time()
+            if kind == "approval_request":
+                m2 = TASK_REF_RE.search(body or "")
+                tid2 = int(m2.group(1)) if m2 else None
+                per_task = conn.execute(
+                    "SELECT COUNT(*) AS n FROM messages WHERE author_id=?"
+                    " AND kind='approval_request' AND task_id=?",
+                    (me["id"], tid2)).fetchone()["n"]
+                per_hour = conn.execute(
+                    "SELECT COUNT(*) AS n, MIN(created_at) AS o FROM messages"
+                    " WHERE author_id=? AND kind='approval_request' AND created_at>=?",
+                    (me["id"], nowx - 3600)).fetchone()
+                cap = None
+                if tid2 is not None and per_task >= EXT_APPROVAL_PER_TASK:
+                    cap = ("task", None)
+                elif per_hour["n"] >= EXT_APPROVAL_PER_HOUR:
+                    cap = ("member_hour", int(per_hour["o"] + 3600 - nowx) + 1)
+                if cap:
+                    audit(conn, me["name"], "external_approval_cap",
+                          f"task={tid2} scope={cap[0]} per_task={per_task}"
+                          f" per_hour={per_hour['n']}")
+                    conn.commit()
+                    conn.close()
+                    raise ValueError(json.dumps(
+                        {"error": "approval_request_cap", "scope": cap[0],
+                         "retry_after": cap[1]}, ensure_ascii=False))
+            else:
+                ra = _ext_msg_retry_after(conn, me["id"], nowx)
+                if ra is not None:
+                    audit(conn, me["name"], "external_rate_limited",
+                          f"kind={kind} retry_after={ra}")
+                    conn.commit()
+                    conn.close()
+                    raise _ext_rate_error(ra)
         cur = conn.execute(
             "INSERT INTO messages(room_id,author_id,kind,body,created_at) VALUES(?,?,?,?,?)",
             (r["id"], me["id"], kind, body, time.time()))
@@ -1783,6 +2255,18 @@ def build_server():
         out = {"message_id": mid}
         out.update(extra)
         return out
+
+    @mcp.tool
+    def room_post(room: str, body: str, kind: str = "chat", attachment_ids: str = "") -> dict:
+        """在房间发一条消息。kind: chat/system/report/approval_request。
+        完整性守卫与 approval_request 门见 _room_post_impl。
+        staging51：external 调用整体走 _lock（频控计数与落库串行）。"""
+        me = authenticate()
+        require(me)
+        if _is_external(me):
+            with _lock:
+                return _room_post_impl(me, room, body, kind, attachment_ids)
+        return _room_post_impl(me, room, body, kind, attachment_ids)
 
     @mcp.tool
     def room_create(name: str) -> dict:
@@ -1883,6 +2367,9 @@ def build_server():
             d = dict(x)
             d["archived"] = bool(d.pop("archived_at"))
             out.append(d)
+        if _is_external(me):
+            # 件二房间隔离：external 的房间列表只含绑定房间。
+            out = [d for d in out if d["id"] == me["bound_room_id"]]
         return {"rooms": out}
 
     @mcp.tool
@@ -1896,6 +2383,9 @@ def build_server():
             r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
             if not r:
                 raise ValueError(f"no such room: {room}")
+            if _is_external(me) and r["id"] != me["bound_room_id"]:
+                raise ValueError(
+                    "forbidden: external members may only access their bound room")
             row = conn.execute(
                 "SELECT data, updated_at, updated_by FROM room_summaries WHERE room_id=?",
                 (r["id"],)).fetchone()
@@ -1951,6 +2441,15 @@ def build_server():
         if not r:
             conn.close()
             raise ValueError(f"no such room: {room}")
+        if _is_external(me):
+            if r["id"] != me["bound_room_id"]:
+                conn.close()
+                raise ValueError(
+                    "forbidden: external members may only read their bound room")
+            # 入群水位硬截断（件二）：external 的读路径强制
+            # effective_since = max(since_id, joined_msg_id)，传 0 也
+            # 翻不到入群前的历史。
+            since_id = max(int(since_id), me["joined_msg_id"] or 0)
         if tail:
             rows = conn.execute(
                 """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
@@ -2011,6 +2510,22 @@ def build_server():
             raise ValueError("empty attachment")
         if len(data) > ATTACH_MAX_BYTES:
             raise ValueError("attachment too large")
+        ext = _is_external(me)
+        if ext and len(data) > EXT_ATTACH_MAX_BYTES:
+            # 件二 external 独立配额之一：单文件 ≤5MB（既有成员仍走
+            # 上面的全员 10MB 口径）。staging51 红队修复：按定稿
+            # 「超限硬拒并写审计」口径，抛错前补写一条与锁内其它
+            # 配额超限同名的 external_attachment_quota 审计——此处
+            # 尚未进 _lock、无既有连接，用独立短事务落审计再抛错。
+            aconn = db()
+            try:
+                audit(aconn, me["name"], "external_attachment_quota",
+                      f"room {room} size {len(data)}:"
+                      " single file cap exceeded (5MB)")
+                aconn.commit()
+            finally:
+                aconn.close()
+            raise ValueError("attachment too large for external members: > 5MB")
         if _sniff_image_mime(data) != mime:
             raise ValueError("mime does not match file content")
         sha = hashlib.sha256(data).hexdigest()
@@ -2021,6 +2536,32 @@ def build_server():
             if not r:
                 conn.close()
                 raise ValueError(f"no such room: {room}")
+            if ext:
+                if r["id"] != me["bound_room_id"]:
+                    conn.close()
+                    raise ValueError(
+                        "forbidden: external members may only upload to their bound room")
+                # 件二 external 独立配额之二/三：每天（滚动 24h）≤10 次
+                # 上传、名下附件总量（未绑定 + 已绑定合计）≤50MB；
+                # 超限硬拒 + 审计。本段在 _lock 内，计数与落库串行。
+                day_n = conn.execute(
+                    "SELECT COUNT(*) AS n FROM attachments"
+                    " WHERE uploader_id=? AND created_at>=?",
+                    (me["id"], time.time() - 86400)).fetchone()["n"]
+                mine = conn.execute(
+                    "SELECT COALESCE(SUM(size),0) AS s FROM attachments"
+                    " WHERE uploader_id=?", (me["id"],)).fetchone()["s"]
+                why = None
+                if day_n >= EXT_ATTACH_DAILY_UPLOADS:
+                    why = f"daily upload cap reached ({EXT_ATTACH_DAILY_UPLOADS}/day)"
+                elif mine + len(data) > EXT_ATTACH_MEMBER_QUOTA:
+                    why = "member attachment quota exceeded (50MB total)"
+                if why:
+                    audit(conn, me["name"], "external_attachment_quota",
+                          f"room {room} size {len(data)}: {why}")
+                    conn.commit()
+                    conn.close()
+                    raise ValueError(f"external attachment quota: {why}")
             total = conn.execute(
                 "SELECT COALESCE(SUM(size),0) AS s FROM attachments WHERE room_id=?",
                 (r["id"],)).fetchone()["s"]
@@ -2056,6 +2597,18 @@ def build_server():
         if not row:
             conn.close()
             raise ValueError(f"no such attachment: {attachment_id}")
+        if _is_external(me):
+            # 件二：attachment_get 入参无房间，必须按 attachments.room_id
+            # == bound_room_id 校验；并叠加水位截断——拒绝读取入群时刻
+            # 之前已存在的附件。
+            if row["room_id"] != me["bound_room_id"]:
+                conn.close()
+                raise ValueError(
+                    "forbidden: attachment is outside the bound room")
+            if row["created_at"] < me["created_at"]:
+                conn.close()
+                raise ValueError(
+                    "forbidden: attachment predates external member join")
         path = _attach_path(row["sha256"], row["mime"])
         if not os.path.exists(path):
             conn.close()
@@ -2079,10 +2632,18 @@ def build_server():
         if not r:
             conn.close()
             raise ValueError(f"no such room: {room}")
+        if _is_external(me) and r["id"] != me["bound_room_id"]:
+            conn.close()
+            raise ValueError(
+                "forbidden: external members may only list their bound room")
         q = ("SELECT a.id, a.message_id, a.mime, a.size, a.original_name, "
              "a.created_at, mb.name AS uploader FROM attachments a "
              "JOIN members mb ON mb.id=a.uploader_id WHERE a.room_id=?")
         args = [r["id"]]
+        if _is_external(me):
+            # 水位截断：入群时刻之前的附件不出现在 external 的列表里。
+            q += " AND a.created_at>=?"
+            args.append(me["created_at"])
         if message_id:
             q += " AND a.message_id=?"
             args.append(message_id)
@@ -2111,6 +2672,9 @@ def build_server():
         if m["author_id"] != me["id"]:
             conn.close()
             raise ValueError("only the author can delete this message")
+        if _is_external(me) and m["room_id"] != me["bound_room_id"]:
+            conn.close()
+            raise ValueError("forbidden: message is outside the bound room")
         if m["kind"] != "chat":
             conn.close()
             raise ValueError(f"only chat messages can be deleted (kind={m['kind']})")
@@ -2149,6 +2713,9 @@ def build_server():
         if m["author_id"] != me["id"]:
             conn.close()
             raise ValueError("only the author can edit this message")
+        if _is_external(me) and m["room_id"] != me["bound_room_id"]:
+            conn.close()
+            raise ValueError("forbidden: message is outside the bound room")
         if m["kind"] != "chat":
             conn.close()
             raise ValueError(f"only chat messages can be edited (kind={m['kind']})")
@@ -2179,7 +2746,7 @@ def build_server():
             raise ValueError(f"no such room: {room}")
         assignee = None
         if assignee_name:
-            a = conn.execute("SELECT id, removed_at FROM members WHERE name=?", (assignee_name,)).fetchone()
+            a = conn.execute("SELECT id, removed_at, kind, bound_room_id FROM members WHERE name=?", (assignee_name,)).fetchone()
             if not a:
                 conn.close()
                 raise ValueError(f"no such member: {assignee_name}")
@@ -2188,6 +2755,20 @@ def build_server():
                 # 在途指派，但按名新建卡此前不查 removed_at，能把卡挂回死人）
                 conn.close()
                 raise ValueError(f"member is removed: {assignee_name}")
+            if (a["kind"] or "") == "external":
+                # staging51（watcher 两道防线的 hub 侧）：指派 external
+                # 的违规卡给可区分的永久性拒绝（"permanent:" 前缀）——
+                # 跨房指派与引擎标记卡重试一万次也不会成，watcher 据
+                # 前缀回帖拒因、不进重试循环。
+                if a["bound_room_id"] != r["id"]:
+                    conn.close()
+                    raise ValueError(
+                        f"permanent: external member {assignee_name} is bound to another room")
+                if _is_executor_pinned(title, body):
+                    conn.close()
+                    raise ValueError(
+                        f"permanent: executor-pinned tasks cannot be assigned"
+                        f" to external member {assignee_name}")
             assignee = a["id"]
         now = time.time()
         cur = conn.execute(
@@ -2243,7 +2824,7 @@ def build_server():
             r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
             if not r:
                 raise ValueError(f"no such room: {room}")
-            a = conn.execute("SELECT id, role, removed_at FROM members WHERE name=?", (member_name,)).fetchone()
+            a = conn.execute("SELECT id, role, removed_at, kind, bound_room_id FROM members WHERE name=?", (member_name,)).fetchone()
             if not a:
                 raise ValueError(f"no such member: {member_name}")
             if a["removed_at"] is not None:
@@ -2251,6 +2832,18 @@ def build_server():
                 raise ValueError(f"member is removed: {member_name}")
             if a["role"] != "member" or member_name == "owner":
                 raise ValueError(f"cannot schedule for {member_name}: not an AI member")
+            if (a["kind"] or "") == "external":
+                # staging51 红队修复：对齐 task_create 的 external
+                # 口径——跨房排班与引擎标记卡对 external 是永远
+                # 认领不了的死卡（task_claim 三重限制兜底虽在，但
+                # 排班侧不应开出死卡），同给永久性拒绝。
+                if a["bound_room_id"] != r["id"]:
+                    raise ValueError(
+                        f"permanent: external member {member_name} is bound to another room")
+                if _is_executor_pinned(title, body):
+                    raise ValueError(
+                        f"permanent: executor-pinned tasks cannot be assigned"
+                        f" to external member {member_name}")
             cur = conn.execute(
                 "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,next_claim_at,sched_at,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,'open',?,?,?,?)",
@@ -2396,6 +2989,28 @@ def build_server():
         tok = secrets.token_urlsafe(24)
         now = _now()
         with _lock:
+            if _is_external(me):
+                # 件二：external 只许认领绑定房内、指派给本人、非引擎
+                # 标记的卡（未指派卡不许抢）。staging51 红队修复：
+                # 前置检查在 _lock 内、用同一 conn 重读任务行后紧贴
+                # 原子 UPDATE 执行——原实现锁外预检与锁内 UPDATE
+                # 之间存在 TOCTOU 窗口（预检通过后任务被改派/改
+                # 正文即可绕过三条限制）。拒绝口径与既有 claim
+                # 失败区分开（forbidden 前缀）。
+                t0 = conn.execute(
+                    "SELECT room_id, title, body, assignee FROM tasks WHERE id=?",
+                    (task_id,)).fetchone()
+                if t0:
+                    if t0["room_id"] != me["bound_room_id"]:
+                        conn.close()
+                        raise ValueError("forbidden: task is outside the bound room")
+                    if t0["assignee"] != me["id"]:
+                        conn.close()
+                        raise ValueError(
+                            "forbidden: external members may only claim tasks assigned to themselves")
+                    if _is_executor_pinned(t0["title"], t0["body"]):
+                        conn.close()
+                        raise ValueError("forbidden: executor-pinned task")
             cur = conn.execute(
                 """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
                    lease_expires=?, attempts=attempts+1, next_claim_at=NULL, sched_at=NULL, updated_at=?
@@ -2431,14 +3046,29 @@ def build_server():
             raise ValueError("not the current holder (claim_token mismatch)")
         return t
 
-    @mcp.tool
-    def task_update(task_id: int, claim_token: str, note: str = "") -> dict:
-        """持有人汇报进度：状态转 working 并续租，可附一句进度说明（进房间消息）。"""
-        me = authenticate()
-        require(me)
+    def _task_update_impl(me, task_id: int, claim_token: str, note: str = "") -> dict:
+        """task_update 本体（身份已由 task_update 解析并传入）。
+        staging51：external 另加绑定房校验、note ≤4000 字、带 note 的
+        调用计入其发消息限流窗口（note 落成 report 消息，与 room_post
+        普通消息同窗口计数）；external 调用由 task_update 在 _lock 内
+        进入本函数，保证计数与落库串行。"""
         conn = db()
         try:
-            _holder(conn, me, task_id, claim_token)
+            t = _holder(conn, me, task_id, claim_token)
+            if _is_external(me):
+                if t["room_id"] != me["bound_room_id"]:
+                    raise ValueError("forbidden: task is outside the bound room")
+                if note:
+                    if len(note) > EXT_NOTE_MAX_CHARS:
+                        raise ValueError(
+                            f"note too long for external members:"
+                            f" > {EXT_NOTE_MAX_CHARS} chars")
+                    ra = _ext_msg_retry_after(conn, me["id"], time.time())
+                    if ra is not None:
+                        audit(conn, me["name"], "external_rate_limited",
+                              f"kind=task_update_note retry_after={ra}")
+                        conn.commit()
+                        raise _ext_rate_error(ra)
             now = time.time()
             # UPDATE 带持有人守卫 + rowcount 复核：_holder 是先检后写，两步之间
             # 租约可能被 sweeper 回收并被他人重认领，无守卫 UPDATE 会覆盖新认领
@@ -2462,6 +3092,17 @@ def build_server():
             conn.close()
 
     @mcp.tool
+    def task_update(task_id: int, claim_token: str, note: str = "") -> dict:
+        """持有人汇报进度：状态转 working 并续租，可附一句进度说明（进房间消息）。
+        staging51：external 调用整体走 _lock（note 限流计数与落库串行）。"""
+        me = authenticate()
+        require(me)
+        if _is_external(me):
+            with _lock:
+                return _task_update_impl(me, task_id, claim_token, note)
+        return _task_update_impl(me, task_id, claim_token, note)
+
+    @mcp.tool
     def task_complete(task_id: int, claim_token: str, result: str,
                       envelope: dict | None = None, attachment_ids: str = "") -> dict:
         """持有人交活：状态转 review，等调度员验收关单。
@@ -2480,7 +3121,9 @@ def build_server():
         require(me)
         conn = db()
         try:
-            _holder(conn, me, task_id, claim_token)
+            t0 = _holder(conn, me, task_id, claim_token)
+            if _is_external(me) and t0["room_id"] != me["bound_room_id"]:
+                raise ValueError("forbidden: task is outside the bound room")
             env = None
             stored = result
             if envelope is not None:
@@ -2562,6 +3205,8 @@ def build_server():
         conn = db()
         try:
             t = _holder(conn, me, task_id, claim_token)
+            if _is_external(me) and t["room_id"] != me["bound_room_id"]:
+                raise ValueError("forbidden: task is outside the bound room")
             now = _now()
             nca = now + _backoff_seconds(fc, t["attempts"])
             cur = conn.execute(
@@ -2680,7 +3325,7 @@ def build_server():
             rows = conn.execute(
                 "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
                 " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at,"
-                " quota_source, provider, login_state"
+                " quota_source, provider, login_state, kind, display_name, bound_room_id"
                 " FROM members WHERE removed_at IS NULL ORDER BY id"
             ).fetchall()
             wk = _week_start_cst()
@@ -2698,7 +3343,18 @@ def build_server():
             except Exception:
                 d["avatar"] = avatar_for(d["name"])
             d["week_done"] = counts.get(d["id"], 0)
+            # staging51：新字段纯追加（老成员 kind 回 "internal"、
+            # display_name 回 name、bound_room 回 None，向后兼容）。
+            d["kind"] = d.get("kind") or "internal"
+            if not d.get("display_name"):
+                d["display_name"] = d["name"]
             out.append(d)
+        if _is_external(me):
+            # 件二脱敏视图：external 只看得到身份类字段，额度、
+            # login_state、week_done 一律剥离。
+            keys = ("name", "display_name", "role", "kind", "provider",
+                    "avatar", "last_heartbeat")
+            out = [{k: d.get(k) for k in keys} for d in out]
         return {"members": out}
 
     @mcp.tool
@@ -2718,6 +3374,14 @@ def build_server():
         me = authenticate()
         require(me)
         conn = db()
+        if _is_external(me):
+            # 件二：external 的 task_list 强制本房且只回 assignee == 本人
+            # 的卡（覆盖调用方传入的过滤参数）——未指派卡与他人的卡
+            # 一律不回，防把准备派给 Muse 成员的任务正文泄给外部成员。
+            assignee_name = me["name"]
+            brow = conn.execute("SELECT name FROM rooms WHERE id=?",
+                                (me["bound_room_id"],)).fetchone()
+            room = brow["name"] if brow else "\x00no-bound-room"
         q = """SELECT t.id, t.title, t.body, t.status, mb.name AS assignee, t.attempts,
                       t.result, t.envelope, t.lease_expires, t.updated_at,
                       t.fail_class, t.next_claim_at, t.sched_at, t.urgent,
@@ -2917,6 +3581,11 @@ def build_server():
                     raise ValueError(
                         "transfer target must be a member (owner is not an "
                         "executor and cannot receive transfers)")
+                if (target["kind"] or "") == "external":
+                    # staging51 红队修复：external 不在转交体系内——其
+                    # task_accept_transfer 被白名单闸门全禁，转给它任务
+                    # 只会挂 pending 等过期回收，故在发端直接拒。
+                    raise ValueError("transfer target cannot be an external member")
                 if target["id"] == t["assignee"]:
                     raise ValueError("cannot transfer to the current holder (self)")
                 pending = conn.execute(
@@ -3099,6 +3768,8 @@ def build_server():
         try:
             with _lock:
                 t = _holder(conn, me, task_id, claim_token)
+                if _is_external(me) and t["room_id"] != me["bound_room_id"]:
+                    raise ValueError("forbidden: task is outside the bound room")
                 if t["status"] not in ("claimed", "working"):
                     raise ValueError(
                         f"task {task_id} not in claimed/working (status={t['status']})")
@@ -3141,7 +3812,9 @@ def build_server():
         conn = db()
         try:
             with _lock:
-                _holder(conn, me, task_id, claim_token)
+                t0 = _holder(conn, me, task_id, claim_token)
+                if _is_external(me) and t0["room_id"] != me["bound_room_id"]:
+                    raise ValueError("forbidden: task is outside the bound room")
                 row = _close_run(conn, task_id, outcome, me["name"], detail)
                 if not row:
                     raise ValueError(f"no running run for task {task_id}")
@@ -3286,6 +3959,20 @@ def build_server():
         require(me)
         conn = db()
         try:
+            if _is_external(me):
+                # 件二：egress_check 对 external 加通用频控 ≤60 次/分钟
+                # （按其 egress_check 审计行窗口计数），防审计表被刷爆。
+                prefix = f"member={me['name']} "
+                n = conn.execute(
+                    "SELECT COUNT(*) AS n FROM audit WHERE actor='egress'"
+                    " AND action='egress_check' AND ts>=?"
+                    " AND substr(detail,1,?)=?",
+                    (time.time() - 60, len(prefix), prefix)).fetchone()["n"]
+                if n >= EXT_EGRESS_PER_MIN:
+                    audit(conn, me["name"], "external_egress_throttled",
+                          f"count={n} window=60s")
+                    conn.commit()
+                    raise _ext_rate_error(60)
             # 审计只记去查询串/片段的 URL：查询串常带签名 token，成员提交的
             # URL 是不可信输入，不许把其查询串原样落进审计（staging14 复检 C8）。
             safe_url = (url or "").split("?")[0].split("#")[0][:200]
@@ -3883,6 +4570,172 @@ def build_server():
         conn.commit()
         conn.close()
         return {"ok": True, "member": me["name"]}
+
+    @mcp.custom_route("/pair", methods=["POST"])
+    async def pair_redeem(request):
+        """公开兑换路由（件一）：只验配对码本身、不经 authenticate
+        （兑换时还没有 token）。成功建 external 成员并一次性返回 token
+        （中枢只存哈希）；reclaim 码只轮换 token_hash，joined_msg_id 与
+        已读游标保持原值不动。防扫两层：按码失败计数超限锁定该码 +
+        全局失败滑窗。一切失败统一模糊报错，码/token 绝不进日志、
+        审计 detail 与报错回显。整段在 _lock 内串行：一码一成员在
+        并发兑换下也只成一个。"""
+        from starlette.responses import JSONResponse
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        code = payload.get("code") if isinstance(payload, dict) else None
+        if isinstance(code, str):
+            code = code.strip()
+        now = time.time()
+        with _lock:
+            conn = db()
+            try:
+                fails = conn.execute(
+                    "SELECT COUNT(*) AS n FROM pair_attempts"
+                    " WHERE success=0 AND ts>=?",
+                    (now - PAIR_GLOBAL_FAIL_WINDOW,)).fetchone()["n"]
+                if fails >= PAIR_GLOBAL_FAIL_MAX:
+                    audit(conn, "pair", "pair_global_throttle",
+                          f"fails={fails} window={PAIR_GLOBAL_FAIL_WINDOW}s")
+                    conn.commit()
+                    return JSONResponse(
+                        {"error": "too many failed attempts; try again later"},
+                        status_code=429)
+                if not _external_enabled(conn):
+                    audit(conn, "pair", "pair_rejected_gate_off", "")
+                    conn.commit()
+                    return JSONResponse(
+                        {"error": "pairing is currently disabled"},
+                        status_code=403)
+                if not code or not isinstance(code, str):
+                    conn.execute(
+                        "INSERT INTO pair_attempts(ts,success) VALUES(?,0)",
+                        (now,))
+                    audit(conn, "pair", "pair_failed", "reason=missing_code")
+                    conn.commit()
+                    return JSONResponse({"error": "invalid pair code"},
+                                        status_code=400)
+                row = conn.execute(
+                    "SELECT * FROM pair_codes WHERE code_hash=?",
+                    (hash_token(code),)).fetchone()
+                if not row:
+                    conn.execute(
+                        "INSERT INTO pair_attempts(ts,success) VALUES(?,0)",
+                        (now,))
+                    audit(conn, "pair", "pair_failed", "reason=unknown_code")
+                    conn.commit()
+                    return JSONResponse({"error": "invalid pair code"},
+                                        status_code=400)
+
+                def known_fail(reason):
+                    fc = row["fail_count"] + 1
+                    newly_locked = (fc >= PAIR_CODE_FAIL_LOCK
+                                    and not row["locked_at"])
+                    if newly_locked:
+                        conn.execute(
+                            "UPDATE pair_codes SET fail_count=?, locked_at=?"
+                            " WHERE id=?", (fc, now, row["id"]))
+                    else:
+                        conn.execute(
+                            "UPDATE pair_codes SET fail_count=? WHERE id=?",
+                            (fc, row["id"]))
+                    conn.execute(
+                        "INSERT INTO pair_attempts(ts,success) VALUES(?,0)",
+                        (now,))
+                    audit(conn, "pair", "pair_failed",
+                          f"code_id={row['id']} reason={reason} fail_count={fc}")
+                    if newly_locked:
+                        # 锁死写高优先级审计：持码者本人也兑不了，
+                        # 只能调度员吊销重发（运营后果已接受）。
+                        audit(conn, "pair", "pair_code_locked",
+                              f"code_id={row['id']} member={row['member_name']}"
+                              f" fail_count={fc}")
+                    conn.commit()
+                    return JSONResponse({"error": "invalid pair code"},
+                                        status_code=400)
+
+                if row["revoked_at"]:
+                    return known_fail("revoked")
+                if row["redeemed_at"]:
+                    return known_fail("already_redeemed")
+                if row["locked_at"]:
+                    return known_fail("locked")
+                if row["expires_at"] <= now:
+                    return known_fail("expired")
+                old = conn.execute("SELECT * FROM members WHERE name=?",
+                                   (row["member_name"],)).fetchone()
+                reclaiming = False
+                if old is not None:
+                    if old["removed_at"] is not None:
+                        return known_fail("name_reserved")
+                    if (old["kind"] or "") != "external":
+                        return known_fail("name_taken")
+                    if not row["reclaim"]:
+                        return known_fail("name_active_external")
+                    reclaiming = True
+                room_row = conn.execute(
+                    "SELECT id, name FROM rooms WHERE id=?",
+                    (row["bound_room_id"],)).fetchone()
+                if not room_row:
+                    return known_fail("room_missing")
+                tok = "pk-mem-" + secrets.token_urlsafe(32)
+                if reclaiming:
+                    # 只轮换 token_hash：joined_msg_id、已读游标、头像、
+                    # 入群时刻全部保持原值（件一 reclaim 口径）。
+                    mid = old["id"]
+                    conn.execute(
+                        "UPDATE members SET token_hash=?, provider=?"
+                        " WHERE id=?",
+                        (hash_token(tok), row["provider"] or old["provider"],
+                         mid))
+                    disp_name = old["display_name"] or old["name"]
+                    resp_room = conn.execute(
+                        "SELECT name FROM rooms WHERE id=?",
+                        (old["bound_room_id"],)).fetchone()
+                    resp_room_name = resp_room["name"] if resp_room \
+                        else room_row["name"]
+                else:
+                    joined = conn.execute(
+                        "SELECT COALESCE(MAX(id),0) AS m FROM messages"
+                        " WHERE room_id=?",
+                        (room_row["id"],)).fetchone()["m"]
+                    av = avatar_for(row["member_name"])
+                    av.update(_avatar_combo(row["member_name"],
+                                            _used_combos(conn)))
+                    cur = conn.execute(
+                        "INSERT INTO members(name,role,token_hash,profile,"
+                        "created_at,avatar,provider,kind,display_name,"
+                        "bound_room_id,joined_msg_id)"
+                        " VALUES(?,'member',?,NULL,?,?,?,?,?,?,?)",
+                        (row["member_name"], hash_token(tok), now,
+                         json.dumps(av), row["provider"] or None, "external",
+                         row["display_name"] or row["member_name"],
+                         room_row["id"], joined))
+                    mid = cur.lastrowid
+                    # 已读游标初始值 = joined_msg_id（水位）。
+                    conn.execute(
+                        "INSERT OR REPLACE INTO member_read_cursors"
+                        "(member_id,room_id,cursor_id) VALUES(?,?,?)",
+                        (mid, room_row["id"], joined))
+                    disp_name = row["display_name"] or row["member_name"]
+                    resp_room_name = room_row["name"]
+                conn.execute(
+                    "UPDATE pair_codes SET redeemed_member_id=?, redeemed_at=?"
+                    " WHERE id=? AND redeemed_at IS NULL",
+                    (mid, now, row["id"]))
+                conn.execute(
+                    "INSERT INTO pair_attempts(ts,success) VALUES(?,1)", (now,))
+                audit(conn, "pair", "pair_redeem",
+                      f"code_id={row['id']} member={row['member_name']}"
+                      f" member_id={mid} reclaim={1 if reclaiming else 0}")
+                conn.commit()
+                return JSONResponse({
+                    "member": row["member_name"], "display_name": disp_name,
+                    "member_id": mid, "token": tok, "room": resp_room_name})
+            finally:
+                conn.close()
 
     return mcp
 
