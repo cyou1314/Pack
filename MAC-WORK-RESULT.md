@@ -21,3 +21,8 @@
 
 - 已按用户放行修复页面创建：使用独立新页面，导航已提交但 load 超时可继续等待必要元素，结束时关闭本次新建页面。Profile 3 独立空间实测驾驶层返回 `week_used_pct: 23`，其余字段未推算；全套隔离测试 18 项通过。
 - 本次设置页的“3.7 亿个口令”为约数、重置时间仅有日期，候选不会把它们猜成精确 token 数或精确时间。通过生产运行时向中枢上报仍待运行时部署后验证，不能凭页面读取宣称自报成功。
+
+## 第三轮：运行时及额度上报
+
+- 2026-11-20 11:06（北京时间）同步 `runtime.mjs` 与五个点名依赖 `chat-policy.mjs`、`chat-driver.js`、`quota-driver.js`、`quota-policy.mjs`、`runtime-helpers.mjs`，逐个 `cmp` 一致；保留本机配置，配置文件权限为 0600。重启后运行时 PID 88113，私有地址源发现并落盘，11:06:38 心跳正常，11:06:42 日志 `quota self report succeeded`。用户/调度员侧的 `quota_source=self` 与时间回读待确认。
+- 桥代码同步并重启，PID 88130，11:06:30 日志 `hub connected`、11:06:31 `hub heartbeat ok` 且 `Muse4AI authenticated`。重启后仍需观察完整轮询窗口；真实任务交付未发卡验证。
