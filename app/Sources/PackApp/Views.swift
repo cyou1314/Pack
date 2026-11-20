@@ -1398,7 +1398,7 @@ private struct MemberDetail: View {
                     Text("\(skill.name) · v\(skill.version)").font(DesignTokens.fontSmall)
                 }
                 if member.name != "owner" {
-                    if member.role == "member" { Button("成员本人登录 / 重新登录") { state.openMemberLogin(member) }.buttonStyle(.bordered) }
+                    if member.role == "member" && member.kind != "external" { Button("成员本人登录 / 重新登录") { state.openMemberLogin(member) }.buttonStyle(.bordered) }
                     Button("更换头像") { state.openAvatarPicker(member) }.buttonStyle(.bordered)
                     if member.role == "member" { Button("移除成员") { state.showRemoveMember = true }.foregroundStyle(DesignTokens.danger).disabled(state.memberRemovalInProgress) }
                 }

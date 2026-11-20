@@ -285,6 +285,7 @@ final class AppState: ObservableObject {
                                lastHeartbeat: optDoubleVal($0["last_heartbeat"]),
                                provider: optStringVal($0["provider"]).flatMap { $0.isEmpty ? nil : $0 },
                                loginState: optStringVal($0["login_state"]),
+                               kind: optStringVal($0["kind"]),
                                quotaWeekUsedPct: optDoubleVal($0["quota_week_used_pct"]),
                                quotaWeekResetAt: optDoubleVal($0["quota_week_reset_at"]),
                                quotaExtraLeft: optIntVal($0["quota_extra_left"]),

@@ -120,6 +120,7 @@ struct MemberInfo: Identifiable {
     let lastHeartbeat: Double?
     var provider: String? = nil
     var loginState: String? = nil
+    var kind: String? = nil
     // 中枢 H1 额度字段（member_list 已返回，解析预写）：周已用 %、重置时刻、
     // 附加 token 剩余、数据更新时间。呈现随 §4 用量卡/成员详情。
     var quotaWeekUsedPct: Double? = nil
