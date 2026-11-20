@@ -502,6 +502,81 @@ def _approval_state(conn, task_id):
     return req, None
 
 
+# ---------------- 结构化提问卡（staging53 / 搬运一，学 OpenBot ask_ui 自研） ----------------
+# 成员就当前任务向群主发带选项/可输入的提问卡（kind='question'），群主以
+# kind='question_answer' 答复（reply_to_id 指向 question）。契约正本
+# PORT-QUESTION-BRIEF.md：限额写死代码常量（同记忆/技能纪律，改限额 =
+# 改代码 + 群主批准）。完整性守卫与 approval_request 同构：任务引用走
+# 正文「任务#N」+ 落库补写 task_id；非调度员提问者必须是该任务当前
+# 执行者；同任务同时只许一张未答 question；答复仅 dispatcher / owner、
+# 禁重复答。external 本片不放行（room_post 的 kind 面在 impl 内拒并审计）。
+
+QUESTION_BODY_LIMIT = 2000     # question / question_answer 正文上限（字）
+QUESTION_OPTIONS_MIN = 2       # options 最少项数
+QUESTION_OPTIONS_MAX = 6       # options 最多项数
+QUESTION_OPTION_MAXLEN = 60    # 单个 option 上限（字）
+
+
+def _validate_question_payload(raw):
+    """校验并规范化 question 的 payload（JSON 字符串）：结构
+    {"options": [str, ...], "allow_input": bool}。options 给出时须为
+    2–6 个非空字符串、每项 ≤60 字；allow_input 缺省 False、给出须为
+    bool。两者至少居其一（有 options 或 allow_input=True），否则拒。
+    返回规范化后的 JSON 文本（键序固定 options, allow_input）。"""
+    try:
+        p = json.loads(raw or "")
+    except Exception:
+        raise ValueError("question payload must be a JSON object string")
+    if not isinstance(p, dict):
+        raise ValueError("question payload must be a JSON object")
+    opts = p.get("options")
+    allow_input = p.get("allow_input", False)
+    if not isinstance(allow_input, bool):
+        raise ValueError("question payload allow_input must be a boolean")
+    if opts is not None:
+        if not isinstance(opts, list) or not (
+                QUESTION_OPTIONS_MIN <= len(opts) <= QUESTION_OPTIONS_MAX):
+            raise ValueError(
+                f"question options must be {QUESTION_OPTIONS_MIN}-{QUESTION_OPTIONS_MAX} items")
+        for o in opts:
+            if not isinstance(o, str) or not o.strip() \
+                    or len(o) > QUESTION_OPTION_MAXLEN:
+                raise ValueError(
+                    f"question options must be non-empty strings of at most "
+                    f"{QUESTION_OPTION_MAXLEN} chars")
+    if not opts and not allow_input:
+        raise ValueError(
+            "question payload needs options or allow_input=true")
+    return json.dumps({"options": opts or [], "allow_input": allow_input},
+                      ensure_ascii=False)
+
+
+def _question_state(conn, task_id):
+    """定位某任务最近一张结构化提问卡及其答复状态：返回
+    (question_msg, answer_msg)。question_msg 为最近一条 kind='question'
+    消息（task_id 已补写，或正文含「任务#N」），没有返回 (None, None)；
+    answer_msg 为 reply_to_id 指向该 question 的第一条
+    kind='question_answer' 消息，未答为 None。仿 _approval_state 口径，
+    供 App / 运行时后续消费（本片只落函数，不新增工具）。"""
+    q = None
+    rows = conn.execute(
+        "SELECT * FROM messages WHERE kind='question' ORDER BY id DESC").fetchall()
+    for r in rows:
+        if r["task_id"] == task_id:
+            q = r
+            break
+        m = TASK_REF_RE.search(r["body"] or "")
+        if m and int(m.group(1)) == task_id:
+            q = r
+            break
+    if not q:
+        return None, None
+    a = conn.execute(
+        "SELECT * FROM messages WHERE kind='question_answer' AND reply_to_id=?"
+        " ORDER BY id LIMIT 1", (q["id"],)).fetchone()
+    return q, a
+
+
 # ---------------- 成员记忆系统（SPEC 附录 G.1 第 5 条 / SYNTHESIS §3 定死规格） ----------------
 # 分层与上限（限额写死代码常量：改限额 = 改中枢代码 + 群主批准，不给任何工具面）：
 #   L0 private-core：单行全文，硬顶 4096 字节（UTF-8 计），随任务卡注入；
@@ -839,6 +914,12 @@ def init():
     msgcols2 = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
     if "reply_to_id" not in msgcols2:
         conn.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER")
+    # staging53 / 搬运一 结构化提问卡：messages.payload（kind='question'
+    # 的结构化载荷 {"options":[...],"allow_input":bool} 的 JSON 文本；
+    # 其余 kind 留 NULL）。与 reply_to_id 同范式：只走迁移、不动 SCHEMA。
+    msgcols3 = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    if "payload" not in msgcols3:
+        conn.execute("ALTER TABLE messages ADD COLUMN payload TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO hub_settings(key,value) VALUES('external_enabled','1')")
     # H2 房间归档标记。
@@ -1610,6 +1691,7 @@ def _inbox_items(conn, rows, me, all_names):
             "task_status": t["status"] if t else None,
             "task_title": t["title"] if t else None,
             "reply_to_id": x["reply_to_id"],
+            "payload": None if deleted else x["payload"],
             "mentions_me": (not deleted) and _mentions_member(
                 x["body"], me["name"], all_names),
             "created_at": x["created_at"],
@@ -1622,7 +1704,7 @@ def _inbox_items(conn, rows, me, all_names):
 _INBOX_MSG_SQL = (
     "SELECT m.id, m.author_id, mb.name AS author, mb.role AS author_role,"
     " mb.kind AS author_kind, m.kind, m.body, m.task_id, m.reply_to_id,"
-    " m.created_at, m.deleted_at, m.edited_at"
+    " m.created_at, m.deleted_at, m.edited_at, m.payload"
     " FROM messages m JOIN members mb ON mb.id=m.author_id")
 
 
@@ -2295,7 +2377,8 @@ def build_server():
         return {"name": name, "display_name": dn}
 
     def _room_post_impl(me, room: str, body: str, kind: str = "chat",
-                        attachment_ids: str = "", reply_to_id: int = 0) -> dict:
+                        attachment_ids: str = "", reply_to_id: int = 0,
+                        payload: str = "") -> dict:
         """room_post 本体（身份已由 room_post 解析并传入）。完整性守卫：
         task_card 只能由 task_create 内部落库、decision 只能由
         规则引擎/审查内部落库或调度员客户端代发——成员经 room_post 伪造
@@ -2306,7 +2389,14 @@ def build_server():
         伪造的待批项进不了批准中心、也喂不到 _approval_state。
         staging51：external 另加房间绑定、kind 限制与频控（普通消息三
         窗口硬拒、approval_request 独立硬顶）；external 调用由 room_post
-        在 _lock 内进入本函数，保证「计数→落库」串行不越窗。"""
+        在 _lock 内进入本函数，保证「计数→落库」串行不越窗。
+        staging53：新增 question / question_answer 两 kind（结构化提问
+        卡，契约见 PORT-QUESTION-BRIEF.md）——question 与 approval_request
+        同门（任务#N 引用 + 当前执行者），另加 payload 结构校验与
+        「同任务只许一张未答」；question_answer 仅 dispatcher / owner、
+        reply_to_id 必须指向本房未答的 question、禁重复答。两 kind 的
+        「查→落库」由 room_post 在 _lock 内串行（防并发双发/双答）。
+        external 对两 kind 在下方 kind 面直接拒并写审计，本片不放行。"""
         ext = _is_external(me)
         if len(body or "") > 20000:
             raise ValueError("message body too long: > 20000 chars")
@@ -2314,10 +2404,15 @@ def build_server():
             raise ValueError("kind task_card is hub-internal")
         if kind == "decision" and me["role"] != "dispatcher":
             raise ValueError("kind decision is dispatcher-only")
-        if kind not in ("chat", "approval_request", "decision"):
+        if kind not in ("chat", "approval_request", "decision",
+                        "question", "question_answer"):
             # F2 (staging43): kind 白名单——report/system 等中枢内部 kind 与
             # 任意字符串一律拒绝，防视觉冒充（第 1 轮深查 F2 残余项）。
             raise ValueError(f"kind not allowed via room_post: {kind}")
+        if kind in ("question", "question_answer") \
+                and len(body or "") > QUESTION_BODY_LIMIT:
+            raise ValueError(
+                f"{kind} body too long: > {QUESTION_BODY_LIMIT} chars")
         conn = db()
         r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
         if not r:
@@ -2329,6 +2424,12 @@ def build_server():
                 raise ValueError(
                     "forbidden: external members may only post in their bound room")
             if kind not in ("chat", "approval_request"):
+                if kind in ("question", "question_answer"):
+                    # staging53：提问面先在内部成员验证，external 本片
+                    # 不放行——拒绝同时写审计（与工具面闸门口径一致）。
+                    audit(conn, me["name"], "external_kind_denied",
+                          f"kind={kind} room={room}")
+                    conn.commit()
                 conn.close()
                 raise ValueError(f"kind not allowed for external members: {kind}")
         if kind == "approval_request":
@@ -2344,6 +2445,57 @@ def build_server():
                     t["assignee"] != me["id"] or t["status"] not in ("claimed", "working")):
                 conn.close()
                 raise ValueError("approval_request only from the member executing that task")
+        msg_task_id = None
+        msg_payload = None
+        if kind == "question":
+            m = TASK_REF_RE.search(body or "")
+            t = None
+            if m:
+                t = conn.execute("SELECT id, assignee, status FROM tasks WHERE id=?",
+                                 (int(m.group(1)),)).fetchone()
+            if not t:
+                conn.close()
+                raise ValueError("question must reference an existing task")
+            if me["role"] != "dispatcher" and (
+                    t["assignee"] != me["id"] or t["status"] not in ("claimed", "working")):
+                conn.close()
+                raise ValueError("question only from the member executing that task")
+            try:
+                msg_payload = _validate_question_payload(payload)
+            except ValueError:
+                conn.close()
+                raise
+            q0, a0 = _question_state(conn, t["id"])
+            if q0 is not None and a0 is None:
+                conn.close()
+                raise ValueError("task already has an unanswered question")
+            msg_task_id = t["id"]
+        if kind == "question_answer":
+            if me["role"] != "dispatcher" and me["name"] != "owner":
+                conn.close()
+                raise ValueError("question_answer is dispatcher/owner-only")
+            if not reply_to_id:
+                conn.close()
+                raise ValueError("question_answer requires reply_to_id")
+            tgt = conn.execute("SELECT * FROM messages WHERE id=?",
+                               (int(reply_to_id),)).fetchone()
+            if not tgt or tgt["kind"] != "question":
+                conn.close()
+                raise ValueError("reply_to_id must reference a question message")
+            if tgt["room_id"] != r["id"]:
+                conn.close()
+                raise ValueError(
+                    "reply_to_id must reference a question in this room")
+            dup = conn.execute(
+                "SELECT id FROM messages WHERE kind='question_answer'"
+                " AND reply_to_id=?", (tgt["id"],)).fetchone()
+            if dup:
+                conn.close()
+                raise ValueError("question already answered")
+            msg_task_id = tgt["task_id"]
+            if msg_task_id is None:
+                mq = TASK_REF_RE.search(tgt["body"] or "")
+                msg_task_id = int(mq.group(1)) if mq else None
         if ext:
             # 频控在落库前判定：普通消息走三窗口（approval_request 不
             # 计入），approval_request 走独立硬顶（单任务 + 单成员每小时）。
@@ -2382,10 +2534,10 @@ def build_server():
                     conn.close()
                     raise _ext_rate_error(ra)
         cur = conn.execute(
-            "INSERT INTO messages(room_id,author_id,kind,body,created_at,reply_to_id)"
-            " VALUES(?,?,?,?,?,?)",
-            (r["id"], me["id"], kind, body, time.time(),
-             int(reply_to_id) or None))
+            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at,reply_to_id,payload)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (r["id"], me["id"], kind, body, msg_task_id, time.time(),
+             int(reply_to_id) or None, msg_payload))
         mid = cur.lastrowid
         if attachment_ids:
             # 附件绑定（staging39）：与消息同事务；只能绑自己上传的、同房间、
@@ -2420,16 +2572,30 @@ def build_server():
         return out
 
     @mcp.tool
-    def room_post(room: str, body: str, kind: str = "chat", attachment_ids: str = "") -> dict:
-        """在房间发一条消息。kind: chat/system/report/approval_request。
-        完整性守卫与 approval_request 门见 _room_post_impl。
-        staging51：external 调用整体走 _lock（频控计数与落库串行）。"""
+    def room_post(room: str, body: str, kind: str = "chat", attachment_ids: str = "",
+                  reply_to_id: int = 0, payload: str = "") -> dict:
+        """在房间发一条消息。kind: chat/approval_request/question/
+        question_answer（可用面见 _room_post_impl 的完整性守卫）。
+        reply_to_id：回复目标消息 id，仅 question_answer 用（必填、
+        指向本房的 question）；其余 kind 传入即忽略。payload：仅
+        kind='question' 用，JSON 字符串
+        {"options":[...],"allow_input":bool}，契约见 PORT-QUESTION-BRIEF.md。
+        staging51：external 调用整体走 _lock（频控计数与落库串行）。
+        staging53：question / question_answer 的「未答检查→落库」与
+        「重复答检查→落库」同样须串行，一律走 _lock。"""
         me = authenticate()
         require(me)
-        if _is_external(me):
+        if kind != "question_answer":
+            # reply_to_id 只对 question_answer 有契约意义；其余 kind 经
+            # room_post 的回复走 inbox_send 既有路径，此处维持旧行为
+            # （恒不带 reply_to_id），不给 chat 新增跨房引用面。
+            reply_to_id = 0
+        if _is_external(me) or kind in ("question", "question_answer"):
             with _lock:
-                return _room_post_impl(me, room, body, kind, attachment_ids)
-        return _room_post_impl(me, room, body, kind, attachment_ids)
+                return _room_post_impl(me, room, body, kind, attachment_ids,
+                                       reply_to_id, payload)
+        return _room_post_impl(me, room, body, kind, attachment_ids,
+                               reply_to_id, payload)
 
     @mcp.tool
     def room_create(name: str) -> dict:
@@ -2616,7 +2782,7 @@ def build_server():
         if tail:
             rows = conn.execute(
                 """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
-                          m.deleted_at, m.edited_at
+                          m.deleted_at, m.edited_at, m.payload
                    FROM messages m JOIN members mb ON mb.id=m.author_id
                    WHERE m.room_id=? AND m.id>? ORDER BY m.id DESC LIMIT ?""",
                 (r["id"], since_id, limit)).fetchall()
@@ -2624,7 +2790,7 @@ def build_server():
         else:
             rows = conn.execute(
                 """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
-                          m.deleted_at, m.edited_at
+                          m.deleted_at, m.edited_at, m.payload
                    FROM messages m JOIN members mb ON mb.id=m.author_id
                    WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?""",
                 (r["id"], since_id, limit)).fetchall()
@@ -2648,6 +2814,7 @@ def build_server():
                 "body": DELETED_PLACEHOLDER if deleted else x["body"],
                 "task_id": x["task_id"], "created_at": x["created_at"],
                 "deleted": deleted, "edited": bool(x["edited_at"]),
+                "payload": None if deleted else x["payload"],
                 "attachments": amap.get(x["id"], []),
             })
         return {"messages": out}
