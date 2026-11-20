@@ -1922,8 +1922,17 @@ def build_server():
                 if not r:
                     raise ValueError(f"no such room: {room}")
                 old = conn.execute(
-                    "SELECT removed_at, kind FROM members WHERE name=?",
+                    "SELECT removed_at, kind, bound_room_id"
+                    " FROM members WHERE name=?",
                     (name,)).fetchone()
+                if reclaim and old is None:
+                    # staging51 红队修复：reclaim 是给在册 external 换
+                    # token 的通道，目标不存在时发码即拒——否则兑换
+                    # 端会把 reclaim 码当新成员通道静默建号，掩盖
+                    # 调度员笔误。
+                    raise ValueError(
+                        f"reclaim target is not an existing external"
+                        f" member: {name}")
                 if old is not None:
                     if old["removed_at"] is not None:
                         raise ValueError(
@@ -1935,6 +1944,15 @@ def build_server():
                         raise ValueError(
                             f"member {name} is an active external member;"
                             " use reclaim=True to rotate its token")
+                    if old["bound_room_id"] != r["id"]:
+                        # staging51 红队修复：reclaim 只换 token、不
+                        # 改绑房间；发码时传入房间与成员现绑定不一致
+                        # 直接拒，免得兑换端静默保留旧 bound_room_id
+                        # 造成「以为换了房」的误解。
+                        raise ValueError(
+                            f"reclaim room mismatch: member {name} is"
+                            f" bound to room_id {old['bound_room_id']},"
+                            f" not room {room}")
                 cur = conn.execute(
                     "INSERT INTO pair_codes(code_hash,member_name,provider,"
                     "bound_room_id,display_name,reclaim,created_by,created_at,"
@@ -2027,9 +2045,11 @@ def build_server():
 
     @mcp.tool
     def member_token_rotate(name: str) -> dict:
-        """调度员应急轮换任意成员的 token（件一）：生成新 token 覆写
+        """调度员应急轮换成员的 token（件一）：生成新 token 覆写
         哈希、旧 token 立即失效，新明文只在本返回值出现一次；token
-        泄露止血不必移除成员。成员须存在且未移除。写审计。"""
+        泄露止血不必移除成员。成员须存在且未移除。dispatcher 本人
+        除外：其 token 与本地 .dispatcher_token 文件绑定，误轮换会
+        打断线上调度链路，换它走运维流程。写审计。"""
         me = authenticate()
         require(me, "dispatcher")
         tok = "pk-mem-" + secrets.token_urlsafe(32)
@@ -2037,12 +2057,19 @@ def build_server():
             conn = db()
             try:
                 row = conn.execute(
-                    "SELECT id, removed_at FROM members WHERE name=?",
+                    "SELECT id, removed_at, role FROM members WHERE name=?",
                     (name,)).fetchone()
                 if not row:
                     raise ValueError(f"no such member: {name}")
                 if row["removed_at"] is not None:
                     raise ValueError(f"member removed: {name}")
+                if row["role"] == "dispatcher":
+                    # staging51 红队修复：调度员自身 token 与本地
+                    # .dispatcher_token 文件绑定（watcher 与全部调度员
+                    # 客户端同源），误轮换会直接打断线上调度链路——
+                    # 本工具不许碰，调度员换 token 走运维流程。
+                    raise ValueError(
+                        "cannot rotate the dispatcher's token with this tool")
                 conn.execute("UPDATE members SET token_hash=? WHERE id=?",
                              (hash_token(tok), row["id"]))
                 audit(conn, me["name"], "member_token_rotate", name)
@@ -2486,7 +2513,18 @@ def build_server():
         ext = _is_external(me)
         if ext and len(data) > EXT_ATTACH_MAX_BYTES:
             # 件二 external 独立配额之一：单文件 ≤5MB（既有成员仍走
-            # 上面的全员 10MB 口径）。
+            # 上面的全员 10MB 口径）。staging51 红队修复：按定稿
+            # 「超限硬拒并写审计」口径，抛错前补写一条与锁内其它
+            # 配额超限同名的 external_attachment_quota 审计——此处
+            # 尚未进 _lock、无既有连接，用独立短事务落审计再抛错。
+            aconn = db()
+            try:
+                audit(aconn, me["name"], "external_attachment_quota",
+                      f"room {room} size {len(data)}:"
+                      " single file cap exceeded (5MB)")
+                aconn.commit()
+            finally:
+                aconn.close()
             raise ValueError("attachment too large for external members: > 5MB")
         if _sniff_image_mime(data) != mime:
             raise ValueError("mime does not match file content")
@@ -2786,7 +2824,7 @@ def build_server():
             r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
             if not r:
                 raise ValueError(f"no such room: {room}")
-            a = conn.execute("SELECT id, role, removed_at FROM members WHERE name=?", (member_name,)).fetchone()
+            a = conn.execute("SELECT id, role, removed_at, kind, bound_room_id FROM members WHERE name=?", (member_name,)).fetchone()
             if not a:
                 raise ValueError(f"no such member: {member_name}")
             if a["removed_at"] is not None:
@@ -2794,6 +2832,18 @@ def build_server():
                 raise ValueError(f"member is removed: {member_name}")
             if a["role"] != "member" or member_name == "owner":
                 raise ValueError(f"cannot schedule for {member_name}: not an AI member")
+            if (a["kind"] or "") == "external":
+                # staging51 红队修复：对齐 task_create 的 external
+                # 口径——跨房排班与引擎标记卡对 external 是永远
+                # 认领不了的死卡（task_claim 三重限制兜底虽在，但
+                # 排班侧不应开出死卡），同给永久性拒绝。
+                if a["bound_room_id"] != r["id"]:
+                    raise ValueError(
+                        f"permanent: external member {member_name} is bound to another room")
+                if _is_executor_pinned(title, body):
+                    raise ValueError(
+                        f"permanent: executor-pinned tasks cannot be assigned"
+                        f" to external member {member_name}")
             cur = conn.execute(
                 "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,next_claim_at,sched_at,created_at,updated_at)"
                 " VALUES(?,?,?,?,?,'open',?,?,?,?)",
@@ -2938,25 +2988,29 @@ def build_server():
         conn = db()
         tok = secrets.token_urlsafe(24)
         now = _now()
-        if _is_external(me):
-            # 件二：external 只许认领绑定房内、指派给本人、非引擎标记的
-            # 卡（未指派卡不许抢）。前置检查在原子 UPDATE 之前，拒绝
-            # 口径与既有 claim 失败区分开（forbidden 前缀）。
-            t0 = conn.execute(
-                "SELECT room_id, title, body, assignee FROM tasks WHERE id=?",
-                (task_id,)).fetchone()
-            if t0:
-                if t0["room_id"] != me["bound_room_id"]:
-                    conn.close()
-                    raise ValueError("forbidden: task is outside the bound room")
-                if t0["assignee"] != me["id"]:
-                    conn.close()
-                    raise ValueError(
-                        "forbidden: external members may only claim tasks assigned to themselves")
-                if _is_executor_pinned(t0["title"], t0["body"]):
-                    conn.close()
-                    raise ValueError("forbidden: executor-pinned task")
         with _lock:
+            if _is_external(me):
+                # 件二：external 只许认领绑定房内、指派给本人、非引擎
+                # 标记的卡（未指派卡不许抢）。staging51 红队修复：
+                # 前置检查在 _lock 内、用同一 conn 重读任务行后紧贴
+                # 原子 UPDATE 执行——原实现锁外预检与锁内 UPDATE
+                # 之间存在 TOCTOU 窗口（预检通过后任务被改派/改
+                # 正文即可绕过三条限制）。拒绝口径与既有 claim
+                # 失败区分开（forbidden 前缀）。
+                t0 = conn.execute(
+                    "SELECT room_id, title, body, assignee FROM tasks WHERE id=?",
+                    (task_id,)).fetchone()
+                if t0:
+                    if t0["room_id"] != me["bound_room_id"]:
+                        conn.close()
+                        raise ValueError("forbidden: task is outside the bound room")
+                    if t0["assignee"] != me["id"]:
+                        conn.close()
+                        raise ValueError(
+                            "forbidden: external members may only claim tasks assigned to themselves")
+                    if _is_executor_pinned(t0["title"], t0["body"]):
+                        conn.close()
+                        raise ValueError("forbidden: executor-pinned task")
             cur = conn.execute(
                 """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
                    lease_expires=?, attempts=attempts+1, next_claim_at=NULL, sched_at=NULL, updated_at=?
@@ -3527,6 +3581,11 @@ def build_server():
                     raise ValueError(
                         "transfer target must be a member (owner is not an "
                         "executor and cannot receive transfers)")
+                if (target["kind"] or "") == "external":
+                    # staging51 红队修复：external 不在转交体系内——其
+                    # task_accept_transfer 被白名单闸门全禁，转给它任务
+                    # 只会挂 pending 等过期回收，故在发端直接拒。
+                    raise ValueError("transfer target cannot be an external member")
                 if target["id"] == t["assignee"]:
                     raise ValueError("cannot transfer to the current holder (self)")
                 pending = conn.execute(

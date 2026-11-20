@@ -167,3 +167,59 @@ harness.py、test_staging51.py、test_concurrency.py、test_watcher.py、
 test_migration.py、test_direct.py、run_tests.sh、run_tests.log（全绿
 输出）、REVIEW51.md（本文件）。mig_old/、mig_new/、direct_env/ 为测试
 证据目录，run_tests.sh 每次运行会重置。
+
+## 七、红队修复（2026-11-20）
+
+Gemini 红队复核拦下 6 处（2 必改 + 1 中风险 + 3 小修），调度员逐条
+回查 staging 代码属实后逐项修复。全部改动只落 staging 的 hub.py，
+生产未触碰。修复后 run_tests.sh 六套件全绿：**总计 197 项断言
+（原 178 + 新增 19），0 失败，退出码 0**，完整输出在
+run_tests_fix.log。
+
+1. **【必改】task_transfer 拦 external 目标**（hub.py L3585-3588）：
+   目标校验在 owner 检查之后补一条 `(target["kind"] or "") ==
+   "external"` → `ValueError("transfer target cannot be an external
+   member")`。目标行本就是 `SELECT *`，kind 列已在行内、无需改查询。
+   新增用例 4 条（test_fixes51.py）：成员自转 external 拒、调度员
+   强制转交 external 拒、两拒后任务行（指派/状态/claim_token）与
+   task_transfers 表零变化、转给内部成员的正向对照仍成功。
+2. **【必改】task_claim 前置校验移入 _lock（TOCTOU）**（hub.py
+   L2991 起）：external 三重检查（绑定房 / 指派本人 / 引擎标记）
+   整段移进 `with _lock:` 内，在原子 UPDATE 之前用同一 conn 重读
+   任务行再判；报错文案逐字不变，非 external 路径行为不变。竞态
+   本身无确定性用例，靠结构修复 + 主套件 claim 全链用例与并发
+   套件（并行认领恰一胜等）回归覆盖，本轮全绿。
+3. **【中风险】member_token_rotate 拦 dispatcher**（hub.py
+   L2060 查询补 role 列、L2067-2072 拦截）：`row["role"] ==
+   "dispatcher"` 时在覆写哈希前 raise `ValueError("cannot rotate
+   the dispatcher's token with this tool")`，docstring 同步注明。
+   新增用例 2 条：轮换 dispatcher 被拒、且其 token_hash 前后不变。
+4. **【小修】attachment_put 超 5MB 早退补审计**（hub.py L2516-2529）：
+   external 单文件超 5MB 的锁外早退分支，抛错前用独立短事务
+   （开 conn → audit → commit → close，不嵌套持锁）补写一条
+   `external_attachment_quota` 审计，detail 与锁内其它配额超限同
+   格式（`room {room} size {n}: single file cap exceeded (5MB)`）。
+   新增用例 1 条（test_direct.py 进程内直测，HTTP 4MiB 传输上限
+   到不了 hub 检查）：>5MB 被拒后 dext 名下恰有 1 条该审计。
+5. **【小修】pair_code_create(reclaim=True) 核目标**（hub.py
+   L1929-1956）：成员查询补 bound_room_id 列；reclaim=True 且目标
+   不存在 → 发码即拒（`reclaim target is not an existing external
+   member`）；目标为在册 external 时传入房间与其 bound_room_id
+   不一致 → 发码即拒（`reclaim room mismatch: ...`）。已移除/内部
+   成员两条既有拒绝不变，reclaim=False 路径不变。新增用例 8 条：
+   不存在成员拒、内部成员拒、房间不一致拒、三拒不落 pair_codes
+   行、合法 reclaim 兑换成功且 member_id 不变、旧 token 失效、
+   新 token 可用。
+6. **【小修】task_schedule 补 external 拦截**（hub.py L2827 查询
+   补 kind/bound_room_id 列、L2836-2847 拦截）：对齐 task_create
+   口径——指派对象为 external 时，跨房 → `permanent: external
+   member ... is bound to another room`，引擎标记（标题或正文）
+   → `permanent: executor-pinned tasks cannot be assigned to
+   external member ...`。本节同时销账第五节未做项。新增用例 5
+   条：跨房拒、标题标记拒、正文标记拒、合法排班建成且指派正确、
+   三拒零落卡。
+
+新增测试文件 test_fixes51.py（18 条）已挂入 run_tests.sh（主套件
+之后跑，共用同一隔离中枢，夹具名 fx- 前缀）；test_direct.py 增至
+9 条。六套件结果：主 142/142、fixes 18/18、并发 8/8、watcher
+10/10、迁移 10/10、直测 9/9。

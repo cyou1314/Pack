@@ -96,6 +96,15 @@ def main():
     # 1) external 单文件 >5MB：hub 侧精确拒绝（错误文案来自 hub，不是传输层）
     ok, err = try_put(dext, 5_500_000, "big.png")
     note("direct: external >5MB rejected by hub check", not ok and "5MB" in err, err[:80])
+    # 1b) 红队修复④：>5MB 早退也必须写 external_attachment_quota 审计
+    #     （此前该分支在进 _lock 前直接抛错、漏写；此刻 dext 名下应
+    #     恰有这一条配额审计——总量审计在用例 3 才产生）。
+    c = sqlite3.connect(dbp)
+    n_big = c.execute("SELECT COUNT(*) FROM audit WHERE action='external_attachment_quota'"
+                      " AND actor='dext'").fetchone()[0]
+    c.close()
+    note("direct: >5MB rejection audited (external_attachment_quota)",
+         n_big == 1, f"n={n_big}")
 
     # 2) 恰 5MiB 放行
     ok, r = try_put(dext, FIVE, "exact5.png")
