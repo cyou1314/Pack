@@ -2782,7 +2782,7 @@ def build_server():
         if tail:
             rows = conn.execute(
                 """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
-                          m.deleted_at, m.edited_at, m.payload
+                          m.deleted_at, m.edited_at, m.payload, m.reply_to_id
                    FROM messages m JOIN members mb ON mb.id=m.author_id
                    WHERE m.room_id=? AND m.id>? ORDER BY m.id DESC LIMIT ?""",
                 (r["id"], since_id, limit)).fetchall()
@@ -2790,7 +2790,7 @@ def build_server():
         else:
             rows = conn.execute(
                 """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
-                          m.deleted_at, m.edited_at, m.payload
+                          m.deleted_at, m.edited_at, m.payload, m.reply_to_id
                    FROM messages m JOIN members mb ON mb.id=m.author_id
                    WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?""",
                 (r["id"], since_id, limit)).fetchall()
@@ -2815,6 +2815,9 @@ def build_server():
                 "task_id": x["task_id"], "created_at": x["created_at"],
                 "deleted": deleted, "edited": bool(x["edited_at"]),
                 "payload": None if deleted else x["payload"],
+                # staging55: reply_to_id readback (staging53 missed it here;
+                # inbox_pull had it). Deleted rows report None like payload.
+                "reply_to_id": None if deleted else x["reply_to_id"],
                 "attachments": amap.get(x["id"], []),
             })
         return {"messages": out}
