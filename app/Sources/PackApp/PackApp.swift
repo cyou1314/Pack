@@ -216,8 +216,8 @@ final class AppState: ObservableObject {
         do {
             let roomRes = try await client.call(name: "room_list")
             let msgRes = try await client.call(name: "room_read_new",
-                                               args: ["room": room, "since_id": 0, "limit": 200])
-            let taskRows = try await loadTaskPages(client)
+                                               args: ["room": room, "since_id": 0, "limit": 200, "tail": true])
+            let taskRows = try await loadTaskPages(client, room: room)
             let memRes = try await client.call(name: "member_list")
             let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
             guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
@@ -246,9 +246,8 @@ final class AppState: ObservableObject {
             }
             do {
                 let arr = taskRows
-                let roomTaskIds = Set(messages.compactMap(\.taskId))
                 let previousTasks = tasks
-                let updatedTasks = arr.filter { roomTaskIds.contains(intVal($0["id"])) }.map {
+                let updatedTasks = arr.map {
                     PackTask(id: intVal($0["id"]), title: ($0["title"] as? String) ?? "",
                              body: ($0["body"] as? String) ?? "", status: ($0["status"] as? String) ?? "",
                              assignee: optStringVal($0["assignee"]), attempts: intVal($0["attempts"]),
@@ -326,10 +325,10 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func loadTaskPages(_ client: HubClient) async throws -> [[String: Any]] {
+    private func loadTaskPages(_ client: HubClient, room: String) async throws -> [[String: Any]] {
         var rows: [[String: Any]] = []
         for page in 0..<taskListMaxPages {
-            let result = try await client.call(name: "task_list", args: ["offset": page * taskListPageSize])
+            let result = try await client.call(name: "task_list", args: ["offset": page * taskListPageSize, "room": room])
             guard let batch = result["tasks"] as? [[String: Any]] else { throw HubError.badResponse("missing tasks") }
             rows.append(contentsOf: batch)
             if batch.count < taskListPageSize { break }
