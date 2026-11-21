@@ -187,6 +187,7 @@ private struct ParameterAvatar: View {
 
 struct ContentView: View {
     @StateObject private var state = AppState()
+    @StateObject private var agentState = AgentWorkspaceState()
     var body: some View {
         HStack(spacing: 0) {
             Sidebar(state: state)
@@ -219,6 +220,7 @@ struct ContentView: View {
                         case "approvals": ApprovalsView(state: state)
                         case "settings": SettingsView(state: state)
                         case "members": MemberDirectory(state: state)
+                        case "agents": AgentDirectoryView(state: agentState)
                         default: RoomView(state: state)
                             .id(state.currentRoom)
                             .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
@@ -325,6 +327,7 @@ private struct Sidebar: View {
             row("room", "对话", "bubble.left.and.bubble.right")
             row("tasks", "任务板", "square.grid.2x2")
             row("members", "成员", "person.2")
+            row("agents", "Agent", "cpu")
             if state.showSidebar {
                 HStack { Text("房间"); Spacer() }.font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).padding(.top, DesignTokens.shellInset)
                 ForEach(state.rooms) { room in
@@ -430,7 +433,7 @@ private struct CenterHeader: View {
     @ObservedObject var state: AppState
     var body: some View {
         HStack(spacing: DesignTokens.shellGap) {
-            Text(state.selection == "tasks" ? "任务板" : state.selection == "members" ? "成员" : state.selection == "settings" ? "设置" : state.selection == "approvals" ? "收件箱" : state.currentRoom).font(DesignTokens.shellHeaderTitle)
+            Text(state.selection == "tasks" ? "任务板" : state.selection == "members" ? "成员" : state.selection == "agents" ? "Agent" : state.selection == "settings" ? "设置" : state.selection == "approvals" ? "收件箱" : state.currentRoom).font(DesignTokens.shellHeaderTitle)
             Spacer()
             if !state.pendingApprovals.isEmpty { Pill(title: "待批准 \(state.pendingApprovals.count)", color: PackStyle.amber) }
         }.padding(.horizontal, DesignTokens.shellHeaderInset).frame(height: DesignTokens.shellHeaderHeight)
