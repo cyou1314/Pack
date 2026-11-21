@@ -160,3 +160,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 2. 每个领域迁移均保持 MCP tool schema 快照无意外差异，并补充事务、权限和 legacy 数据测试。
 3. 迁移完成后删除不再需要的全局兼容 wrapper，保留明确的应用入口。
 4. 完成 Hub 领域层后，再拆 Swift Core、Transport、Store 与 Feature UI。
+
+
+### 追加执行记录：成员生命周期与任务读取服务（2026-11-21）
+
+- 成员服务 hub/services/members.py 现已承接成员列表、登录状态、访问模式、展示名、Token 轮换、调度员额度维护、自报额度防伪造和成员软删除；hub.py 继续持有 MCP 注册与权限检查。
+- 对成员软删除补充了事务回滚故障注入测试：在 Token 作废阶段注入失败，核验任务、转交、技能、桌面锁、成员状态与审计全部回滚。
+- 对同一成员的并发移除补充了双线程竞争测试，验证仅一次成功、另一请求因成员已移除而拒绝，且仅产生一条成功移除审计。
+- 新建 hub/services/tasks.py，初步提取任务转交历史与任务完整审计的只读查询。MCP task_transfers_list 与 task_audit 的工具名、参数、说明和认证保持不变，写入及状态转换暂不迁移。
+- hub/test_tasks_service.py 覆盖按 id 排序、任务不存在拒绝、精确任务前缀归属、run/transfer 台账与事件 200 条截断；Hub 安装包 smoke test 同时检查新 tasks service 文件。
+- 继续遵守每批次通过 Hub 单测、MCP/SQLite 契约快照、staging 与 macOS CI 后才扩展到任务认领、完成和审批领域的要求。

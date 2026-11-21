@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HubPackageLayoutTests(unittest.TestCase):
-    def test_disposable_runtime_copy_registers_room_and_member_tools(self):
+    def test_disposable_runtime_copy_registers_room_member_and_task_tools(self):
         with tempfile.TemporaryDirectory(prefix="pack-hub-payload-") as directory:
             root = Path(directory)
             _copy_hub(root)
@@ -21,7 +21,7 @@ class HubPackageLayoutTests(unittest.TestCase):
                 "import asyncio,inspect,hub; tools=hub.build_server().list_tools(); "
                 "tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; "
                 "names={tool.name for tool in tools}; "
-                "assert {'room_list','member_list'}.issubset(names), names"
+                "assert {'room_list','member_list','task_audit','task_transfers_list'}.issubset(names), names"
             )
             result = subprocess.run(
                 [sys.executable, "-c", smoke],
@@ -34,6 +34,8 @@ class HubPackageLayoutTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue((root / "core" / "context.py").is_file())
             self.assertTrue((root / "services" / "rooms.py").is_file())
+            self.assertTrue((root / "services" / "members.py").is_file())
+            self.assertTrue((root / "services" / "tasks.py").is_file())
 
     def test_local_and_dmg_installers_copy_both_hub_packages(self):
         local = (ROOT / "local" / "install-local.sh").read_text(encoding="utf-8")
