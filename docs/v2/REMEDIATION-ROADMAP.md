@@ -39,9 +39,9 @@
 ### Phase 0 — 基线与变更控制
 
 - [x] 从 PR #6 精确 Head 创建独立整改分支。
-- [ ] 创建整改 PR，并以 PR #6 分支为 base。
-- [ ] 建立本路线图和每批次变更记录。
-- [ ] 记录基线 CI 和提交 SHA。
+- [x] 创建整改 PR，并以 PR #6 分支为 base。
+- [x] 建立本路线图和每批次变更记录。
+- [x] 记录基线 CI 和提交 SHA。
 
 验收：PR #6 和 `main` 均未被本分支改写；整改 PR 的变更可独立审查。
 
@@ -49,33 +49,36 @@
 
 优先修复能够从仓库代码明确确认、且可以通过静态/单元测试验证的风险：
 
-- [ ] systemd 服务使用专用低权限账户 `hatch`、组 `hatch` 和严格 umask。
-- [ ] 给服务增加经过验证的基础 systemd hardening；避免限制业务所需的工作目录写入和网络访问。
-- [ ] 更新服务安装脚本：使用脚本相对路径安装 unit；reload 后确保长驻服务重启，令新权限真正生效。
-- [ ] 将 Hub “总是允许” UI 限制为明确的动作标记 + 指派成员；无明确范围时只允许单次批准，不自动创建空 action 通配规则。
-- [ ] 为 systemd unit 策略和安装脚本增加静态回归测试。
+- [x] systemd 服务使用专用低权限账户 `hatch`、组 `hatch` 和严格 umask。
+- [x] 给服务增加经过验证的基础 systemd hardening；避免限制业务所需的工作目录写入和网络访问。
+- [x] 更新服务安装脚本：使用脚本相对路径安装 unit；reload 后确保长驻服务重启，令新权限真正生效。
+- [x] 将 Hub “总是允许” UI 限制为明确的动作标记 + 指派成员；无明确范围时只允许单次批准，不自动创建空 action 通配规则。
+- [x] 为 systemd unit 策略和安装脚本增加静态回归测试。
 - [ ] 复核本地服务 LaunchAgent 的权限与卸载边界。
 
 验收：所有系统服务的运行身份和 umask 有自动化检查；安装脚本语法检查通过；未标记任务不能通过 App 创建通配自动批准规则；原有显式规则库语义保持兼容。
 
 ### Phase 2 — 凭证、网络与 IPC 安全
 
-- [ ] 对 Keychain 读取错误、凭证不一致和迁移失败实行 fail-closed；明确区分首次迁移、Keychain 拒绝访问和配置文件残留。
-- [ ] 远程 Hub 连接强制 HTTPS；HTTP 仅允许 loopback（127.0.0.1、localhost、::1）。
-- [ ] 增加可注入凭证存储层和 Swift 单元测试，覆盖迁移成功、重复启动、Keychain 失败、凭证冲突和配置文件权限。
-- [ ] 审查 L2 handoff Unix Socket、临时 Keychain ticket、Cookie 清理和错误日志脱敏。
-- [ ] 为敏感凭证、事件包和共享上下文建立统一脱敏/白名单规则。
+- [x] 对 Keychain 读取错误、凭证不一致和迁移失败实行 fail-closed；明确区分首次迁移、Keychain 拒绝访问和配置文件残留。
+- [x] 远程 Hub 连接强制 HTTPS；HTTP 仅允许 loopback（127.0.0.1、localhost、::1）。覆盖 macOS App、Pack Runtime、外部 Agent 和 Bridge。
+- [x] 增加可注入凭证存储层和 Swift 单元测试，覆盖迁移成功、重复启动、Keychain 失败、凭证冲突和配置文件权限。
+- [x] 审查 L2 handoff Unix Socket、临时 Keychain ticket、Cookie 清理和错误日志脱敏；补上 JSON 根类型异常回归并保持票据/ Cookie 清理逻辑。
+- [x] 为敏感凭证、事件包和共享上下文建立统一敏感字段识别规则；App Hub 错误日志仅记录安全类别。
 
 验收：Keychain 不可用时不使用明文 Token 继续联网；远程明文 HTTP 被拒绝；本机回环 HTTP 保持可用；迁移过程可重复且不丢数据。
 
+
+> 自动化边界说明：Phase 1/2 的仓库级实现与模拟测试进入 CI；真实 Mac Keychain ACL、真实登录态迁移、systemd VM 所有权变更、SSH 私钥与服务重启仍未在生产环境执行，必须留到隔离 Mac/VM 验收阶段。
+
 ### Phase 3 — 测试与质量门禁
 
-- [ ] 将 `runtime/l2-handoff/engine.test.cjs` 纳入 CI。
-- [ ] Node 语法检查覆盖 `.cjs` 文件。
+- [x] 将 `runtime/l2-handoff/engine.test.cjs` 纳入 CI。
+- [x] Node 语法检查覆盖 `.cjs` 文件。
 - [ ] 盘点归档 staging 中仍代表当前安全边界的测试；只迁移有明确现行价值的用例，不直接恢复全部历史套件。
 - [ ] 为 Hub 的权限、审批、规则通配、任务状态转换和并发边界建立正式测试。
-- [ ] 为 Swift App 增加测试 Target，先覆盖凭证、URL 校验、审批规则范围等纯逻辑。
-- [ ] 增加安装脚本、systemd 单元、打包清单和版本元数据的自动检查。
+- [x] 为 PackCore 增加 Swift 测试 Target，覆盖凭证迁移、Keychain 故障、Hub URL 与重定向策略。\n- [ ] 将审批规则范围逻辑抽为可独立测试的纯函数，并补充对应单元测试。
+- [x] 增加安装脚本和 systemd 单元的自动检查；DMG 内容清单与版本元数据检查仍待补齐。
 
 验收：关键安全逻辑进入 CI；每项安全修复都有正向和反向测试；历史快照仍隔离，不污染默认回归链。
 
