@@ -3,6 +3,7 @@ import {completeWithEnvelope, discoverPublishedHub, settleTaskMemory, loadTaskMe
 import {classifyChat, quotaAllowsChat} from './chat-policy.mjs';
 import {listActiveTasks, approvalDecision, validHost, isHubNetworkFailure} from './runtime-helpers.mjs';
 import {parseQuotaSnapshot, quotaDue} from './quota-policy.mjs';
+import {createHubRpcClient} from './hub-rpc-client.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -39,48 +40,11 @@ const POLL_MS = (cfg.pollSeconds || 20) * 1000;
 // approval marker tag, built from char codes to survive any encoding path
 const NEED_TAG = String.fromCharCode(0x3010, 0x9700, 0x6279, 0x51c6, 0x3011);
 
-let sessionId = null;
-let rpcId = 0;
-
-async function rpc(method, params) {
-  const headers = {
-    "Content-Type": "application/json",
-    Accept: "application/json, text/event-stream",
-    Authorization: `Bearer ${cfg.memberToken}`,
-  };
-  if (sessionId) headers["Mcp-Session-Id"] = sessionId;
-  let res;
-  try {
-    res = await fetch(cfg.hubUrl, {
-      signal: AbortSignal.timeout(15000),
-      method: "POST",
-      headers,
-      body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
-    });
-  } catch (e) {
-    if (isHubNetworkFailure(e)) e.hubNetworkFailure = true;
-    throw e;
-  }
-  if (!res.ok) throw new Error(`hub HTTP ${res.status}`);
-  const sid = res.headers.get("mcp-session-id");
-  if (sid) sessionId = sid;
-  let text;
-  try { text = await res.text(); }
-  catch (e) {
-    if (isHubNetworkFailure(e)) e.hubNetworkFailure = true;
-    throw e;
-  }
-  let payload = null;
-  if (text.trim().startsWith("{")) payload = JSON.parse(text);
-  else {
-    for (const line of text.split("\n")) {
-      if (line.startsWith("data:")) payload = JSON.parse(line.slice(5));
-    }
-  }
-  if (!payload) { const e = new Error("hub: empty response"); e.hubNetworkFailure = true; throw e; }
-  if (payload.error) throw new Error(`hub rpc error: ${JSON.stringify(payload.error)}`);
-  return payload.result;
-}
+const hubRpc = createHubRpcClient({
+  getConfig: () => cfg,
+  isNetworkFailure: isHubNetworkFailure,
+});
+const rpc = hubRpc.rpc;
 
 // All hub calls are serialized through one queue: the MCP session is
 // stateful, and concurrent loops sharing it corrupted each other (v1.0.1
@@ -113,7 +77,7 @@ async function tool(name, args = {}) {
       } catch (e) {
         if (!sessionRetried && /Missing session ID|Session not found/.test(String(e.message || e))) {
           sessionRetried = true;
-          sessionId = null;
+          hubRpc.resetSession();
           try { await mcpInit(); return await toolOnce(name, args); }
           catch (retryError) { e = retryError; }
         }
@@ -139,7 +103,7 @@ async function mcpInit() {
       "Content-Type": "application/json",
         Accept: "application/json, text/event-stream",
       Authorization: `Bearer ${cfg.memberToken}`,
-      ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+      ...(hubRpc.getSessionId() ? { "Mcp-Session-Id": hubRpc.getSessionId() } : {}),
     },
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
   }).catch(() => {});
