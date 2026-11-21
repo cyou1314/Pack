@@ -32,6 +32,8 @@ jobs:
           bash -n hub/install-services.sh
           bash -n run-all-suites.sh
           bash -n installer/build-dmg.sh
+          bash -n local/install-local.sh
+          bash -n local/uninstall-local.sh
       - name: Python compile
         run: python -m compileall -q hub installer tests
       - name: Unit tests
