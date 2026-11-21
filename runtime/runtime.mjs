@@ -6,6 +6,7 @@ import {parseQuotaSnapshot, quotaDue} from './quota-policy.mjs';
 import {createHubRpcClient} from './hub-rpc-client.mjs';
 import {createDriverRunner} from './driver-runner.mjs';
 import {createRuntimeStateStore} from './runtime-state-store.mjs';
+import {createTaskLifecycle} from './task-lifecycle.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -249,33 +250,12 @@ async function checkApprovals() {
   }
 }
 
-async function processTask(task) {
-  const transferred = task.status !== "open";
-  const expectedAttempt = task.attempts + (transferred ? 0 : 1);
-  const claim = await tool(transferred ? "task_accept_transfer" : "task_claim", { task_id: task.id });
-  const ctok = claim.claim_token;
-  if (!ctok) throw new Error("missing_claim_token");
-  const state = { runStarted: false, memories: null, transferChecked: false,
-    approvalRequested: false, approvalDone: false, approvalWait: null,
-    approvedHosts: new Set(), driverResult: null, driverError: null };
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try { await processClaimedTask(task, ctok, transferred, expectedAttempt, state); return; }
-    catch (e) {
-      console.error(`task ${task.id} post-claim attempt ${attempt}/3 failed:`, e.message);
-      if (!e.hubNetworkFailure) {
-        try { await tool("task_block", { task_id: task.id, claim_token: ctok, fail_class: "unknown", reason: `中枢调用或运行处理失败: ${e.message}` }); }
-        catch (blockError) { console.error(`task ${task.id} block failed; lease expiry remains fallback:`, blockError.message); }
-        approvedWaits.delete(task.id);
-        return;
-      }
-      if (attempt < 3) { await sleep(20000); continue; }
-      try {
-        await tool("task_block", { task_id: task.id, claim_token: ctok, fail_class: "transient", reason: "中枢调用失败，重试三次后仍未恢复" });
-      } catch (blockError) { console.error(`task ${task.id} transient block failed; lease expiry remains fallback:`, blockError.message); }
-      approvedWaits.delete(task.id);
-    }
-  }
-}
+const processTask = createTaskLifecycle({
+  call: tool,
+  processClaimedTask,
+  sleep,
+  onStopped: taskId => approvedWaits.delete(taskId),
+});
 
 async function processClaimedTask(task, ctok, transferred, expectedAttempt, state) {
   // Receipt check precedes every re-entry, so a verified result is never resent.
