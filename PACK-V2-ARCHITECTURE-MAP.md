@@ -212,3 +212,15 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 新增约束：当前 AgentManager 尚未接入 SwiftUI 导航或添加 Agent 表单；AgentManager 的真实 API 测试会产生一次 API 调用费用，必须由用户主动触发。
 
 验证边界：GitHub Actions #222 的 macOS App / build 已通过，证明 OpenAI Adapter、SQLite Profile Store 与 AgentManager 首版可编译；Runtime job 通过。Hub / regression 仍在执行。尚未使用真实 API Key 发起线上请求，也未接入 App UI。
+## 13. Agent 管理界面首版（2026-11-21）
+
+新增 `AgentDirectoryView.swift` 与 `AgentWorkspaceState`，并在现有侧栏增加 Agent 入口：
+
+- Agent 列表显示本机已保存的 Profile、Provider、模型和连接状态。
+- 添加 OpenAI API Agent：名称、模型 ID、API Key、自定义 HTTPS Endpoint（可选）。
+- API Key 在提交时写入 Keychain；表单取消会清空密钥草稿；SQLite 仅保存 Keychain reference。
+- 支持显式连接测试（会产生一次真实 API 调用费用）、消息发送、SSE 流式呈现和基于 `previous_response_id` 的同一会话续接。
+- 支持移除 Agent Profile 与对应 Keychain 凭证；不影响服务商账号。
+- 应用启动时从 SQLite 恢复 Profile 并重建 OpenAI Adapter；连接配置已加载与远端 API 已验证使用不同状态。
+
+验证边界：GitHub Actions #226 的 macOS App / build 已通过，Agent 管理页首版可编译；#227 的导航接入 macOS App / build 已通过。更新后的会话续接、表单密钥清理和 Adapter 恢复仍以最新 CI 为准。尚未进行真实 API Key 线上请求、视觉验收或用户 Mac 本机运行。
