@@ -87,6 +87,60 @@ class HubContextTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_context_is_used_by_auth_gates_inbox_and_server_factory(self):
+        import sqlite3
+        from unittest.mock import patch
+
+        import hub
+
+        with tempfile.TemporaryDirectory(prefix="pack-context-gates-") as directory:
+            root = Path(directory)
+            context = HubContext(
+                base_dir=str(root),
+                db_path=str(root / "isolated.db"),
+                attachment_dir=str(root / "attachments"),
+                lock=threading.Lock(),
+                clock=lambda: 9876.5,
+            )
+            hub.init(context)
+            token = (root / ".dispatcher_token").read_text(encoding="utf-8").strip()
+
+            with patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                return_value={"authorization": f"Bearer {token}"},
+            ):
+                dispatcher = hub.authenticate(context)
+            self.assertEqual(dispatcher["role"], "dispatcher")
+
+            with self.assertRaisesRegex(ValueError, "not available to external members"):
+                hub._ext_check({"name": "external"}, "not_allowlisted_tool", context)
+            with self.assertRaisesRegex(ValueError, "readonly access mode"):
+                hub._mode_check(
+                    {"name": "readonly-member", "access_mode": "readonly"},
+                    "task_create",
+                    context,
+                )
+            self.assertEqual(
+                hub._inbox_resolve_room(dispatcher, "pack-main", context),
+                (1, "pack-main"),
+            )
+
+            connection = sqlite3.connect(root / "isolated.db")
+            try:
+                actions = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT action FROM audit WHERE action IN "
+                        "('external_tool_denied','access_mode_denied')"
+                    )
+                }
+                self.assertEqual(actions, {"external_tool_denied", "access_mode_denied"})
+            finally:
+                connection.close()
+
+            registered = hub.build_server(context).list_tools()
+            self.assertEqual(len(registered), 75)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
