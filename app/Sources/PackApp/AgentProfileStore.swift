@@ -267,6 +267,15 @@ actor AgentProfileStore {
         return result
     }
 
+    func clearChatMessages(agentID: UUID) throws {
+        let statement = try connection.prepare("DELETE FROM agent_chat_messages WHERE agent_id=?;")
+        defer { sqlite3_finalize(statement) }
+        bindText(agentID.uuidString, at: 1, to: statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
+        }
+    }
+
     @discardableResult
     func remove(id: UUID) throws -> Bool {
         let statement = try connection.prepare("DELETE FROM agent_profiles WHERE id=?;")
