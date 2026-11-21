@@ -132,7 +132,7 @@ actor AgentProfileStore {
                     ON agent_profiles(provider_id);
                 PRAGMA user_version=1;
                 """)
-        } else if version != 1 && version != 2 {
+        } else if version != 1 && version != 2 && version != 3 {
             throw AgentProfileStoreError.unsupportedSchemaVersion(version)
         }
         if version < 2 {
@@ -150,6 +150,8 @@ actor AgentProfileStore {
                 """)
         }
         if version < 3 {
+            try connection.execute("BEGIN IMMEDIATE;")
+            do {
             try connection.execute("""
                 CREATE TABLE IF NOT EXISTS agent_conversations (
                     id TEXT PRIMARY KEY NOT NULL,
@@ -190,6 +192,12 @@ actor AgentProfileStore {
                 }
             }
             try connection.execute("PRAGMA user_version=3;")
+                try connection.execute("PRAGMA user_version=3;")
+                try connection.execute("COMMIT;")
+            } catch {
+                try? connection.execute("ROLLBACK;")
+                throw error
+            }
         }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path)
     }
