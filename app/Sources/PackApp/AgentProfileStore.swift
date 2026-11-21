@@ -233,10 +233,14 @@ actor AgentProfileStore {
     func chatMessages(agentID: UUID, limit: Int = 500) throws -> [AgentChatMessage] {
         let statement = try connection.prepare("""
             SELECT id, role, content, created_at
-            FROM agent_chat_messages
-            WHERE agent_id=?
-            ORDER BY created_at ASC, rowid ASC
-            LIMIT ?;
+            FROM (
+                SELECT id, role, content, created_at, rowid
+                FROM agent_chat_messages
+                WHERE agent_id=?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+            )
+            ORDER BY created_at ASC, rowid ASC;
             """)
         defer { sqlite3_finalize(statement) }
         bindText(agentID.uuidString, at: 1, to: statement)
