@@ -21,6 +21,7 @@ struct AgentAdapterConfiguration: Codable, Hashable, Sendable {
     let mode: AgentConnectionMode
     let credential: AgentCredentialReference?
     let endpoint: String?
+    let model: String?
     let adapterVersion: String
 }
 
@@ -145,7 +146,7 @@ protocol AgentAdapter: Sendable {
     func probeCapabilities() async throws -> Set<AgentCapability>
     func listSessions() async throws -> [AgentSession]
     func sendMessage(sessionID: String?, input: AgentMessageInput) async throws -> AgentRun
-    func streamEvents(for run: AgentRun) -> AsyncThrowingStream<AgentEvent, Error>
+    func streamEvents(for run: AgentRun) async -> AsyncThrowingStream<AgentEvent, Error>
     func cancel(run: AgentRun) async throws -> AgentCancelResult
     func runStatus(for run: AgentRun) async throws -> AgentRunStatus
     func usageSnapshot() async throws -> AgentUsageSnapshot?
@@ -167,6 +168,7 @@ struct AgentProfile: Codable, Hashable, Identifiable, Sendable {
     let mode: AgentConnectionMode
     let credential: AgentCredentialReference?
     let endpoint: String?
+    let model: String?
     let adapterVersion: String
     var capabilities: Set<AgentCapability>
     var connection: AgentConnectionState?
