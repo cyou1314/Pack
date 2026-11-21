@@ -63,6 +63,7 @@
 - [x] 对 Keychain 读取错误、凭证不一致和迁移失败实行 fail-closed；明确区分首次迁移、Keychain 拒绝访问和配置文件残留。
 - [x] 远程 Hub 连接强制 HTTPS；HTTP 仅允许 loopback（127.0.0.1、localhost、::1）。覆盖 macOS App、Pack Runtime、外部 Agent 和 Bridge。
 - [x] 增加可注入凭证存储层和 Swift 单元测试，覆盖迁移成功、重复启动、Keychain 失败、凭证冲突和配置文件权限。
+- [x] 将 `~/.pack` 配置目录权限收紧为 0700，配置文件保持 0600；拒绝符号链接配置文件，避免凭证迁移跟随链接写到非预期位置。
 - [x] 审查 L2 handoff Unix Socket、临时 Keychain ticket、Cookie 清理和错误日志脱敏；补上 JSON 根类型异常回归并保持票据/ Cookie 清理逻辑。
 - [x] 为敏感凭证、事件包和共享上下文建立统一敏感字段识别规则；App Hub 错误日志仅记录安全类别。
 
@@ -78,6 +79,7 @@
 - [ ] 盘点归档 staging 中仍代表当前安全边界的测试；只迁移有明确现行价值的用例，不直接恢复全部历史套件。
 - [ ] 为 Hub 的权限、审批、规则通配、任务状态转换和并发边界建立正式测试。
 - [x] 为 PackCore 增加 Swift 测试 Target，覆盖凭证迁移、Keychain 故障、Hub URL 与重定向策略。
+- [x] 增加配置目录权限与符号链接拒绝的回归测试。
 - [ ] 将审批规则范围逻辑抽为可独立测试的纯函数，并补充对应单元测试。
 - [x] 增加安装脚本和 systemd 单元的自动检查；DMG 内容清单与版本元数据检查仍待补齐。
 
@@ -140,7 +142,15 @@
 
 以下暂不在第一批修改：Keychain 迁移逻辑、Hub 数据库 Schema、Hub 大文件拆分、App 大规模拆分、Provider 新接入、Browser/Computer Use。它们需要各自的设计和测试，不与低耦合修复混在一个提交中。
 
-## 6. 每批交付记录格式
+## 6. 第二批追加记录（2026-11-21）
+
+- 变更：PackConfig 在加载凭证前拒绝符号链接配置文件；将配置父目录权限验证并收紧至 0700；配置文件继续强制 0600。
+- 测试：新增目录权限收紧测试、符号链接拒绝且不读取/迁移目标凭证测试。
+- 兼容性：不改变 JSON 字段、Keychain service/account、Hub URL 规则和 MCP 请求协议；首次加载会收紧 `~/.pack` 目录权限。
+- 未验证：真实 Mac Keychain ACL、不同安装用户/自定义 `PACK_CONFIG_PATH` 场景，以及真实用户目录的权限修复。
+- 回滚：回退本批 PackConfig 与 PackConfigTests 两个文件的提交；已被收紧为 0700 的目录权限不会自动放宽。
+
+## 7. 每批交付记录格式
 
 每批 PR/提交必须记录：
 
