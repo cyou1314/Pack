@@ -5,7 +5,7 @@
 | Provider | 个人账号原生接入 | 本机 Runtime | 官方 API | 当前仓库状态 | 下一步验证 |
 |---|---|---|---|---|---|
 | Muse | Custom Connector 候选 | 现有 ego Runtime | 待评估 | 已有 Muse Runtime 与 MCP Connector 相关资产；无完整 v2 Adapter | Connector 能否接收消息、主动回复、恢复会话；Pack 能否反向唤醒 |
-| Codex | 复用本机登录的 App Server 路线 | Codex App Server 候选 | 官方 API 路线需另行评估 | 已有 external pack-agent 接入，不等于原生 App Server 集成 | 本机登录、Thread/Turn、事件、审批、重连 |
+| Codex | 复用本机登录的 App Server 路线 | Codex App Server Adapter 已加入 v2 分支，Mock CI 验证；真实 Mac 验收待做 | 官方 API 路线需另行评估 | 既有 external pack-agent 与新增 App Server Adapter 是两条不同接入路径 | 本机登录、真实 Thread/Turn、命令/文件审批、断线恢复和长任务 |
 | Gemini | 个人 App 原生会话接口待验证 | Gemini CLI 候选 | Gemini API | 尚无 v2 Adapter | CLI JSONL、会话恢复、工具调用和取消 |
 | ChatGPT | 个人 App 会话接口待验证 | 无默认本机 Runtime | OpenAI Responses API | 尚无 v2 Adapter | 流式、工具调用、MCP、费用、上下文隔离 |
 | 豆包 | 个人助手接口待验证 | 可选本机桥接待评估 | 火山方舟 | 尚无 v2 Adapter | 模型 API、Function Calling、流式和计费 |

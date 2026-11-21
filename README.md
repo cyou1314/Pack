@@ -60,7 +60,7 @@ Pack 不是把多个聊天窗口简单放在一起。它提供统一的 Agent �
 
 ### 尚未实现、不得误报为已完成
 
-- Codex App Server 正式适配器。
+- Codex App Server Adapter 已有首版实现与 Mock 测试；真实 Mac 登录、审批和长任务验收仍待完成。
 - Gemini CLI 正式适配器。
 - OpenAI Responses API 适配器。
 - 豆包火山方舟适配器。

@@ -165,6 +165,7 @@ const CAPABILITY_METHODS = Object.freeze({
   "session.resume": "resumeSession",
   "session.interrupt": "interruptSession",
   "events.push": "subscribe",
+  "approvals.request": "respondToApproval",
 });
 
 export function assertAdapterInstance(descriptor, instance) {
