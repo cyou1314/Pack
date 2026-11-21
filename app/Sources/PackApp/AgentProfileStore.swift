@@ -403,6 +403,12 @@ actor AgentProfileStore {
         bindText(agentID.uuidString, at: 1, to: statement)
         bindText(conversationID.uuidString, at: 2, to: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
+        let reset = try connection.prepare("UPDATE agent_conversations SET session_id=NULL, updated_at=? WHERE id=? AND agent_id=?;")
+        defer { sqlite3_finalize(reset) }
+        sqlite3_bind_double(reset, 1, Date().timeIntervalSince1970)
+        bindText(conversationID.uuidString, at: 2, to: reset)
+        bindText(agentID.uuidString, at: 3, to: reset)
+        guard sqlite3_step(reset) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
     }
 
     func clearChatMessages(agentID: UUID) throws {
