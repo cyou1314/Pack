@@ -1,5 +1,5 @@
 // Owns dispatcher approval waits for tasks explicitly marked as requiring approval.
-export function createApprovalManager({ call, sleep, listActiveTasks, approvalDecision, log = console }) {
+export function createApprovalManager({ call, sleep, listActiveTasks, approvalDecision, memberName = '', log = console }) {
   if (![call, sleep, listActiveTasks, approvalDecision].every(fn => typeof fn === 'function')) {
     throw new TypeError('approval manager dependencies are required');
   }
@@ -33,7 +33,7 @@ export function createApprovalManager({ call, sleep, listActiveTasks, approvalDe
       await sleep(20000);
       try {
         await checkPendingApprovals();
-        const tasks = await listActiveTasks(call, { assignee_name: task.assignee });
+        const tasks = await listActiveTasks(call, { assignee_name: task.assignee || memberName });
         const current = tasks.find(item => item.id === task.id);
         if (!current || !['claimed', 'working'].includes(current.status)) {
           log.log(`task ${task.id} left active state (${current && current.status}); approval wait aborted`);
