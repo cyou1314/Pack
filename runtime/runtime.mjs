@@ -22,7 +22,6 @@ import {createDriverRunner} from './driver-runner.mjs';
  * Smoke mode: node runtime.mjs --smoke "message"  (runs driver once)
  */
 import { readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync } from "node:fs";
-import { spawn } from "node:child_process";
 import path from "node:path";
 import { format } from "node:util";
 import { fileURLToPath } from "node:url";
