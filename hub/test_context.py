@@ -138,7 +138,12 @@ class HubContextTests(unittest.TestCase):
             finally:
                 connection.close()
 
+            import asyncio
+            import inspect
+
             registered = hub.build_server(context).list_tools()
+            if inspect.isawaitable(registered):
+                registered = asyncio.run(registered)
             self.assertEqual(len(registered), 75)
 
 
