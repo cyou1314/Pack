@@ -130,3 +130,31 @@ def rename_member(context, actor, name: str, display_name: str) -> dict:
         finally:
             conn.close()
     return {"name": name, "display_name": dn}
+
+
+def rotate_member_token(context, actor, name: str, *, token_factory, hash_token) -> dict:
+    """Rotate one active non-dispatcher token; never store or audit plaintext."""
+    token = token_factory()
+    with context.lock:
+        conn = context.connect()
+        try:
+            row = conn.execute(
+                "SELECT id, removed_at, role FROM members WHERE name=?",
+                (name,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"no such member: {name}")
+            if row["removed_at"] is not None:
+                raise ValueError(f"member removed: {name}")
+            if row["role"] == "dispatcher":
+                raise ValueError(
+                    "cannot rotate the dispatcher's token with this tool")
+            conn.execute(
+                "UPDATE members SET token_hash=? WHERE id=?",
+                (hash_token(token), row["id"]),
+            )
+            context.audit(conn, actor["name"], "member_token_rotate", name)
+            conn.commit()
+        finally:
+            conn.close()
+    return {"name": name, "token": token}

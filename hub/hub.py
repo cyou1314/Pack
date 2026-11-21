@@ -1622,10 +1622,12 @@ def build_server(context: HubContext | None = None):
         from .services.members import set_login_state as _set_login_state
         from .services.members import set_access_mode as _set_access_mode
         from .services.members import rename_member as _rename_member
+        from .services.members import rotate_member_token as _rotate_member_token
     else:
         from services.members import set_login_state as _set_login_state
         from services.members import set_access_mode as _set_access_mode
         from services.members import rename_member as _rename_member
+        from services.members import rotate_member_token as _rotate_member_token
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -2250,31 +2252,9 @@ def build_server(context: HubContext | None = None):
         打断线上调度链路，换它走运维流程。写审计。"""
         me = authenticate()
         require(me, "dispatcher")
-        tok = "pk-mem-" + secrets.token_urlsafe(32)
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute(
-                    "SELECT id, removed_at, role FROM members WHERE name=?",
-                    (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                if row["role"] == "dispatcher":
-                    # staging51 红队修复：调度员自身 token 与本地
-                    # .dispatcher_token 文件绑定（watcher 与全部调度员
-                    # 客户端同源），误轮换会直接打断线上调度链路——
-                    # 本工具不许碰，调度员换 token 走运维流程。
-                    raise ValueError(
-                        "cannot rotate the dispatcher's token with this tool")
-                conn.execute("UPDATE members SET token_hash=? WHERE id=?",
-                             (hash_token(tok), row["id"]))
-                audit(conn, me["name"], "member_token_rotate", name)
-                conn.commit()
-            finally:
-                conn.close()
-        return {"name": name, "token": tok}
+        return _rotate_member_token(context, me, name,
+                                    token_factory=lambda: "pk-mem-" + secrets.token_urlsafe(32),
+                                    hash_token=hash_token)
 
     @mcp.tool
     def member_access_mode_set(name: str, mode: str) -> dict:

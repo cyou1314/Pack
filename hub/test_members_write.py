@@ -7,7 +7,7 @@ from pathlib import Path
 
 import hub
 from core.context import HubContext
-from services.members import rename_member, set_access_mode, set_login_state
+from services.members import rename_member, rotate_member_token, set_access_mode, set_login_state
 
 
 class MemberWriteTests(unittest.TestCase):
@@ -79,6 +79,64 @@ class MemberWriteTests(unittest.TestCase):
             "SELECT action,detail FROM audit WHERE action='member_rename' ORDER BY id DESC LIMIT 1"
         ).fetchone()
         self.assertEqual(tuple(audit),("member_rename","worker -> New Worker"))
+
+
+    def test_token_rotation_invalidates_previous_hash_and_never_audits_secret(self):
+        original_hash = self.db.execute(
+            "SELECT token_hash FROM members WHERE name='worker'"
+        ).fetchone()[0]
+        generated = "pk-mem-test-only-secret"
+        result = rotate_member_token(
+            self.context, self.actor, "worker",
+            token_factory=lambda: generated, hash_token=hub.hash_token,
+        )
+        self.assertEqual(result, {"name": "worker", "token": generated})
+        current_hash = self.db.execute(
+            "SELECT token_hash FROM members WHERE name='worker'"
+        ).fetchone()[0]
+        self.assertNotEqual(current_hash, original_hash)
+        self.assertEqual(current_hash, hub.hash_token(generated))
+        record = self.db.execute(
+            "SELECT actor,detail FROM audit WHERE action='member_token_rotate'"
+        ).fetchone()
+        self.assertEqual(tuple(record), ("dispatcher", "worker"))
+        self.assertNotIn(generated, record["detail"])
+
+    def test_dispatcher_token_and_removed_member_cannot_be_rotated(self):
+        token_path = Path(self.context.base_dir) / ".dispatcher_token"
+        original_token = token_path.read_bytes()
+        dispatcher_hash = self.db.execute(
+            "SELECT token_hash FROM members WHERE role='dispatcher'"
+        ).fetchone()[0]
+        token_factory = lambda: "pk-mem-test-only-secret"
+        with self.assertRaisesRegex(ValueError, "dispatcher"):
+            rotate_member_token(
+                self.context, self.actor, "dispatcher",
+                token_factory=token_factory, hash_token=hub.hash_token,
+            )
+        with self.assertRaisesRegex(ValueError, "no such member"):
+            rotate_member_token(
+                self.context, self.actor, "missing",
+                token_factory=token_factory, hash_token=hub.hash_token,
+            )
+        self.db.execute("UPDATE members SET removed_at=9001 WHERE name='worker'")
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, "member removed"):
+            rotate_member_token(
+                self.context, self.actor, "worker",
+                token_factory=token_factory, hash_token=hub.hash_token,
+            )
+        self.assertEqual(token_path.read_bytes(), original_token)
+        self.assertEqual(
+            self.db.execute(
+                "SELECT token_hash FROM members WHERE role='dispatcher'"
+            ).fetchone()[0], dispatcher_hash,
+        )
+        self.assertEqual(
+            self.db.execute(
+                "SELECT COUNT(*) FROM audit WHERE action='member_token_rotate'"
+            ).fetchone()[0], 0,
+        )
 
 
 if __name__ == "__main__":
