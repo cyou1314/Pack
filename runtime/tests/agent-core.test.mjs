@@ -251,3 +251,32 @@ test("Agent Event and Context Package reject snake_case secrets", () => {
     /private_context_forbidden/,
   );
 });
+
+
+test("Context Package rejects credential and cookie aliases", () => {
+  const forbiddenKeys = [
+    "sessionCookie", "cookieJar", "oauth_token", "idToken",
+    "authToken", "bearer_token", "secret_key", "ssh_private_key",
+    "credential", "x_api_key",
+  ];
+  for (const key of forbiddenKeys) {
+    assert.throws(
+      () => createContextPackage({
+        roomId: "room-a",
+        agentId: "agent-1",
+        request: "Review",
+        messages: [{
+          id: 1,
+          roomId: "room-a",
+          visibility: "shared",
+          author: "owner",
+          kind: "chat",
+          body: "safe-looking message",
+          [key]: "must-not-enter-context",
+        }],
+      }),
+      /private_context_forbidden/,
+      "expected sensitive field to be rejected: " + key,
+    );
+  }
+});

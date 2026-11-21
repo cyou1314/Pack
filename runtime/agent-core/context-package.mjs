@@ -1,9 +1,9 @@
 
 const SENSITIVE_KEYS = new Set([
-  "apikey", "accesstoken", "refreshtoken", "token",
-  "authorization", "authheader", "password", "cookie", "cookies",
-  "nativememory", "privatememory", "privatecontext", "credentials",
-  "clientsecret", "privatekey", "secret",
+  "apikey", "xapikey", "accesstoken", "refreshtoken", "oauthtoken", "idtoken", "authtoken", "bearertoken", "token",
+  "authorization", "authheader", "password", "cookie", "cookies", "cookiejar", "sessioncookie", "setcookie",
+  "nativememory", "privatememory", "privatecontext", "credential", "credentials",
+  "clientsecret", "secretkey", "signingkey", "sshprivatekey", "privatekey", "secret",
 ]);
 
 function assertNoPrivateFields(value, path = "input") {
