@@ -48,7 +48,7 @@ class HubPolicyHelperTests(unittest.TestCase):
         self.assertEqual(hub._member_access_mode({"access_mode": "bad-value"}), "full")
         self.assertEqual(hub._member_access_mode({"access_mode": "readonly"}), "readonly")
         self.assertTrue(hub._is_executor_pinned("  [ENG] inspect", "ordinary body"))
-        self.assertTrue(hub._is_executor_pinned("ordinary title", "contains [M4A-image] marker"))
+        self.assertTrue(hub._is_executor_pinned("ordinary title", "contains [ENG-image] marker"))
         self.assertFalse(hub._is_executor_pinned("ordinary title", "ordinary body"))
 
     def test_access_mode_gate_allows_and_denies_with_audit(self):
