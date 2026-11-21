@@ -29,3 +29,40 @@ App 读取 `~/.pack/config.json`：
   串行/会话自愈/网址发现，与 runtime.mjs 同逻辑）
 - `Sources/PackApp/Models.swift`：消息/任务/成员模型
 - `Sources/PackApp/PackApp.swift`：界面（三屏）与轮询状态
+
+## Agent 工作台（新增）
+
+侧栏新增 Agent 页面，与原有 Muse 成员 / Hub 任务体系并行，不会替换原有登录态成员。
+
+### 当前支持
+
+- OpenAI 官方 API：Responses API、SSE 流式输出、`previous_response_id` 会话续接。
+- 多账号：每个 Agent Profile 使用独立 UUID；同一 Provider 可添加多个账号。
+- 本地安全存储：Profile 存于 `~/Library/Application Support/Pack/agents.sqlite`；API Key 存于 macOS Keychain，SQLite 仅保留 Keychain reference。
+- 连接状态：创建时显示 `configured`；用户显式执行真实 API 测试成功后显示 `connected`。
+- 聊天：每个 Agent 独立维护当前进程内的聊天显示内容和会话续接 ID。
+
+### 添加 OpenAI API Agent
+
+1. 打开侧栏「Agent」并选择「添加」。
+2. 填写显示名称、模型 ID 和 OpenAI API Key；自定义 Endpoint 可留空。
+3. 保存后，密钥写入 Keychain，Profile 写入 SQLite。
+4. 点击「测试连接」会发送一次真实 API 请求，可能产生 API 费用；只有请求成功后才标记为已连接。
+5. 后续消息使用该 Agent 最近一次返回的 Response ID 续接会话。
+
+### 当前限制
+
+- 仅 OpenAI 官方 API Adapter 已实现；ChatGPT 个人账号 Native 接入、豆包 Native/API Adapter 尚未实现。
+- 当前不支持附件、服务端会话列表、服务端取消和工具调用。
+- 聊天显示历史与会话 ID 目前只保存在当前 App 进程内；重启后会恢复 Agent Profile，但不会恢复完整聊天 transcript / 会话 ID。
+- API Agent 使用 Pack 管理的上下文边界；不会读取或声称拥有 ChatGPT 个人账号里的私有记忆。
+- 自定义 Endpoint 必须使用 HTTPS；请只配置可信服务商地址。
+
+### 构建
+
+```bash
+cd app
+swift build
+```
+
+GitHub Actions 的 macOS App / build 用于验证 Swift 编译；真实 API Key、线上请求和本机 Keychain 行为仍需在用户 Mac 上验收。
