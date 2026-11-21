@@ -463,7 +463,7 @@ actor AgentProfileStore {
         sqlite3_bind_double(statement, 7, profile.updatedAt.timeIntervalSince1970)
     }
 
-    nonisolated private static func bindText(_ value: String, at index: Int32, to statement: OpaquePointer) {
+    private static func bindText(_ value: String, at index: Int32, to statement: OpaquePointer) {
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(statement, index, value, -1, transient)
     }
