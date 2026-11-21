@@ -86,6 +86,7 @@ actor AgentProfileStore {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         let databaseURL = directory.appendingPathComponent("agents.sqlite")
         let connection = try SQLiteConnection(url: databaseURL)
         self.connection = connection
