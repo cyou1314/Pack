@@ -28,6 +28,40 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(policy.is_executor_pinned("ordinary title", "contains [ENG-image] marker"))
         self.assertFalse(policy.is_executor_pinned("ordinary title", "ordinary body"))
 
+    def test_egress_host_normalizes_scheme_authority_and_idna(self):
+        self.assertEqual(
+            policy.egress_host("HTTPS://User:pass@ExAmPlE.COM:8443/path"),
+            "example.com",
+        )
+        self.assertEqual(
+            policy.egress_host("https://例子.测试/"),
+            "xn--fsqu00a.xn--0zwm56d",
+        )
+
+    def test_egress_host_rejects_empty_and_non_http_urls(self):
+        for value in ("", None, "example.com", "ftp://example.com", "https:///path"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    policy.egress_host(value)
+
+    def test_egress_pattern_normalizes_wildcards_and_rejects_bad_domains(self):
+        self.assertEqual(policy.egress_pattern(" *.Example.COM. "), "example.com")
+        for value in ("", "localhost", "bad..example.com", "-bad.example.com"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    policy.egress_pattern(value)
+
+    def test_host_covers_only_exact_or_dot_boundary_subdomains(self):
+        self.assertTrue(policy.host_covers("example.com", "example.com"))
+        self.assertTrue(policy.host_covers("api.example.com", "example.com"))
+        self.assertFalse(policy.host_covers("notexample.com", "example.com"))
+
+    def test_task_hosts_extracts_lowercase_candidates(self):
+        self.assertEqual(
+            policy.task_hosts("Open https://Docs.Example.com/path and API.example.net."),
+            {"docs.example.com", "api.example.net"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

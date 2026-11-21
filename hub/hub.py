@@ -60,19 +60,24 @@ import sqlite3
 import sys
 import threading
 import time
-import urllib.parse
 
 if __package__:
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
+
         action_tag, backoff_seconds as _backoff_seconds,
+        egress_host as _egress_host, egress_pattern as _egress_pattern,
+        host_covers as _host_covers, task_hosts as _task_hosts,
         is_executor_pinned as _is_executor_pinned,
         member_access_mode as _member_access_mode,
     )
 else:
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
+
         action_tag, backoff_seconds as _backoff_seconds,
+        egress_host as _egress_host, egress_pattern as _egress_pattern,
+        host_covers as _host_covers, task_hosts as _task_hosts,
         is_executor_pinned as _is_executor_pinned,
         member_access_mode as _member_access_mode,
     )
@@ -354,55 +359,6 @@ def _approval_gate(conn, room_id, msg_id, body, poster=None):
 # （非群主发起的 run 写记忆先问）属执行体/记忆层，列入 DEPLOY 后续项。
 # 每次判定（含畸形 URL 拒绝）都写审计：actor='egress'，与真人/规则/审查区分。
 
-_HOST_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
-_HOSTISH_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
-
-
-def _egress_host(raw):
-    """把 URL 规范化成可比对的 host：scheme 必须是 http/https（缺失/其他
-    直接拒绝）；urllib 的 hostname 自动剥 userinfo 与端口并转小写；
-    再剥尾点、非 ASCII 走 IDNA。畸形一律 ValueError 并说明原因。"""
-    u = (raw or "").strip()
-    if not u:
-        raise ValueError("malformed url: empty")
-    try:
-        parts = urllib.parse.urlsplit(u)
-    except ValueError as e:
-        raise ValueError(f"malformed url: {e}")
-    if parts.scheme.lower() not in ("http", "https"):
-        raise ValueError("malformed url: scheme must be http or https")
-    host = parts.hostname
-    if not host:
-        raise ValueError("malformed url: no host")
-    host = host.rstrip(".")
-    if not host or ".." in host or any(c in host for c in " \t/\\"):
-        raise ValueError(f"malformed host: {host!r}")
-    if not host.isascii():
-        try:
-            host = host.encode("idna").decode("ascii")
-        except (UnicodeError, ValueError):
-            raise ValueError(f"malformed host (idna): {host!r}")
-    return host
-
-
-def _egress_pattern(raw):
-    """规则 pattern 规范化：去空白/小写/剥 *. 前缀与尾点；必须是至少含一个点
-    的合法域名（单标签 pattern 太宽，不收；IP 字面量本轮不支持）。"""
-    p = (raw or "").strip().lower()
-    if p.startswith("*."):
-        p = p[2:]
-    p = p.rstrip(".")
-    labels = p.split(".") if p else []
-    if len(labels) < 2 or any(not _HOST_LABEL_RE.fullmatch(x) for x in labels):
-        raise ValueError(f"malformed egress pattern: {raw!r} (want a domain like example.com)")
-    return p
-
-
-def _host_covers(host, pattern):
-    """pattern 覆盖 host：相等，或 host 是 pattern 的子域（点边界后缀）。"""
-    return host == pattern or host.endswith("." + pattern)
-
-
 def _egress_rule_eval(conn, host):
     """在启用的 egress_rules 里找覆盖 host 的最具体一条：
     精确相等优先，其次 pattern 最长（最深的子域规则优先）。"""
@@ -412,16 +368,6 @@ def _egress_rule_eval(conn, host):
         return None
     hits.sort(key=lambda r: (r["pattern"] != host, -len(r["pattern"])))
     return hits[0]
-
-
-def _task_hosts(text):
-    """从任务 title/body 里抽出出现过的 host 候选（小写、剥尾点）。
-    正文由群主在建任务时写死、成员改不了，抽取宽松些无妨：
-    宁可多抽（文件名之类），判定还要与目标 host 同站才算命中。"""
-    out = set()
-    for m in _HOSTISH_RE.finditer((text or "").lower()):
-        out.add(m.group(0).rstrip("."))
-    return out
 
 
 def _task_mention(conn, task_id, host):
