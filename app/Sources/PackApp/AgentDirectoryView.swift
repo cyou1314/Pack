@@ -61,6 +61,7 @@ final class AgentWorkspaceState: ObservableObject {
     func bootstrap() async {
         guard let manager else { return }
         do {
+            try await manager.reconcileInterruptedRuns()
             _ = try await manager.restoreAdapters()
             profiles = try await manager.profiles()
             if selectedAgentID == nil { selectedAgentID = profiles.first?.id }
