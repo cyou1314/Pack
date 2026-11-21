@@ -1,6 +1,14 @@
 import Foundation
 import CSQLite
 
+struct AgentChatMessage: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    let agentID: UUID
+    let role: String
+    let content: String
+    let createdAt: Date
+}
+
 enum AgentProfileStoreError: Error {
     case sqlite(String)
     case unsupportedSchemaVersion(Int32)
@@ -114,8 +122,22 @@ actor AgentProfileStore {
                     ON agent_profiles(provider_id);
                 PRAGMA user_version=1;
                 """)
-        } else if version != 1 {
+        } else if version != 1 && version != 2 {
             throw AgentProfileStoreError.unsupportedSchemaVersion(version)
+        }
+        if version < 2 {
+            try connection.execute("""
+                CREATE TABLE IF NOT EXISTS agent_chat_messages (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    agent_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_chat_messages_agent_time
+                    ON agent_chat_messages(agent_id, created_at, id);
+                PRAGMA user_version=2;
+                """)
         }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path)
     }
@@ -184,6 +206,59 @@ actor AgentProfileStore {
             let length = Int(sqlite3_column_bytes(statement, 0))
             let data = Data(bytes: text, count: length)
             result.append(try decoder.decode(AgentProfile.self, from: data))
+        }
+        return result
+    }
+
+    func appendChatMessage(agentID: UUID, role: String, content: String) throws {
+        guard ["user", "assistant", "system"].contains(role) else {
+            throw AgentProfileStoreError.sqlite("invalid chat message role")
+        }
+        guard !content.isEmpty else { return }
+        let statement = try connection.prepare("""
+            INSERT INTO agent_chat_messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, ?, ?, ?);
+            """)
+        defer { sqlite3_finalize(statement) }
+        bindText(UUID().uuidString, at: 1, to: statement)
+        bindText(agentID.uuidString, at: 2, to: statement)
+        bindText(role, at: 3, to: statement)
+        bindText(content, at: 4, to: statement)
+        sqlite3_bind_double(statement, 5, Date().timeIntervalSince1970)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
+        }
+    }
+
+    func chatMessages(agentID: UUID, limit: Int = 500) throws -> [AgentChatMessage] {
+        let statement = try connection.prepare("""
+            SELECT id, role, content, created_at
+            FROM agent_chat_messages
+            WHERE agent_id=?
+            ORDER BY created_at ASC, rowid ASC
+            LIMIT ?;
+            """)
+        defer { sqlite3_finalize(statement) }
+        bindText(agentID.uuidString, at: 1, to: statement)
+        sqlite3_bind_int(statement, 2, Int32(max(1, min(limit, 5000))))
+        var result: [AgentChatMessage] = []
+        while true {
+            let step = sqlite3_step(statement)
+            if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW,
+                  let idText = sqlite3_column_text(statement, 0),
+                  let roleText = sqlite3_column_text(statement, 1),
+                  let contentText = sqlite3_column_text(statement, 2) else {
+                throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
+            }
+            let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+            result.append(AgentChatMessage(
+                id: UUID(uuidString: String(cString: idText)) ?? UUID(),
+                agentID: agentID,
+                role: String(cString: roleText),
+                content: String(cString: contentText),
+                createdAt: createdAt
+            ))
         }
         return result
     }
