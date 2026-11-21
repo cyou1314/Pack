@@ -37,6 +37,14 @@ jobs:
           bash -n local/uninstall-local.sh
       - name: Python compile
         run: python -m compileall -q hub installer tests
+      - name: Bootstrap contract snapshots (temporary)
+        run: python hub/export_contracts.py --write
+      - name: Upload contract snapshot bootstrap
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-contract-snapshots
+          path: hub/contracts/*.json
+          if-no-files-found: error
       - name: Unit tests
         run: |
           bash hub/test_backup.sh
