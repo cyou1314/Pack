@@ -36,6 +36,8 @@ App 读取 `~/.pack/config.json`：
 
 ### 当前支持
 
+- Agent 编辑：支持修改显示名称、模型 ID 和自定义 Endpoint；模型或 Endpoint 变化时重建 Adapter 并清除旧 Response ID，需重新测试连接。
+
 - OpenAI 官方 API：Responses API、SSE 流式输出、`previous_response_id` 会话续接。
 - 多账号：每个 Agent Profile 使用独立 UUID；同一 Provider 可添加多个账号。
 - 本地安全存储：Profile 存于 `~/Library/Application Support/Pack/agents.sqlite`；API Key 存于 macOS Keychain，SQLite 仅保留 Keychain reference。
