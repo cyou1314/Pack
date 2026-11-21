@@ -130,6 +130,14 @@ actor AgentManager {
         )
     }
 
+    func appendChatMessage(agentID: UUID, role: String, content: String) async throws {
+        try await store.appendChatMessage(agentID: agentID, role: role, content: content)
+    }
+
+    func chatMessages(agentID: UUID) async throws -> [AgentChatMessage] {
+        try await store.chatMessages(agentID: agentID)
+    }
+
     func updateSessionID(agentID: UUID, sessionID: String) async throws {
         guard var profile = try await store.profile(id: agentID) else { return }
         profile.lastSessionID = sessionID
