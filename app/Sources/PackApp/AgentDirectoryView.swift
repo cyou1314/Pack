@@ -21,9 +21,7 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var activeRun: AgentRun?
     @Published var editSucceeded = false
     @Published var chatInput = ""
-    @Published var chatOutputs: [UUID: String] = [:]
     @Published var messagesByConversation: [UUID: [AgentChatMessage]] = [:]
-    @Published var sessionIDs: [UUID: String] = [:]
     @Published var isAdding = false
     @Published var addSucceeded = false
     @Published var isTesting = false
@@ -82,7 +80,6 @@ final class AgentWorkspaceState: ObservableObject {
             guard selectedAgentID == agentID else { return }
             conversations = loaded
             for conversation in loaded {
-                if let sessionID = conversation.sessionID { sessionIDs[conversation.id] = sessionID }
             }
             selectedConversationID = loaded.first?.id
             await loadMessages(for: agentID, conversationID: selectedConversationID)
@@ -96,10 +93,6 @@ final class AgentWorkspaceState: ObservableObject {
         do {
             let messages = try await manager.chatMessages(agentID: agentID, conversationID: conversationID)
             messagesByConversation[conversationID] = messages
-            chatOutputs[conversationID] = messages.map { message in
-                let prefix = message.role == "user" ? "你：" : (message.role == "assistant" ? "Agent：" : "系统：")
-                return "\(prefix)\n\(message.content)"
-            }.joined(separator: "\n\n")
         } catch {
             self.error = error.localizedDescription
         }
@@ -112,7 +105,6 @@ final class AgentWorkspaceState: ObservableObject {
                 let conversation = try await manager.createConversation(agentID: profile.id, title: "新会话")
                 conversations.insert(conversation, at: 0)
                 selectedConversationID = conversation.id
-                chatOutputs[conversation.id] = ""
                 messagesByConversation[conversation.id] = []
                 note = "已创建新会话"
             } catch { self.error = error.localizedDescription }
@@ -151,9 +143,7 @@ final class AgentWorkspaceState: ObservableObject {
         Task {
             do {
                 try await manager.removeConversation(agentID: profile.id, conversationID: conversation.id)
-                chatOutputs.removeValue(forKey: conversation.id)
                 messagesByConversation.removeValue(forKey: conversation.id)
-                sessionIDs.removeValue(forKey: conversation.id)
                 conversations = try await manager.conversations(agentID: profile.id)
                 if conversations.isEmpty {
                     let created = try await manager.createConversation(agentID: profile.id, title: "新会话")
@@ -231,8 +221,7 @@ final class AgentWorkspaceState: ObservableObject {
                 )
                 profiles = try await manager.profiles()
                 if let updated = profiles.first(where: { $0.id == profile.id }), updated.lastSessionID == nil {
-                    for conversation in conversations { sessionIDs.removeValue(forKey: conversation.id) }
-                    await loadConversations(for: profile.id)
+                        await loadConversations(for: profile.id)
                 }
                 note = "Agent 配置已更新；请重新测试连接"
                 editSucceeded = true
@@ -269,9 +258,7 @@ final class AgentWorkspaceState: ObservableObject {
         Task {
             do {
                 try await manager.clearConversationMessages(agentID: profile.id, conversationID: conversation.id)
-                chatOutputs[conversation.id] = ""
                 messagesByConversation[conversation.id] = []
-                sessionIDs.removeValue(forKey: conversation.id)
                 if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
                     conversations[index].sessionID = nil
                 }
@@ -309,7 +296,10 @@ final class AgentWorkspaceState: ObservableObject {
             defer { isTesting = false }
             do {
                 let response = try await manager.testConnection(agentID: selectedAgentID)
-                if let conversationID = selectedConversationID { chatOutputs[conversationID, default: ""] += "\n[连接测试]\n" + response + "\n" }
+                if let profile = selectedProfile, let conversationID = selectedConversationID {
+                    let message = AgentChatMessage(id: UUID(), agentID: profile.id, conversationID: conversationID, role: "system", content: "连接测试：\(response)", createdAt: Date())
+                    messagesByConversation[conversationID, default: []].append(message)
+                }
                 profiles = try await manager.profiles()
                 note = "API 连接测试完成"
             } catch {
@@ -333,7 +323,6 @@ final class AgentWorkspaceState: ObservableObject {
             role: "user", content: text, createdAt: Date()
         )
         messagesByConversation[conversationID, default: []].append(userMessage)
-        chatOutputs[conversationID, default: ""] += "\n你：\n\(text)\n"
         Task {
             defer { isSending = false; activeRun = nil }
             var assistantText = ""
@@ -348,7 +337,6 @@ final class AgentWorkspaceState: ObservableObject {
                     if event.kind == .messageDelta {
                         let delta = event.text ?? ""
                         assistantText += delta
-                        chatOutputs[conversationID, default: ""] += delta
                         var current = messagesByConversation[conversationID, default: []]
                         if let index = current.firstIndex(where: { $0.id == assistantID }) {
                             current[index].content += delta
@@ -363,7 +351,6 @@ final class AgentWorkspaceState: ObservableObject {
                     if let detail = event.detail, detail.hasPrefix("session_id=") {
                         let sessionID = String(detail.dropFirst("session_id=".count))
                         responseID = sessionID
-                        sessionIDs[conversationID] = sessionID
                         try await manager.updateConversationSession(agentID: profile.id, conversationID: conversationID, sessionID: sessionID)
                         if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
                             conversations[index].sessionID = sessionID
@@ -372,7 +359,6 @@ final class AgentWorkspaceState: ObservableObject {
                 }
                 if !assistantText.isEmpty {
                     try await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "assistant", content: assistantText)
-                    chatOutputs[conversationID, default: ""] += "\n"
                 }
                 note = responseID == nil ? "回复完成" : "回复完成；会话续接 ID 已就绪"
             } catch {
@@ -391,7 +377,7 @@ final class AgentWorkspaceState: ObservableObject {
                 _ = try await manager.removeProfile(agentID: selectedAgentID)
                 profiles = try await manager.profiles()
                 self.selectedAgentID = profiles.first?.id
-                for conversation in conversations { chatOutputs.removeValue(forKey: conversation.id); sessionIDs.removeValue(forKey: conversation.id) }
+                for conversation in conversations { messagesByConversation.removeValue(forKey: conversation.id) }
                 conversations = []
                 selectedConversationID = nil
                 note = "Agent 配置已移除"
