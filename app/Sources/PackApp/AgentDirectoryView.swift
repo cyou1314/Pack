@@ -126,9 +126,10 @@ final class AgentWorkspaceState: ObservableObject {
                         chatOutputs[profile.id, default: ""] += event.text ?? ""
                     }
                     if let detail = event.detail, detail.hasPrefix("session_id=") {
-                        responseID = String(detail.dropFirst("session_id=".count))
-                        sessionIDs[profile.id] = responseID
-                        try await manager.updateSessionID(agentID: profile.id, sessionID: responseID)
+                        let sessionID = String(detail.dropFirst("session_id=".count))
+                        responseID = sessionID
+                        sessionIDs[profile.id] = sessionID
+                        try await manager.updateSessionID(agentID: profile.id, sessionID: sessionID)
                     }
                 }
                 if let responseID {
