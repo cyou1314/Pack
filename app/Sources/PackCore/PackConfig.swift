@@ -199,6 +199,8 @@ public struct PackConfig {
             guard resourceValues.isSymbolicLink != true else { return false }
 
             let directory = path.deletingLastPathComponent()
+            let directoryValues = try directory.resourceValues(forKeys: [.isSymbolicLinkKey])
+            guard directoryValues.isSymbolicLink != true else { return false }
             let directoryAttributes = try fileManager.attributesOfItem(atPath: directory.path)
             guard let directoryType = directoryAttributes[.type] as? FileAttributeType,
                   directoryType == .typeDirectory else {

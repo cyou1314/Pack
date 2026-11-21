@@ -195,6 +195,25 @@ final class PackConfigTests: XCTestCase {
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
     }
 
+    func testConfigParentDirectorySymlinkIsRejected() throws {
+        let fixture = try makeConfig([
+            "hubUrl": "https://hub.example.com/mcp",
+            "token": "dispatcher-secret"
+        ])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let parent = fixture.directory.deletingLastPathComponent()
+        let linkDirectory = parent.appendingPathComponent("PackConfigLink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: linkDirectory, withDestinationURL: fixture.directory)
+        defer { try? FileManager.default.removeItem(at: linkDirectory) }
+        let linkedFile = linkDirectory.appendingPathComponent(fixture.file.lastPathComponent)
+        let store = FakeCredentialStore()
+
+        let result = PackConfig.load(path: linkedFile, service: service, credentialStore: store)
+
+        XCTAssertNil(result.config)
+        XCTAssertTrue(store.entries.isEmpty)
+    }
+
     func testConfigSymlinkIsRejectedWithoutReadingTargetCredentials() throws {
         let fixture = try makeConfig([
             "hubUrl": "https://hub.example.com/mcp",
