@@ -182,6 +182,66 @@ actor AgentManager {
         return profile
     }
 
+    func updateAPIKey(agentID: UUID, newAPIKey: String) async throws {
+        guard !newAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AgentAdapterError.invalidConfiguration("API Key cannot be empty")
+        }
+        guard var profile = try await store.profile(id: agentID),
+              profile.providerID == "openai",
+              profile.mode == .api,
+              let credential = profile.credential else {
+            throw AgentAdapterError.invalidConfiguration("OpenAI API Agent or Keychain reference was not found")
+        }
+        let oldSecret = try AgentCredentialVault.read(credential)
+        _ = try AgentCredentialVault.store(
+            secret: newAPIKey,
+            service: credential.keychainService,
+            account: credential.account
+        )
+        let adapter = OpenAIResponsesAdapter()
+        do {
+            let configuration = AgentAdapterConfiguration(
+                agentID: profile.id, providerID: profile.providerID, mode: profile.mode,
+                credential: credential, endpoint: profile.endpoint, model: profile.model,
+                adapterVersion: profile.adapterVersion
+            )
+            _ = try await adapter.connect(configuration: configuration)
+            profile.capabilities = try await adapter.probeCapabilities()
+            profile.connection = AgentConnectionState(
+                status: .configured, checkedAt: Date(),
+                message: "API Key updated in Keychain; live API request not yet verified"
+            )
+            profile.updatedAt = Date()
+            do {
+                try await store.save(profile)
+            } catch {
+                await adapter.disconnect()
+                _ = try? AgentCredentialVault.store(
+                    secret: oldSecret, service: credential.keychainService, account: credential.account
+                )
+                throw error
+            }
+            await registry.replace(adapter, for: agentID)
+        } catch {
+            await adapter.disconnect()
+            _ = try? AgentCredentialVault.store(
+                secret: oldSecret, service: credential.keychainService, account: credential.account
+            )
+            throw error
+        }
+    }
+
+    func clearChatMessages(agentID: UUID) async throws {
+        try await store.clearChatMessages(agentID: agentID)
+    }
+
+    func cancel(run: AgentRun) async throws -> AgentCancelResult {
+        guard let adapter = await registry.adapter(for: run.agentID) else {
+            throw AgentAdapterError.invalidConfiguration("Agent adapter is not registered")
+        }
+        return try await adapter.cancel(run: run)
+    }
+
     func appendChatMessage(agentID: UUID, role: String, content: String) async throws {
         try await store.appendChatMessage(agentID: agentID, role: role, content: content)
     }
