@@ -422,9 +422,8 @@ final class AgentWorkspaceState: ObservableObject {
 
     var canRetryLastMessage: Bool {
         guard !isSending, let conversationID = selectedConversationID,
-              let messages = messagesByConversation[conversationID],
-              let lastMessage = messages.last else { return false }
-        return lastMessage.role == "user" && !error.isEmpty
+              let messages = messagesByConversation[conversationID] else { return false }
+        return !error.isEmpty && messages.contains(where: { $0.role == "user" })
     }
 
     func removeSelected() {
