@@ -1,6 +1,6 @@
 # Pack Phase 4：模块边界与渐进拆分方案
 
-> 状态：执行中；policy/schema/storage 已提取，MCP 与 SQLite 契约快照已固定；HubContext 和领域迁移待完成。  
+> 状态：执行中；policy/schema/storage/context 已提取，HubContext 已贯通服务入口、工具闭包和后台 sweeper；领域模块迁移待完成。  
 > 原则：先冻结协议与数据契约，再按领域提取模块；不做大爆炸式重写。
 
 ## 1. 当前代码边界
@@ -9,7 +9,7 @@
 
 | 区域 | 当前文件 | 规模 | 现状 |
 |---|---|---:|---|
-| Hub 服务端 | `hub/hub.py` | 约 5,220 行 | 配置、DB、鉴权、审计和 75 个 MCP tool 注册仍集中在服务入口/闭包；纯 policy/schema/storage 已开始外提 |
+| Hub 服务端 | `hub/hub.py` | 约 5,270 行 | 配置、DB、鉴权、审计和 75 个 MCP tool 注册仍集中在服务入口/闭包；policy/schema/storage/context 已外提，领域逻辑仍待迁移 |
 | App 状态与入口 | `app/Sources/PackApp/PackApp.swift` | 约 1,366 行 | App 启动、AppState 和多个跨域状态操作集中 |
 | App 视图 | `app/Sources/PackApp/Views.swift` | 约 1,618 行 | ContentView 与大量功能视图/组件集中 |
 | 网络客户端 | `app/Sources/PackApp/HubClient.swift` | 约 362 行 | JSON-RPC 请求、连接、重试/超时等传输职责 |
@@ -117,8 +117,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - `hub/core/policy.py`：纯策略函数，包括 action tag、access mode、退避、executor pinning、egress host/domain 规则和规则优先级选择。
 - `hub/core/schema.py`：集中存放原 `hub.py` 中的 SQLite 基础 `SCHEMA` 常量；`hub.py` 通过兼容导入继续调用。
 - `hub/core/storage.py`：集中存放 SQLite 连接配置和 audit insert 原语；`hub.py` 保留 `db()` / `audit()` 兼容入口，事务提交仍由调用方负责。
-- `hub/core/context.py`：新增 `HubContext`，集中保存 base/db/attachment 路径、共享锁和时钟；默认 `db()` / `audit()` / `_lock` 兼容入口已转接到默认 context。
-- `init(context=...)` 已支持显式 context，测试验证初始化使用注入的数据库路径、时钟和 dispatcher token 目录，不触碰默认 Hub 数据目录。
+- `hub/core/context.py`：`HubContext` 集中保存 base/db/attachment 路径、共享锁、wall clock 和 business clock；默认 `db()` / `audit()` / `_lock` 兼容入口转接到默认 context。
+- `init(context=...)`、`authenticate(context)`、external/access-mode gates、`build_server(context)`、`sweep_once(context)`、`sweeper(context)` 和 `serve(context)` 已支持显式 context；MCP 工具闭包绑定同一个 context 的 DB、audit、lock、clock 和附件根目录。
+- `_close_run`、`_approval_gate`、memory、quota、attachment、inbox、relay 等共享 helper 已增加 context 参数，旧调用仍回退到默认 context。
+- `hub/test_context.py` 使用隔离 DB/token 目录验证 init、认证、拒绝审计、inbox、lease sweeper，并通过 FastMCP in-memory Client 实际调用 `member_list`。
 - `hub/test_policy.py`、`hub/test_storage.py`、`hub/test_context.py`：覆盖纯策略、egress rule adapter、WAL/busy_timeout、audit 事务边界和 context 注入。
 - `hub/export_contracts.py`：从实际 FastMCP 注册表和临时 SQLite 初始化数据库生成契约，不从手写清单推测工具接口。
 - `hub/contracts/`：已提交 MCP 工具和 SQLite schema/迁移基线；更新规则见同目录 README。
@@ -142,11 +144,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 
 - Run #313：Hub 单测、17 组默认 staging、Runtime、Swift build/test、App Bundle 检查全部通过。
 - Run #320：Hub 单元测试、MCP/SQLite 契约快照检查、Runtime 测试、macOS App 构建/测试和默认 staging 回归全部通过。
+- Run #330：Hub 单元测试、契约快照、Runtime 和 macOS App 检查通过；默认 staging 回归仍在运行。
+- Run #331：新增 FastMCP in-memory Client 实际调用测试后，Hub 单元测试与契约快照检查通过；Runtime 已通过，staging 与 macOS App 检查仍在运行。
 - 用户 Mac 的 LaunchAgent、Keychain、DMG、真实账号登录态和数据恢复验收尚未开始，继续遵守“仓库整改完成后再跑本机”的顺序。
 
 ### 下一步（未完成）
 
-1. 将 `HubContext` 注入 `build_server`、认证闸门和后台 sweeper；明确每个请求的 DB/lock/audit/clock 来源。
-2. 逐步让 actor 身份、附件根目录和配置通过 context 传递，移除隐式全局依赖。
-3. 按 members/rooms、tasks/approvals/rules、attachments/memory/skills、desktop/runtime 顺序逐域迁移，每次保持 tool schema 快照无意外差异。
+1. 逐域将 members/rooms、tasks/approvals/rules、attachments/memory/skills、desktop/runtime 从 `hub.py` 提取到 service modules；继续显式传递 HubContext。
+2. 每个领域迁移均保持 MCP tool schema 快照无意外差异，并补充事务、权限和 legacy 数据测试。
+3. 迁移完成后删除不再需要的全局兼容 wrapper，保留明确的应用入口。
 4. 完成 Hub 领域层后，再拆 Swift Core、Transport、Store 与 Feature UI。
