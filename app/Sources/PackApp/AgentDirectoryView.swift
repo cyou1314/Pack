@@ -294,8 +294,9 @@ struct AgentDirectoryView: View {
                         state.beginEditSelected()
                         showingEdit = true
                     }
+                    .disabled(state.isSending || state.isTesting)
                     Button("测试连接") { state.testSelectedConnection() }
-                        .disabled(state.isTesting)
+                        .disabled(state.isTesting || state.isSending)
                     Button(role: .destructive) { showRemoveConfirmation = true } label: {
                         Image(systemName: "trash")
                     }
