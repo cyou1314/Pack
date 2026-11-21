@@ -6,6 +6,29 @@ enum HubError: Error {
     case toolError(String)
 }
 
+private final class SameOriginHubRedirectDelegate: NSObject, URLSessionTaskDelegate {
+    private let origin: URL
+
+    init(origin: URL) {
+        self.origin = origin
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let destination = request.url,
+              HubEndpoint.allowsRedirect(from: origin, to: destination) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+}
+
 /// Hand-rolled MCP JSON-RPC client for the Pack hub.
 /// Port of the proven runtime.mjs logic: all calls serialized through this
 /// actor, session re-initialized transparently when the hub forgets it,
@@ -27,6 +50,7 @@ actor HubClient {
         }
         var req = URLRequest(url: url)
         req.timeoutInterval = 20
+        req.httpShouldHandleCookies = false
         req.setValue("close", forHTTPHeaderField: "Connection")
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -34,7 +58,10 @@ actor HubClient {
         req.setValue("Bearer \(cfg.token)", forHTTPHeaderField: "Authorization")
         if let sid = sessionId { req.setValue(sid, forHTTPHeaderField: "mcp-session-id") }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let redirectDelegate = SameOriginHubRedirectDelegate(origin: url)
+        let session = URLSession(configuration: .ephemeral, delegate: redirectDelegate, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw HubError.badResponse("no http response") }
         if isNotification { return (data, http) }
         if http.statusCode != 200 { throw HubError.badResponse("http \(http.statusCode)") }

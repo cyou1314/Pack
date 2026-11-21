@@ -32,3 +32,23 @@ final class HubEndpointTests: XCTestCase {
         XCTAssertNil(HubEndpoint.validatedURL(" https://hub.example.com/mcp "))
     }
 }
+
+    func testRedirectMustRemainOnTheSameSecureOrigin() {
+        let origin = URL(string: "https://hub.example.com/mcp")!
+        XCTAssertTrue(HubEndpoint.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://hub.example.com/v1/mcp")!
+        ))
+        XCTAssertTrue(HubEndpoint.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://hub.example.com:443/v1/mcp")!
+        ))
+        XCTAssertFalse(HubEndpoint.allowsRedirect(
+            from: origin,
+            to: URL(string: "http://hub.example.com/mcp")!
+        ))
+        XCTAssertFalse(HubEndpoint.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://other.example.com/mcp")!
+        ))
+    }

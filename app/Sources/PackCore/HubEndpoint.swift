@@ -25,6 +25,26 @@ public enum HubEndpoint {
         }
     }
 
+    public static func allowsRedirect(from original: URL, to destination: URL) -> Bool {
+        guard let source = validatedURL(original.absoluteString),
+              let target = validatedURL(destination.absoluteString),
+              source.scheme?.lowercased() == target.scheme?.lowercased(),
+              source.host?.lowercased() == target.host?.lowercased(),
+              effectivePort(source) == effectivePort(target) else {
+            return false
+        }
+        return true
+    }
+
+    private static func effectivePort(_ url: URL) -> Int? {
+        if let port = url.port { return port }
+        switch url.scheme?.lowercased() {
+        case "https": return 443
+        case "http": return 80
+        default: return nil
+        }
+    }
+
     public static func isLoopbackHost(_ value: String) -> Bool {
         var host = value.lowercased()
         if host.hasPrefix("[") && host.hasSuffix("]") {
