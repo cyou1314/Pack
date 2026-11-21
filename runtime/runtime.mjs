@@ -7,6 +7,7 @@ import {createHubRpcClient} from './hub-rpc-client.mjs';
 import {createDriverRunner} from './driver-runner.mjs';
 import {createRuntimeStateStore} from './runtime-state-store.mjs';
 import {createTaskLifecycle} from './task-lifecycle.mjs';
+import {createApprovalManager} from './approval-manager.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -237,24 +238,19 @@ async function completeSafely(task, claimToken, receipt, expectedAttempt = task.
   }
 }
 
-const approvedWaits = new Map();
-async function checkApprovals() {
-  for (const [taskId, wait] of approvedWaits) {
-    if (wait.decision) continue;
-    const r = await tool("room_read_new", {room:wait.room, since_id:wait.cursor, limit:50});
-    for (const m of r.messages || []) {
-      wait.cursor = Math.max(wait.cursor, m.id);
-      const decision = approvalDecision(m.body);
-      if (m.author === "dispatcher" && decision?.taskId === taskId) wait.decision = decision.decision;
-    }
-  }
-}
+const approvalManager = createApprovalManager({
+  call: tool,
+  sleep,
+  listActiveTasks,
+  approvalDecision,
+});
+async function checkApprovals() { await approvalManager.checkPendingApprovals(); }
 
 const processTask = createTaskLifecycle({
   call: tool,
   processClaimedTask,
   sleep,
-  onStopped: taskId => approvedWaits.delete(taskId),
+  onStopped: taskId => approvalManager.clear(taskId),
 });
 
 async function processClaimedTask(task, ctok, transferred, expectedAttempt, state) {
@@ -315,34 +311,14 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
   }
   if (transferred) needsApproval = false;
   if (needsApproval && !state.approvalDone) {
-    const w = state.approvalWait ||= { decision: null, room: task.room || "pack-main", cursor: 0 };
-    if (!state.approvalRequested) { const request = await tool("room_post", {
-      room: w.room, kind: "approval_request",
-      body: `任务#${task.id}「${task.title}」需要群主批准才能执行，请调度员确认。`,
-    }); w.cursor = request.message_id; }
+    const wait = state.approvalWait ||= { decision: null, room: task.room || 'pack-main', cursor: 0 };
+    const decision = await approvalManager.waitForTaskApproval({
+      task, claimToken: ctok, wait, requested: state.approvalRequested,
+    });
     state.approvalRequested = true;
-    approvedWaits.set(task.id, w);
-    await tool("task_update", { task_id: task.id, claim_token: ctok, note: "已提交批准，等待中" });
-    for (let i = 0; i < 360 && !w.decision; i++) {
-      await sleep(20000);
-      try {
-        await checkApprovals();
-        // Abort the wait if the dispatcher cancelled (or closed) the task.
-        const lt = await listActiveTasks(tool, {assignee_name:cfg.memberName});
-        const cur = lt.find((t) => t.id === task.id);
-        if (!cur || (cur.status !== "claimed" && cur.status !== "working")) {
-          console.log(`task ${task.id} left active state (${cur && cur.status}); approval wait aborted`);
-          approvedWaits.delete(task.id);
-          return;
-        }
-        if (i % 2 === 0) await tool("task_update", { task_id: task.id, claim_token: ctok, note: "" });
-      } catch (e) {
-        console.error("approval wait hiccup (continuing):", e.message);
-      }
-    }
-    approvedWaits.delete(task.id);
-    if (w.decision !== "批准") {
-      await tool("task_block", { task_id: task.id, claim_token: ctok, reason: w.decision === "拒绝" ? "批准请求被拒绝" : "等待批准超时（2 小时）" });
+    if (decision === 'cancelled') return;
+    if (decision !== 'approved') {
+      await tool('task_block', { task_id: task.id, claim_token: ctok, reason: decision === 'rejected' ? '批准请求被拒绝' : '等待批准超时（2 小时）' });
       return;
     }
     state.approvalDone = true;
