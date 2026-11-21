@@ -687,9 +687,13 @@ struct AgentDirectoryView: View {
         HStack {
             if message.role == "user" { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 5) {
-                Text(message.role == "user" ? "你" : (message.role == "assistant" ? profile.displayName : "系统"))
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(message.role == "user" ? "你" : (message.role == "assistant" ? profile.displayName : "系统"))
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(message.createdAt.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 9, weight: .regular, design: .monospaced))
+                }
+                .foregroundStyle(.secondary)
                 AgentMessageContent(content: message.content)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
