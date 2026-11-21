@@ -168,8 +168,8 @@ struct AgentProfile: Codable, Hashable, Identifiable, Sendable {
     let providerID: String
     let mode: AgentConnectionMode
     let credential: AgentCredentialReference?
-    let endpoint: String?
-    let model: String?
+    var endpoint: String?
+    var model: String?
     let adapterVersion: String
     var capabilities: Set<AgentCapability>
     var connection: AgentConnectionState?
