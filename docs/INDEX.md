@@ -10,7 +10,7 @@
 | [SPEC](../SPEC.md) | v1 产品与中枢机制规格 | 历史基线，修改需标注版本 |
 | [Pack v2 产品规格与改造路线](../PACK-V2-PLAN.md) | v2 产品定位、架构和分阶段改造 | 规划，不等于已实现 |
 | [Pack v2 仓库审计](../PACK-V2-AUDIT-2026-11-21.md) | 目录、架构与技术债盘点 | 静态审计 |
-| [Pack v2 测试治理](../PACK-V2-TEST-GOVERNANCE.md) | 回归分层、staging 分类与 CI 方向 | 静态审计/待执行 |
+| [Pack v2 测试治理](../PACK-V2-TEST-GOVERNANCE.md) | 回归分层、staging 分类与 CI 方向 | CI #146 已通过 |\n| [Pack v2 架构图与模块边界](../PACK-V2-ARCHITECTURE-MAP.md) | App / Hub / Runtime 现状、耦合点与拆分顺序 | 静态源码审阅 + CI #146
 
 ## 设计与施工基线（根目录）
 
