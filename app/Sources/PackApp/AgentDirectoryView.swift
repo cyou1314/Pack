@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @MainActor
 final class AgentWorkspaceState: ObservableObject {
@@ -47,6 +48,11 @@ final class AgentWorkspaceState: ObservableObject {
 
     var selectedConversation: AgentConversation? {
         conversations.first { $0.id == selectedConversationID }
+    }
+
+    var selectedMessages: [AgentChatMessage] {
+        guard let selectedConversationID else { return [] }
+        return messagesByConversation[selectedConversationID] ?? []
     }
 
     func bootstrap() async {
@@ -549,40 +555,33 @@ struct AgentDirectoryView: View {
                         .help("删除会话")
                 }
                 Divider()
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        let messages = state.selectedConversationID.flatMap { state.messagesByConversation[$0] } ?? []
-                        if messages.isEmpty {
-                            Text("向 \(profile.displayName) 发送消息，开始这个独立会话。")
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, 28)
-                        } else {
-                            ForEach(messages) { message in
-                                HStack {
-                                    if message.role == "user" { Spacer(minLength: 48) }
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(message.role == "user" ? "你" : (message.role == "assistant" ? profile.displayName : "系统"))
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundStyle(.secondary)
-                                        Text((try? AttributedString(markdown: message.content)) ?? AttributedString(message.content))
-                                            .font(.system(size: 13))
-                                            .textSelection(.enabled)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .padding(12)
-                                    .frame(maxWidth: 620, alignment: .leading)
-                                    .background(
-                                        message.role == "user" ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08),
-                                        in: RoundedRectangle(cornerRadius: 12)
-                                    )
-                                    if message.role != "user" { Spacer(minLength: 48) }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            if state.selectedMessages.isEmpty {
+                                Text("向 \(profile.displayName) 发送消息，开始这个独立会话。")
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 28)
+                            } else {
+                                ForEach(state.selectedMessages) { message in
+                                    messageBubble(message, profile: profile)
+                                        .id(message.id)
                                 }
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
+                    .onChange(of: state.selectedConversationID) { _, _ in
+                        scrollToLatest(using: proxy)
+                    }
+                    .onChange(of: state.selectedMessages.count) { _, _ in
+                        scrollToLatest(using: proxy)
+                    }
+                    .onChange(of: state.selectedMessages.last?.content) { _, _ in
+                        scrollToLatest(using: proxy)
+                    }
                 }
                 HStack {
                     TextField("发送消息…", text: $state.chatInput, axis: .vertical)
@@ -613,6 +612,40 @@ struct AgentDirectoryView: View {
                 Button("添加 OpenAI API Agent") { showingAdd = true }.buttonStyle(.borderedProminent)
                 if !state.error.isEmpty { Text(state.error).foregroundStyle(.red) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func scrollToLatest(using proxy: ScrollViewProxy) {
+        guard let lastMessageID = state.selectedMessages.last?.id else { return }
+        proxy.scrollTo(lastMessageID, anchor: .bottom)
+    }
+
+    @ViewBuilder
+    private func messageBubble(_ message: AgentChatMessage, profile: AgentProfile) -> some View {
+        HStack {
+            if message.role == "user" { Spacer(minLength: 48) }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(message.role == "user" ? "你" : (message.role == "assistant" ? profile.displayName : "系统"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text((try? AttributedString(markdown: message.content)) ?? AttributedString(message.content))
+                    .font(.system(size: 13))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(12)
+            .frame(maxWidth: 620, alignment: .leading)
+            .background(
+                message.role == "user" ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 12)
+            )
+            .contextMenu {
+                Button("复制消息") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(message.content, forType: .string)
+                }
+            }
+            if message.role != "user" { Spacer(minLength: 48) }
         }
     }
 
