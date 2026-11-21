@@ -63,7 +63,7 @@
 - [x] 对 Keychain 读取错误、凭证不一致和迁移失败实行 fail-closed；明确区分首次迁移、Keychain 拒绝访问和配置文件残留。
 - [x] 远程 Hub 连接强制 HTTPS；HTTP 仅允许 loopback（127.0.0.1、localhost、::1）。覆盖 macOS App、Pack Runtime、外部 Agent 和 Bridge。
 - [x] 增加可注入凭证存储层和 Swift 单元测试，覆盖迁移成功、重复启动、Keychain 失败、凭证冲突和配置文件权限。
-- [x] 将 `~/.pack` 配置目录权限收紧为 0700，配置文件保持 0600；拒绝符号链接配置文件，避免凭证迁移跟随链接写到非预期位置。
+- [x] 将 `~/.pack` 配置目录权限收紧为 0700，配置文件保持 0600；拒绝符号链接配置文件及其父目录，避免凭证迁移跟随链接写到非预期位置。
 - [x] 审查 L2 handoff Unix Socket、临时 Keychain ticket、Cookie 清理和错误日志脱敏；补上 JSON 根类型异常回归并保持票据/ Cookie 清理逻辑。
 - [x] 为敏感凭证、事件包和共享上下文建立统一敏感字段识别规则；App Hub 错误日志仅记录安全类别。
 
