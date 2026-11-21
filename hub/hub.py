@@ -1598,6 +1598,12 @@ _INBOX_RESOLVE_ROOM = _inbox_resolve_room
 
 def build_server(context: HubContext | None = None):
     context = context or _DEFAULT_CONTEXT
+    if __package__:
+        from .services.rooms import list_rooms as _list_rooms
+        from .services.rooms import get_room_summary as _get_room_summary
+    else:
+        from services.rooms import list_rooms as _list_rooms
+        from services.rooms import get_room_summary as _get_room_summary
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -2671,24 +2677,7 @@ def build_server(context: HubContext | None = None):
         include_archived=True 才全列。任意成员可调。"""
         me = authenticate()
         require(me)
-        conn = db()
-        rows = conn.execute(
-            """SELECT r.id, r.name, r.created_at, r.archived_at,
-                      COALESCE((SELECT MAX(m.id) FROM messages m
-                                WHERE m.room_id=r.id), 0) AS last_message_id
-               FROM rooms r
-               WHERE (? OR r.archived_at IS NULL)
-               ORDER BY r.id ASC""", (1 if include_archived else 0,)).fetchall()
-        conn.close()
-        out = []
-        for x in rows:
-            d = dict(x)
-            d["archived"] = bool(d.pop("archived_at"))
-            out.append(d)
-        if _is_external(me):
-            # 件二房间隔离：external 的房间列表只含绑定房间。
-            out = [d for d in out if d["id"] == me["bound_room_id"]]
-        return {"rooms": out}
+        return _list_rooms(context, me, include_archived)
 
     @mcp.tool
     def room_summary_get(room: str) -> dict:
@@ -2696,24 +2685,7 @@ def build_server(context: HubContext | None = None):
         updated_at 为 null。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            if _is_external(me) and r["id"] != me["bound_room_id"]:
-                raise ValueError(
-                    "forbidden: external members may only access their bound room")
-            row = conn.execute(
-                "SELECT data, updated_at, updated_by FROM room_summaries WHERE room_id=?",
-                (r["id"],)).fetchone()
-        finally:
-            conn.close()
-        if not row:
-            return {"room": room, "summary": {k: [] for k in SUMMARY_SECTIONS},
-                    "updated_at": None, "updated_by": None}
-        return {"room": room, "summary": json.loads(row["data"]),
-                "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
+        return _get_room_summary(context, me, room, SUMMARY_SECTIONS)
 
     @mcp.tool
     def room_summary_set(room: str, summary: str) -> dict:
