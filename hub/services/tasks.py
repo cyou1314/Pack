@@ -133,3 +133,84 @@ def list_tasks(context, me, status: str = "", assignee_name: str = "",
         d["backoff_remaining_sec"] = int(nca - context.now()) if nca and nca > context.now() else 0
         out.append(d)
     return {"tasks": out}
+
+
+def create_task(context, actor, room: str, title: str, body: str,
+                assignee_name: str = "", urgent: bool = False, *,
+                is_executor_pinned) -> dict:
+    """Create a task, its room card, and audit record in one transaction."""
+    conn = context.connect()
+    try:
+        row = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+        if not row:
+            raise ValueError(f"no such room: {room}")
+        assignee = None
+        if assignee_name:
+            target = conn.execute(
+                "SELECT id, removed_at, kind, bound_room_id FROM members WHERE name=?",
+                (assignee_name,),
+            ).fetchone()
+            if not target:
+                raise ValueError(f"no such member: {assignee_name}")
+            if target["removed_at"] is not None:
+                raise ValueError(f"member is removed: {assignee_name}")
+            if (target["kind"] or "") == "external":
+                if target["bound_room_id"] != row["id"]:
+                    raise ValueError(
+                        f"permanent: external member {assignee_name} is bound to another room"
+                    )
+                if is_executor_pinned(title, body):
+                    raise ValueError(
+                        f"permanent: executor-pinned tasks cannot be assigned"
+                        f" to external member {assignee_name}"
+                    )
+            assignee = target["id"]
+        now = context.clock()
+        cursor = conn.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,urgent,"
+            "created_at,updated_at) VALUES(?,?,?,?,?,'open',?,?,?)",
+            (row["id"], title, body, actor["id"], assignee,
+             1 if urgent else 0, now, now),
+        )
+        task_id = cursor.lastrowid
+        conn.execute(
+            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)"
+            " VALUES(?,?,'task_card',?,?,?)",
+            (row["id"], actor["id"], f"任务#{task_id} {title}", task_id, now),
+        )
+        context.audit(
+            conn, actor["name"], "task_create",
+            f"task {task_id}: {title}" + (" [urgent]" if urgent else ""),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"task_id": task_id, "status": "open",
+            "assignee": assignee_name or None, "urgent": bool(urgent)}
+
+
+def set_task_urgent(context, actor, task_id: int, urgent: bool) -> dict:
+    """Update urgency only for nonterminal tasks; repeated updates are audited."""
+    conn = context.connect()
+    try:
+        task = conn.execute(
+            "SELECT status, urgent FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if not task:
+            raise ValueError(f"no such task: {task_id}")
+        if task["status"] in ("done", "cancelled"):
+            raise ValueError(
+                f"task {task_id} is {task['status']}, cannot set urgent"
+            )
+        conn.execute(
+            "UPDATE tasks SET urgent=?, updated_at=? WHERE id=?",
+            (1 if urgent else 0, context.now(), task_id),
+        )
+        context.audit(
+            conn, actor["name"], "task_set_urgent",
+            f"task {task_id} urgent={1 if urgent else 0}",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"task_id": task_id, "urgent": bool(urgent)}

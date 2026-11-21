@@ -1638,10 +1638,14 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import list_task_transfers as _list_task_transfers
         from .services.tasks import get_task_audit as _get_task_audit
         from .services.tasks import list_tasks as _list_tasks
+        from .services.tasks import create_task as _create_task
+        from .services.tasks import set_task_urgent as _set_task_urgent
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
         from services.tasks import list_tasks as _list_tasks
+        from services.tasks import create_task as _create_task
+        from services.tasks import set_task_urgent as _set_task_urgent
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -2841,50 +2845,8 @@ def build_server(context: HubContext | None = None):
         urgent=True 标加急（定稿 §15.3）：task_list 恒置顶，认领与派单优先。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-        if not r:
-            conn.close()
-            raise ValueError(f"no such room: {room}")
-        assignee = None
-        if assignee_name:
-            a = conn.execute("SELECT id, removed_at, kind, bound_room_id FROM members WHERE name=?", (assignee_name,)).fetchone()
-            if not a:
-                conn.close()
-                raise ValueError(f"no such member: {assignee_name}")
-            if a["removed_at"] is not None:
-                # staging49：已移除成员不得再被指派（member_remove 已解除其
-                # 在途指派，但按名新建卡此前不查 removed_at，能把卡挂回死人）
-                conn.close()
-                raise ValueError(f"member is removed: {assignee_name}")
-            if (a["kind"] or "") == "external":
-                # staging51（watcher 两道防线的 hub 侧）：指派 external
-                # 的违规卡给可区分的永久性拒绝（"permanent:" 前缀）——
-                # 跨房指派与引擎标记卡重试一万次也不会成，watcher 据
-                # 前缀回帖拒因、不进重试循环。
-                if a["bound_room_id"] != r["id"]:
-                    conn.close()
-                    raise ValueError(
-                        f"permanent: external member {assignee_name} is bound to another room")
-                if _is_executor_pinned(title, body):
-                    conn.close()
-                    raise ValueError(
-                        f"permanent: executor-pinned tasks cannot be assigned"
-                        f" to external member {assignee_name}")
-            assignee = a["id"]
-        now = context.clock()
-        cur = conn.execute(
-            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,urgent,created_at,updated_at) VALUES(?,?,?,?,?,'open',?,?,?)",
-            (r["id"], title, body, me["id"], assignee, 1 if urgent else 0, now, now))
-        tid = cur.lastrowid
-        conn.execute(
-            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'task_card',?,?,?)",
-            (r["id"], me["id"], f"任务#{tid} {title}", tid, now))
-        audit(conn, me["name"], "task_create", f"task {tid}: {title}" + (" [urgent]" if urgent else ""))
-        conn.commit()
-        conn.close()
-        return {"task_id": tid, "status": "open", "assignee": assignee_name or None,
-                "urgent": bool(urgent)}
+        return _create_task(context, me, room, title, body, assignee_name, urgent,
+                            is_executor_pinned=_is_executor_pinned)
 
     @mcp.tool
     def task_set_urgent(task_id: int, urgent: bool) -> dict:
@@ -2893,20 +2855,7 @@ def build_server(context: HubContext | None = None):
         幂等：重复设同值照常成功并留审计。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute("SELECT status, urgent FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        if t["status"] in ("done", "cancelled"):
-            conn.close()
-            raise ValueError(f"task {task_id} is {t['status']}, cannot set urgent")
-        conn.execute("UPDATE tasks SET urgent=?, updated_at=? WHERE id=?",
-                     (1 if urgent else 0, _now(), task_id))
-        audit(conn, me["name"], "task_set_urgent", f"task {task_id} urgent={1 if urgent else 0}")
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "urgent": bool(urgent)}
+        return _set_task_urgent(context, me, task_id, urgent)
 
     @mcp.tool
     def task_schedule(room: str, title: str, body: str, member_name: str, at_epoch: float) -> dict:
