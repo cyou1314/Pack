@@ -9,6 +9,7 @@ import {createRuntimeStateStore} from './runtime-state-store.mjs';
 import {createTaskLifecycle} from './task-lifecycle.mjs';
 import {createApprovalManager} from './approval-manager.mjs';
 import {createDeliveryManager} from './delivery-manager.mjs';
+import {executeTaskDriver} from './task-driver-execution.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -325,32 +326,15 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
     await tool("task_block", { task_id: task.id, claim_token: ctok, reason: `驾驶层失败: ${state.driverError}` });
     return;
   }
-  let res = state.driverResult;
-  if (!res) {
-  const abort = new AbortController();
-  let checkingHolder = false, lostHolder = false;
-  const holderTimer = setInterval(async () => {
-    if (checkingHolder || lostHolder) return;
-    checkingHolder = true;
-    try { await tool("task_update", {task_id:task.id, claim_token:ctok, note:""}); }
-    catch (e) {
-      if (/not the current holder|claim_token mismatch/i.test(e.message)) {
-        lostHolder = true; abort.abort();
-        console.log(`task ${task.id} no longer held; driver stopped`);
-      }
-    } finally { checkingHolder = false; }
-  }, 10000);
-  try {
-    res = await runDriver(prompt, abort.signal);
-  } catch (e) {
-    if (lostHolder) return;
-    state.driverError = e.message;
-    await tool("task_block", { task_id: task.id, claim_token: ctok, reason: `驾驶层失败: ${e.message}` });
+  const execution = await executeTaskDriver({
+    task, claimToken: ctok, prompt, state, call: tool, runDriver,
+  });
+  if (execution.kind === 'lost_holder') return;
+  if (execution.kind === 'error') {
+    await tool('task_block', { task_id: task.id, claim_token: ctok, reason: `驾驶层失败: ${execution.error}` });
     return;
-  } finally { clearInterval(holderTimer); }
-  if (lostHolder) return;
-  state.driverResult = res;
   }
+  const res = execution.result;
   if (!res.ok) {
     await tool("task_block", { task_id: task.id, claim_token: ctok, reason: `驾驶层报告: ${res.error || "unknown"}` });
     return;
