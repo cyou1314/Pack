@@ -212,15 +212,7 @@ actor AgentManager {
                 message: "API Key updated in Keychain; live API request not yet verified"
             )
             profile.updatedAt = Date()
-            do {
-                try await store.save(profile)
-            } catch {
-                await adapter.disconnect()
-                _ = try? AgentCredentialVault.store(
-                    secret: oldSecret, service: credential.keychainService, account: credential.account
-                )
-                throw error
-            }
+            try await store.save(profile)
             await registry.replace(adapter, for: agentID)
         } catch {
             await adapter.disconnect()
