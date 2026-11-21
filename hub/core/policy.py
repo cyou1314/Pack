@@ -100,3 +100,23 @@ def task_hosts(text):
         for match in _HOSTISH_RE.finditer((text or "").lower())
     }
 
+
+
+
+def approval_rule_candidates(action, target):
+    """Return approval-rule keys from most to least specific."""
+    return (
+        (action, target),
+        (action, ""),
+        ("", target),
+        ("", ""),
+    )
+
+
+def select_egress_rule(rows, host):
+    """Choose the matching egress rule: exact host, then deepest domain."""
+    hits = [row for row in rows if host_covers(host, row["pattern"])]
+    if not hits:
+        return None
+    hits.sort(key=lambda row: (row["pattern"] != host, -len(row["pattern"])))
+    return hits[0]

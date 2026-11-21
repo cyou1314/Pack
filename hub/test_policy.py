@@ -62,6 +62,22 @@ class PolicyTests(unittest.TestCase):
             {"docs.example.com", "api.example.net"},
         )
 
+    def test_approval_rule_candidates_preserve_specificity_order(self):
+        self.assertEqual(
+            policy.approval_rule_candidates("[ENG]", "alice"),
+            (("[ENG]", "alice"), ("[ENG]", ""), ("", "alice"), ("", "")),
+        )
+
+    def test_egress_rule_selection_prefers_exact_then_deepest_match(self):
+        rows = [
+            {"id": 1, "pattern": "example.com"},
+            {"id": 2, "pattern": "api.example.com"},
+            {"id": 3, "pattern": "notexample.com"},
+        ]
+        self.assertEqual(policy.select_egress_rule(rows, "api.example.com")["id"], 2)
+        self.assertEqual(policy.select_egress_rule(rows, "v2.api.example.com")["id"], 2)
+        self.assertIsNone(policy.select_egress_rule(rows, "other.test"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

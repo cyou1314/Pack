@@ -65,7 +65,7 @@ if __package__:
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
 
-        action_tag, backoff_seconds as _backoff_seconds,
+        action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
         egress_host as _egress_host, egress_pattern as _egress_pattern,
         host_covers as _host_covers, task_hosts as _task_hosts,
         is_executor_pinned as _is_executor_pinned,
@@ -75,7 +75,7 @@ else:
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
 
-        action_tag, backoff_seconds as _backoff_seconds,
+        action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
         egress_host as _egress_host, egress_pattern as _egress_pattern,
         host_covers as _host_covers, task_hosts as _task_hosts,
         is_executor_pinned as _is_executor_pinned,
@@ -291,11 +291,11 @@ def _close_run(conn, task_id, outcome, actor, detail=""):
 
 TASK_REF_RE = re.compile(r"任务#(\d+)")
 def rule_eval(conn, action, target):
-    """按具体度查规则库：(action,target) > (action,'') > ('',target) > ('','')，命中返回 row。"""
-    for a, t in ((action, target), (action, ""), ("", target), ("", "")):
+    """按具体度查规则库；命中返回 row。"""
+    for candidate_action, candidate_target in approval_rule_candidates(action, target):
         row = conn.execute(
             "SELECT * FROM approval_rules WHERE action=? AND target=? AND enabled=1",
-            (a, t)).fetchone()
+            (candidate_action, candidate_target)).fetchone()
         if row:
             return row
     return None
@@ -360,14 +360,9 @@ def _approval_gate(conn, room_id, msg_id, body, poster=None):
 # 每次判定（含畸形 URL 拒绝）都写审计：actor='egress'，与真人/规则/审查区分。
 
 def _egress_rule_eval(conn, host):
-    """在启用的 egress_rules 里找覆盖 host 的最具体一条：
-    精确相等优先，其次 pattern 最长（最深的子域规则优先）。"""
+    """在启用的 egress_rules 里找覆盖 host 的最具体一条。"""
     rows = conn.execute("SELECT * FROM egress_rules WHERE enabled=1").fetchall()
-    hits = [r for r in rows if _host_covers(host, r["pattern"])]
-    if not hits:
-        return None
-    hits.sort(key=lambda r: (r["pattern"] != host, -len(r["pattern"])))
-    return hits[0]
+    return select_egress_rule(rows, host)
 
 
 def _task_mention(conn, task_id, host):
