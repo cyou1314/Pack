@@ -39,6 +39,9 @@ final class AgentWorkspaceState: ObservableObject {
         do {
             _ = try await manager.restoreAdapters()
             profiles = try await manager.profiles()
+            sessionIDs = Dictionary(uniqueKeysWithValues: profiles.compactMap { profile in
+                profile.lastSessionID.map { (profile.id, $0) }
+            })
             if selectedAgentID == nil { selectedAgentID = profiles.first?.id }
             note = "Agent 配置已从本机数据库加载"
         } catch {
@@ -115,7 +118,7 @@ final class AgentWorkspaceState: ObservableObject {
         Task {
             defer { isSending = false }
             do {
-                let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: sessionIDs[profile.id])
+                let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: sessionIDs[profile.id] ?? profile.lastSessionID)
                 let stream = try await manager.streamEvents(for: run)
                 var responseID: String?
                 for try await event in stream {
@@ -125,6 +128,7 @@ final class AgentWorkspaceState: ObservableObject {
                     if let detail = event.detail, detail.hasPrefix("session_id=") {
                         responseID = String(detail.dropFirst("session_id=".count))
                         sessionIDs[profile.id] = responseID
+                        try await manager.updateSessionID(agentID: profile.id, sessionID: responseID)
                     }
                 }
                 if let responseID {
