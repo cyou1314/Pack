@@ -1614,6 +1614,10 @@ def build_server(context: HubContext | None = None):
         from services.rooms import rename_room as _rename_room
         from services.rooms import archive_room as _archive_room
         from services.rooms import set_room_summary as _set_room_summary
+    if __package__:
+        from .services.members import list_members as _list_members
+    else:
+        from services.members import list_members as _list_members
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3656,47 +3660,8 @@ def build_server(context: HubContext | None = None):
         每次调用泄漏一个连接（查询异常时同样漏），本轮只补关闭、不动返回结构。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            rows = conn.execute(
-                "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
-                " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at,"
-                " quota_source, provider, login_state, kind, display_name, bound_room_id,"
-                " access_mode"
-                " FROM members WHERE removed_at IS NULL ORDER BY id"
-            ).fetchall()
-            wk = _week_start_cst()
-            counts = {r["assignee"]: r["n"] for r in conn.execute(
-                "SELECT assignee, COUNT(*) AS n FROM tasks"
-                " WHERE status='done' AND assignee IS NOT NULL AND updated_at>=?"
-                " GROUP BY assignee", (wk,)).fetchall()}
-        finally:
-            conn.close()
-        out = []
-        for r in rows:
-            d = dict(r)
-            try:
-                d["avatar"] = json.loads(d["avatar"]) if d.get("avatar") else avatar_for(d["name"])
-            except Exception:
-                d["avatar"] = avatar_for(d["name"])
-            d["week_done"] = counts.get(d["id"], 0)
-            # staging51：新字段纯追加（老成员 kind 回 "internal"、
-            # display_name 回 name、bound_room 回 None，向后兼容）。
-            d["kind"] = d.get("kind") or "internal"
-            if not d.get("display_name"):
-                d["display_name"] = d["name"]
-            # staging56：access_mode 归一回读（NULL/脏值一律 full）。
-            d["access_mode"] = (d.get("access_mode")
-                                if d.get("access_mode") in ACCESS_MODES
-                                else "full")
-            out.append(d)
-        if _is_external(me):
-            # 件二脱敏视图：external 只看得到身份类字段，额度、
-            # login_state、week_done 一律剥离。
-            keys = ("name", "display_name", "role", "kind", "provider",
-                    "avatar", "last_heartbeat")
-            out = [{k: d.get(k) for k in keys} for d in out]
-        return {"members": out}
+        return _list_members(context, me, avatar_for=avatar_for,
+                             week_start=_WEEK_START_CST, access_modes=ACCESS_MODES)
 
     @mcp.tool
     def task_list(status: str = "", assignee_name: str = "", offset: int = 0,
