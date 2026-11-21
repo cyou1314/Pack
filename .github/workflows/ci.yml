@@ -33,13 +33,14 @@ jobs:
           bash -n run-all-suites.sh
           bash -n installer/build-dmg.sh
       - name: Python compile
-        run: python -m compileall -q hub tests
+        run: python -m compileall -q hub installer tests
       - name: Unit tests
         run: |
           bash hub/test_backup.sh
           python hub/test_reply_watcher.py
           python hub/test_resolve_mention.py
           python hub/test_systemd_units.py
+          python installer/test_launch_agent_safety.py
           python hub/test_policy_helpers.py
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh

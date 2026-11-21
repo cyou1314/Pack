@@ -2,16 +2,35 @@
 set -euo pipefail
 umask 077
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HUB="$HOME/.pack/local-hub"
-AGENTS="$HOME/Library/LaunchAgents"
+PACK_HOME="$HOME/.pack"
+HUB="$PACK_HOME/local-hub"
+LIBRARY="$HOME/Library"
+AGENTS="$LIBRARY/LaunchAgents"
 PYTHON="${PACK_PYTHON:-python3}"
+fail() { echo "ERROR: $*" >&2; exit 1; }
 "$PYTHON" -c 'import sys; assert sys.version_info >= (3,10), "Python 3.10+ is required"'
-mkdir -p "$HUB" "$AGENTS"
-chmod 700 "$HUB"
+
+# Reject symlinked roots and existing installs before writing files or plists.
+for path in "$PACK_HOME" "$LIBRARY" "$AGENTS"; do
+  [[ ! -L "$path" ]] || fail "refusing symlinked directory: $path"
+  [[ ! -e "$path" || -d "$path" ]] || fail "expected a directory: $path"
+done
+[[ ! -L "$HUB" && ! -e "$HUB" ]] || fail "existing local Hub path; refusing to overwrite: $HUB"
+UID="$(id -u)"
+LABELS=(com.pack.local-hub com.pack.local-watch com.pack.local-backup)
+for label in "${LABELS[@]}"; do
+  plist="$AGENTS/$label.plist"
+  [[ ! -L "$plist" && ! -e "$plist" ]] || fail "existing LaunchAgent plist; refusing to overwrite: $plist"
+  if launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+    fail "LaunchAgent label is already loaded: $label"
+  fi
+done
+
+mkdir -p "$PACK_HOME" "$HUB" "$AGENTS"
+chmod 700 "$PACK_HOME" "$HUB"
 if [ ! -x "$HUB/.venv/bin/python" ]; then "$PYTHON" -m venv "$HUB/.venv"; fi
 "$HUB/.venv/bin/python" -m pip install 'fastmcp==4.1.8'
 for f in hub.py room_watch.py backup-db.sh verify-backup.sh; do cp "$ROOT/hub/$f" "$HUB/$f"; done
-if [ -f "$HUB/pack.db" ] && [ ! -s "$HUB/.dispatcher_token" ]; then echo 'Existing database has no dispatcher token; refusing to initialize.' >&2; exit 1; fi
 "$HUB/.venv/bin/python" "$HUB/hub.py" init
 chmod 600 "$HUB/.dispatcher_token"
 mkdir -p "$HUB/attachments"

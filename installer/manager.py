@@ -29,6 +29,46 @@ uid = os.getuid()
 def ctl(*args, check=True):
     return subprocess.run(['/bin/launchctl', *args], check=check, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+
+def require_real_directory(path, description):
+    path = pathlib.Path(path)
+    if path.is_symlink():
+        raise SystemExit(f'Refusing symlinked {description}: {path}')
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f'{description} is not a directory: {path}')
+
+
+def require_absent(path, description):
+    path = pathlib.Path(path)
+    if path.exists() or path.is_symlink():
+        raise SystemExit(f'Existing {description}; refusing to overwrite: {path}')
+
+
+def read_owned_agent_plist(kind, path):
+    path = pathlib.Path(path)
+    if path.is_symlink():
+        raise SystemExit(f'Refusing symlinked LaunchAgent plist: {path}')
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise SystemExit(f'LaunchAgent plist is not a regular file: {path}')
+    try:
+        with path.open('rb') as stream:
+            document = plistlib.load(stream)
+    except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+        raise SystemExit(f'Cannot validate LaunchAgent plist: {path}') from exc
+    if not isinstance(document, dict) or document.get('Label') != labels[kind]:
+        raise SystemExit(f'LaunchAgent label does not belong to this installer: {path}')
+    arguments = document.get('ProgramArguments')
+    expected_root = hub if kind in ('hub', 'watch', 'backup') else engine
+    root_prefix = str(expected_root) + os.sep
+    if not isinstance(arguments, list) or not any(
+        isinstance(argument, str) and argument.startswith(root_prefix)
+        for argument in arguments
+    ):
+        raise SystemExit(f'LaunchAgent program path is outside the Pack service directory: {path}')
+    return document
+
 def write_private(path, content):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'w') as f: f.write(content)
@@ -60,11 +100,21 @@ async def setup_owner():
     write_private(config,json.dumps({'hubUrl':f'http://127.0.0.1:{hp}/mcp','token':token,'ownerToken':owner}))
 
 def install():
-    if hub.exists() or engine.exists() or config.exists(): raise SystemExit('Existing service data or App config found; refusing to overwrite.')
+    require_real_directory(base, 'Pack data root')
+    require_real_directory(HOME/'Library', 'Library directory')
+    require_real_directory(agents, 'LaunchAgents directory')
+    for path, description in (
+        (hub, 'local Hub directory'),
+        (engine, 'local Engine directory'),
+        (config, 'App config'),
+        (socket_dir, 'handoff socket directory'),
+    ):
+        require_absent(path, description)
     if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
-    for label in labels.values():
-        if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0: raise SystemExit('A service label is already in use.')
-    if socket_dir.exists(): raise SystemExit('Existing handoff socket directory; refusing to overwrite.')
+    for kind, label in labels.items():
+        require_absent(agents/(label+'.plist'), f'LaunchAgent plist {label}')
+        if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0:
+            raise SystemExit(f'LaunchAgent label is already in use: {label}')
     os.umask(0o077); hub.mkdir(parents=True,mode=0o700); engine.mkdir(parents=True,mode=0o700); agents.mkdir(parents=True,exist_ok=True)
     shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
     for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
@@ -98,10 +148,26 @@ def install():
     print('Open Pack to migrate the private local credentials into Keychain.')
 
 def uninstall():
-    for label in labels.values():
+    require_real_directory(base, 'Pack data root')
+    require_real_directory(HOME/'Library', 'Library directory')
+    require_real_directory(agents, 'LaunchAgents directory')
+    require_real_directory(hub, 'local Hub directory')
+    require_real_directory(engine, 'local Engine directory')
+
+    owned_plists = {}
+    for kind, label in labels.items():
+        plist = agents/(label+'.plist')
+        document = read_owned_agent_plist(kind, plist)
+        loaded = ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0
+        if document is None and loaded:
+            raise SystemExit(f'Loaded LaunchAgent has no verifiable Pack plist; refusing to stop it: {label}')
+        owned_plists[kind] = document is not None
+
+    # Validate every service before stopping any of them.
+    for kind, label in labels.items():
         ctl('bootout',f'gui/{uid}/{label}',check=False)
-        plist=agents/(label+'.plist')
-        if plist.is_file(): plist.unlink()
+        if owned_plists[kind]:
+            (agents/(label+'.plist')).unlink()
     # Program files only. Database, tokens, config, attachments and engine data stay.
     for name in ('python','hub.py','room_watch.py','backup-db.sh','verify-backup.sh'):
         p=hub/name
