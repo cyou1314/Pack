@@ -87,6 +87,13 @@ class LaunchAgentTemplateTests(unittest.TestCase):
                 self.assertTrue(document.get("ProgramArguments"))
                 self.assertTrue(str(document.get("StandardOutPath", "")).startswith("__HUB__/"))
 
+    def test_local_scripts_use_non_reserved_user_id_variable(self):
+        for filename in ("install-local.sh", "uninstall-local.sh"):
+            with self.subTest(filename=filename):
+                source = (ROOT / "local" / filename).read_text(encoding="utf-8")
+                self.assertIn('USER_ID="$(id -u)"', source)
+                self.assertNotIn('UID="$(id -u)"', source)
+
     def test_pack_runtime_launch_agent_uses_private_log_umask(self):
         document = plistlib.loads((ROOT / "runtime" / "com.muse.pack-runtime.plist").read_bytes())
         self.assertEqual(document.get("Label"), "com.muse.pack-runtime")

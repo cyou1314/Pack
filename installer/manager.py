@@ -115,7 +115,12 @@ def install():
         require_absent(agents/(label+'.plist'), f'LaunchAgent plist {label}')
         if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0:
             raise SystemExit(f'LaunchAgent label is already in use: {label}')
-    os.umask(0o077); hub.mkdir(parents=True,mode=0o700); engine.mkdir(parents=True,mode=0o700); agents.mkdir(parents=True,exist_ok=True)
+    os.umask(0o077)
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    base.chmod(0o700)
+    hub.mkdir(mode=0o700)
+    engine.mkdir(mode=0o700)
+    agents.mkdir(parents=True, exist_ok=True)
     shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
     for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
     shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
