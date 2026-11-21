@@ -242,6 +242,10 @@ actor AgentManager {
         try await store.chatMessages(agentID: agentID, conversationID: conversationID)
     }
 
+    func updateConversationSession(agentID: UUID, conversationID: UUID, sessionID: String) async throws {
+        try await store.updateConversationSession(id: conversationID, agentID: agentID, sessionID: sessionID)
+    }
+
     func conversations(agentID: UUID) async throws -> [AgentConversation] {
         try await store.conversations(agentID: agentID)
     }
