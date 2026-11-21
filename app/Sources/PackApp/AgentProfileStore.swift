@@ -166,7 +166,9 @@ actor AgentProfileStore {
         guard let text = sqlite3_column_text(statement, 0) else {
             throw AgentProfileStoreError.invalidEncoding
         }
-        return try decoder.decode(AgentProfile.self, from: Data(String(cString: text).utf8))
+        let length = Int(sqlite3_column_bytes(statement, 0))
+        let data = Data(bytes: text, count: length)
+        return try decoder.decode(AgentProfile.self, from: data)
     }
 
     func allProfiles() throws -> [AgentProfile] {
@@ -179,7 +181,9 @@ actor AgentProfileStore {
             guard step == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else {
                 throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
             }
-            result.append(try decoder.decode(AgentProfile.self, from: Data(String(cString: text).utf8)))
+            let length = Int(sqlite3_column_bytes(statement, 0))
+            let data = Data(bytes: text, count: length)
+            result.append(try decoder.decode(AgentProfile.self, from: data))
         }
         return result
     }
