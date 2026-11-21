@@ -16,12 +16,12 @@ for path in "$PACK_HOME" "$LIBRARY" "$AGENTS"; do
   [[ ! -e "$path" || -d "$path" ]] || fail "expected a directory: $path"
 done
 [[ ! -L "$HUB" && ! -e "$HUB" ]] || fail "existing local Hub path; refusing to overwrite: $HUB"
-UID="$(id -u)"
+USER_ID="$(id -u)"
 LABELS=(com.pack.local-hub com.pack.local-watch com.pack.local-backup)
 for label in "${LABELS[@]}"; do
   plist="$AGENTS/$label.plist"
   [[ ! -L "$plist" && ! -e "$plist" ]] || fail "existing LaunchAgent plist; refusing to overwrite: $plist"
-  if launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+  if launchctl print "gui/$USER_ID/$label" >/dev/null 2>&1; then
     fail "LaunchAgent label is already loaded: $label"
   fi
 done

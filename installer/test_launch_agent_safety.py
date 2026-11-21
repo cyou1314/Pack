@@ -95,7 +95,7 @@ class LaunchAgentTemplateTests(unittest.TestCase):
     def test_local_install_refuses_existing_paths_and_loaded_labels_before_writing(self):
         source = (ROOT / "local" / "install-local.sh").read_text(encoding="utf-8")
         self.assertIn('[[ ! -L "$HUB" && ! -e "$HUB" ]]', source)
-        self.assertIn('launchctl print "gui/$UID/$label"', source)
+        self.assertIn('launchctl print "gui/$USER_ID/$label"', source)
         self.assertLess(source.index("for label in"), source.index('mkdir -p "$PACK_HOME" "$HUB" "$AGENTS"'))
 
     def test_local_uninstall_validates_agent_identity_before_bootout(self):

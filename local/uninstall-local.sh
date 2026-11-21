@@ -4,12 +4,12 @@ PACK_HOME="$HOME/.pack"
 HUB="$PACK_HOME/local-hub"
 LIBRARY="$HOME/Library"
 AGENTS="$LIBRARY/LaunchAgents"
-UID="$(id -u)"
+USER_ID="$(id -u)"
 LABELS=(com.pack.local-hub com.pack.local-watch com.pack.local-backup)
 PROGRAMS=(hub.py room_watch.py backup-db.sh)
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
-is_loaded() { launchctl print "gui/$UID/$1" >/dev/null 2>&1; }
+is_loaded() { launchctl print "gui/$USER_ID/$1" >/dev/null 2>&1; }
 
 # Reject symlinked roots before resolving any service or data path.
 for path in "$PACK_HOME" "$HUB" "$LIBRARY" "$AGENTS"; do
@@ -38,7 +38,7 @@ done
 
 for label in "${LABELS[@]}"; do
   plist="$AGENTS/$label.plist"
-  if is_loaded "$label"; then launchctl bootout "gui/$UID/$label"; fi
+  if is_loaded "$label"; then launchctl bootout "gui/$USER_ID/$label"; fi
   if [[ -f "$plist" ]]; then rm "$plist"; fi
 done
 
