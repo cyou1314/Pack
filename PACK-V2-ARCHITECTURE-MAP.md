@@ -176,9 +176,20 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 | Task Executor Context | `runtime/task-executor.mjs` | 任务记忆加载缓存、上下文不可信标记与 Prompt 组装 |
 | Scheduler | `runtime/scheduler.mjs` | Hub 心跳、审批检查、任务筛选与派发、聊天/配额协调、轮询故障恢复 |
 
-对应契约测试位于 `runtime/tests/`。审批管理与交付管理已从 Runtime 入口抽离；转交任务历史审批、URL 出口审批、任务执行结果校验、转交任务历史审批、URL 出口审批和任务执行结果校验仍留在任务编排流程中；Scheduler 已接管主轮询与并发协调。没有更改状态文件 schema，也没有进行生产部署。
+对应契约测试位于 `runtime/tests/`。审批管理与交付管理已从 Runtime 入口抽离；转交任务历史审批、URL 出口审批和任务执行结果校验仍留在任务编排流程中；Scheduler 已接管主轮询与并发协调。没有更改状态文件 schema，也没有进行生产部署。
 
-验证边界：GitHub Actions #179 的 Runtime / syntax and behavior job 已通过，审批模块纳入的测试总数为 34 项且 0 失败。Delivery Manager 与最新入口接线后的 GitHub Actions #183 已通过 Runtime / syntax and behavior job：39 项测试、0 失败。Hub 回归和 macOS 构建仍需以完整流水线最终结论为准。Task Driver Execution 与 Task Executor Context 已加入独立契约测试；Scheduler 已加入 4 项独立契约测试，并接入 Runtime 主入口。GitHub Actions #196 已触发，Runtime job 仍在排队，Task Driver、Task Executor 和 Scheduler 新增测试尚无 CI 结论。macOS 本机运行验收尚未执行。
+验证边界：GitHub Actions #179 的 Runtime / syntax and behavior job 已通过，审批模块纳入的测试总数为 34 项且 0 失败。Delivery Manager 与最新入口接线后的 GitHub Actions #183 已通过 Runtime / syntax and behavior job：39 项测试、0 失败。Hub 回归和 macOS 构建仍需以完整流水线最终结论为准。Task Driver Execution 与 Task Executor Context 已加入独立契约测试；Scheduler 已加入 4 项独立契约测试，并接入 Runtime 主入口。GitHub Actions #200 的 Runtime / syntax and behavior 已通过（50 项测试、0 失败），macOS App / build 已通过；Hub / regression 仍在执行。macOS 本机运行验收尚未执行。
 ## 10. 本轮结论
 
 当前最稳妥的工程顺序是：**先锁定 MCP 工具契约和权限矩阵 → 抽离 Runtime 模块 → 抽离 AppState 网络/业务职责 → 最后拆 Hub 单体 → 接入 API / Native Agent**。不要从重写 UI 或拆 Hub 大文件开始；那两条路径的回归半径最大。
+## 11. Agent Adapter 契约骨架（2026-11-21）
+
+新增 `app/Sources/PackApp/AgentAdapter.swift`，当前只建立 provider-neutral 契约，不代表已接入任何真实 Provider：
+
+- `AgentConnectionMode`：显式区分 `native` 与 `api`，不允许隐式降级。
+- `AgentAdapterConfiguration`：只保存 Agent ID、Provider、模式、Keychain credential reference、可选 endpoint 与 adapter version；不包含密钥明文。
+- `AgentCapability`：连接后探测会话、流式输出、附件、取消、状态、用量、工具调用和原生记忆等能力。
+- `AgentAdapter`：定义 connect、capability probe、session listing、send、stream、cancel、status、usage 和 disconnect。
+- `AgentAdapterRegistry`：当前为进程内注册表；持久化、UI 和具体厂商适配器尚未实现。
+
+约束：Native 私有记忆和账号凭证留在 Provider 边界；Pack 只接收明确授权的会话/记忆引用。当前没有 ChatGPT 或豆包 Native Adapter，也没有 API Adapter 实现。GitHub Actions #201 的 Runtime job 已通过；Swift 构建仍在执行，需等待最终结果。
