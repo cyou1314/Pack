@@ -24,8 +24,7 @@ test('runs heartbeat, approvals, task listing and chat in order', async () => {
   const h = setup();
   const result = await h.scheduler.tick();
   assert.equal(result.kind, 'ok');
-  assert.deepEqual(h.events.slice(0, 3), ['heartbeat', 'approvals']);
-  assert.equal(h.events[2], 'chat:0');
+  assert.deepEqual(h.events, ['heartbeat', 'approvals', 'chat:0']);
 });
 
 test('filters unsupported tasks and dispatches only eligible tasks', async () => {
