@@ -7,7 +7,7 @@ from pathlib import Path
 
 import hub
 from core.context import HubContext
-from services.members import rename_member, rotate_member_token, set_access_mode, set_login_state
+from services.members import rename_member, rotate_member_token, set_access_mode, set_login_state, set_member_quota
 
 
 class MemberWriteTests(unittest.TestCase):
@@ -137,6 +137,56 @@ class MemberWriteTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM audit WHERE action='member_token_rotate'"
             ).fetchone()[0], 0,
         )
+
+
+    def test_dispatcher_quota_only_updates_specified_fields_with_audit(self):
+        result = set_member_quota(
+            self.context, self.actor, "worker", 42.5, None, 300,
+            apply_quota=lambda conn, mid, used, reset, extra, source:
+                hub._apply_quota(conn, mid, used, reset, extra, source, self.context),
+        )
+        self.assertEqual(result["name"], "worker")
+        self.assertEqual(result["quota_week_used_pct"], 42.5)
+        self.assertEqual(result["quota_extra_left"], 300)
+        self.assertIsNone(result["quota_week_reset_at"])
+        self.assertEqual(result["quota_source"], "dispatcher")
+        self.assertEqual(result["quota_updated_at"], 9000.0)
+        record = self.db.execute(
+            "SELECT actor, detail FROM audit WHERE action='member_quota_set'"
+        ).fetchone()
+        self.assertEqual(record["actor"], "dispatcher")
+        self.assertIn("quota_week_used_pct", record["detail"])
+        self.assertIn("quota_extra_left", record["detail"])
+
+    def test_quota_invalid_and_removed_member_leave_database_unchanged(self):
+        def apply(conn, mid, used, reset, extra, source):
+            return hub._apply_quota(conn, mid, used, reset, extra, source, self.context)
+        for kwargs, message in [
+            ({}, "nothing to update"),
+            ({"week_used_pct": 101}, "out of range"),
+            ({"week_reset_at": -1}, "epoch seconds"),
+            ({"extra_tokens_left": -1}, "extra_tokens_left"),
+        ]:
+            with self.assertRaisesRegex(ValueError, message):
+                set_member_quota(
+                    self.context, self.actor, "worker", apply_quota=apply, **kwargs
+                )
+        with self.assertRaisesRegex(ValueError, "no such member"):
+            set_member_quota(
+                self.context, self.actor, "missing", week_used_pct=1, apply_quota=apply
+            )
+        self.db.execute("UPDATE members SET removed_at=9001 WHERE name='worker'")
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, "member is removed"):
+            set_member_quota(
+                self.context, self.actor, "worker", week_used_pct=1, apply_quota=apply
+            )
+        self.assertIsNone(self.db.execute(
+            "SELECT quota_week_used_pct FROM members WHERE name='worker'"
+        ).fetchone()[0])
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM audit WHERE action='member_quota_set'"
+        ).fetchone()[0], 0)
 
 
 if __name__ == "__main__":

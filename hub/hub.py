@@ -1623,11 +1623,13 @@ def build_server(context: HubContext | None = None):
         from .services.members import set_access_mode as _set_access_mode
         from .services.members import rename_member as _rename_member
         from .services.members import rotate_member_token as _rotate_member_token
+        from .services.members import set_member_quota as _set_member_quota
     else:
         from services.members import set_login_state as _set_login_state
         from services.members import set_access_mode as _set_access_mode
         from services.members import rename_member as _rename_member
         from services.members import rotate_member_token as _rotate_member_token
+        from services.members import set_member_quota as _set_member_quota
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -1937,36 +1939,9 @@ def build_server(context: HubContext | None = None):
         extra_tokens_left 为剩余 token 数（>=0）。每次更新刷新 quota_updated_at 并写审计。"""
         me = authenticate()
         require(me, "dispatcher")
-        if week_used_pct is None and week_reset_at is None and extra_tokens_left is None:
-            raise ValueError("nothing to update: give at least one quota field")
-        if week_used_pct is not None and not (0 <= week_used_pct <= 100):
-            raise ValueError(f"week_used_pct out of range 0-100: {week_used_pct}")
-        if week_reset_at is not None and not (week_reset_at > 0):
-            raise ValueError(f"week_reset_at must be epoch seconds > 0: {week_reset_at}")
-        if extra_tokens_left is not None and extra_tokens_left < 0:
-            raise ValueError(f"extra_tokens_left must be >= 0: {extra_tokens_left}")
-        conn = db()
-        try:
-            row = conn.execute("SELECT id, removed_at FROM members WHERE name=?", (member_name,)).fetchone()
-            if not row:
-                raise ValueError(f"no such member: {member_name}")
-            if row["removed_at"] is not None:
-                # staging49：已移除成员不得再被设额度（写入即污染其历史行，
-                # 且 member_list 已隐藏、App 无从发现这笔写入）
-                raise ValueError(f"member is removed: {member_name}")
-            fields = _apply_quota(conn, row["id"], week_used_pct,
-                                  week_reset_at, extra_tokens_left, "dispatcher")
-            audit(conn, me["name"], "member_quota_set",
-                  f"{member_name}: " + ", ".join(fields) + " source=dispatcher")
-            conn.commit()
-            out = dict(conn.execute(
-                "SELECT name, quota_week_used_pct, quota_week_reset_at,"
-                " quota_extra_left, quota_updated_at, quota_source"
-                " FROM members WHERE id=?",
-                (row["id"],)).fetchone())
-        finally:
-            conn.close()
-        return out
+        return _set_member_quota(context, me, member_name, week_used_pct,
+                                 week_reset_at, extra_tokens_left,
+                                 apply_quota=_apply_quota)
 
     @mcp.tool
     def member_quota_report(week_used_pct: float = None,

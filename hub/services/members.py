@@ -158,3 +158,38 @@ def rotate_member_token(context, actor, name: str, *, token_factory, hash_token)
         finally:
             conn.close()
     return {"name": name, "token": token}
+
+
+def set_member_quota(context, actor, member_name: str, week_used_pct=None,
+                     week_reset_at=None, extra_tokens_left=None, *, apply_quota) -> dict:
+    """Apply dispatcher-supplied quota fields without touching other members."""
+    if week_used_pct is None and week_reset_at is None and extra_tokens_left is None:
+        raise ValueError("nothing to update: give at least one quota field")
+    if week_used_pct is not None and not (0 <= week_used_pct <= 100):
+        raise ValueError(f"week_used_pct out of range 0-100: {week_used_pct}")
+    if week_reset_at is not None and not (week_reset_at > 0):
+        raise ValueError(f"week_reset_at must be epoch seconds > 0: {week_reset_at}")
+    if extra_tokens_left is not None and extra_tokens_left < 0:
+        raise ValueError(f"extra_tokens_left must be >= 0: {extra_tokens_left}")
+    conn = context.connect()
+    try:
+        row = conn.execute("SELECT id, removed_at FROM members WHERE name=?", (member_name,)).fetchone()
+        if not row:
+            raise ValueError(f"no such member: {member_name}")
+        if row["removed_at"] is not None:
+            # staging49：已移除成员不得再被设额度（写入即污染其历史行，
+            # 且 member_list 已隐藏、App 无从发现这笔写入）
+            raise ValueError(f"member is removed: {member_name}")
+        fields = apply_quota(conn, row["id"], week_used_pct,
+                              week_reset_at, extra_tokens_left, "dispatcher")
+        context.audit(conn, actor["name"], "member_quota_set",
+              f"{member_name}: " + ", ".join(fields) + " source=dispatcher")
+        conn.commit()
+        out = dict(conn.execute(
+            "SELECT name, quota_week_used_pct, quota_week_reset_at,"
+            " quota_extra_left, quota_updated_at, quota_source"
+            " FROM members WHERE id=?",
+            (row["id"],)).fetchone())
+    finally:
+        conn.close()
+    return out
