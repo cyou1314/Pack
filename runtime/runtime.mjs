@@ -11,6 +11,7 @@ import {createApprovalManager} from './approval-manager.mjs';
 import {createDeliveryManager} from './delivery-manager.mjs';
 import {executeTaskDriver} from './task-driver-execution.mjs';
 import {prepareTaskContext} from './task-executor.mjs';
+import {createScheduler} from './scheduler.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -117,7 +118,6 @@ async function mcpInit() {
 
 const runDriver = createDriverRunner({dir: DIR, cfg});
 
-let failStreak = 0;
 // The free tunnel URL rotates; the hub publishes its current URL to the
 // repo file runtime/hub-url.txt. On repeated failures, fetch it and move.
 async function discoverHubUrl() {
@@ -383,42 +383,24 @@ async function main() {
     chatState = {last_chat_id:room.last_message_id, chatUrl:null}; saveChatState();
     console.log(`chat initialized at message ${chatState.last_chat_id}`);
   }
-  const busy = new Set();
-  let heartbeatLogged = false;
-  for (;;) {
-    try {
-      await tool("heartbeat");
-      if (!heartbeatLogged) { console.log("hub heartbeat ok"); heartbeatLogged = true; }
-      await checkApprovals();
-      const r = await listActiveTasks(tool);
-      for (const t of r) {
-        if (/\[(?:M4A|ENG)(?:-image)?\]/.test(t.body || "")) continue;
-        if (t.status !== "open" && !(["claimed", "working"].includes(t.status) && t.assignee === cfg.memberName && t.lease_expires == null)) continue;
-        // A single browser space must process at most one task at a time.
-        if (busy.size) break;
-        if (t.assignee !== cfg.memberName && !(t.assignee == null && deliveryManager.matchingReceipt(t))) continue;
-        if (busy.has(t.id)) continue;
-        busy.add(t.id);
-        processTask(t).catch((e) => console.error("task", t.id, e.message)).finally(() => busy.delete(t.id));
-      }
-      await checkChat(busy);
-      if (quotaDue(Date.now(), quotaLastSuccess, quotaLastAttempt, quotaRequested, busy.size > 0)) {
-        busy.add('quota');
-        collectQuota().finally(() => busy.delete('quota'));
-      }
-    } catch (e) {
-      console.error("poll error:", e.message);
-      heartbeatLogged = false;
-      failStreak++;
-      if (failStreak >= 1) {
-        failStreak = 0;
-        await discoverHubUrl();
-      }
+  const scheduler = createScheduler({
+    heartbeat: () => tool('heartbeat'),
+    checkApprovals,
+    listActiveTasks: () => listActiveTasks(tool),
+    memberName: cfg.memberName,
+    hasReceipt: task => Boolean(deliveryManager.matchingReceipt(task)),
+    processTask: task => processTask(task),
+    checkChat,
+    quotaDue: busy => quotaDue(Date.now(), quotaLastSuccess, quotaLastAttempt, quotaRequested, busy),
+    collectQuota,
+    sleep,
+    pollMs: POLL_MS,
+    recover: async error => {
+      await discoverHubUrl();
       hubRpc.resetSession();
       try { await mcpInit(); } catch {}
-    }
-    await sleep(POLL_MS);
-  }
-}
+    },
+  });
+  await scheduler.run();}
 
 main();
