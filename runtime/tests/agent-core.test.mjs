@@ -220,3 +220,34 @@ test("Context Package rejects cross-room and private context", () => {
     /private_context_forbidden/,
   );
 });
+
+test("Agent Event and Context Package reject snake_case secrets", () => {
+  assert.throws(
+    () => createAgentEvent({
+      eventId: "evt-secret",
+      eventType: "message.completed",
+      providerId: "openai",
+      agentId: "agent-openai",
+      occurredAt: "2026-11-21T08:00:00.000Z",
+      payload: {nested: {api_key: "must-not-enter-event"}},
+    }),
+    /sensitive_field_forbidden/,
+  );
+  assert.throws(
+    () => createContextPackage({
+      roomId: "room-a",
+      agentId: "agent-1",
+      request: "Review",
+      messages: [{
+        id: 1,
+        roomId: "room-a",
+        visibility: "shared",
+        author: "owner",
+        kind: "chat",
+        body: "safe-looking message",
+        refresh_token: "must-not-enter-context",
+      }],
+    }),
+    /private_context_forbidden/,
+  );
+});

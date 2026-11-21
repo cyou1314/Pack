@@ -56,6 +56,29 @@ export const AGENT_EVENT_TYPES = Object.freeze([
 const CAPABILITIES = new Set(AGENT_CAPABILITIES);
 const EVENT_TYPES = new Set(AGENT_EVENT_TYPES);
 
+
+const SENSITIVE_KEYS = new Set([
+  "apikey", "accesstoken", "refreshtoken", "token",
+  "authorization", "authheader", "password", "cookie", "cookies",
+  "nativememory", "privatememory", "privatecontext", "credentials",
+  "clientsecret", "privatekey", "secret",
+]);
+
+function assertNoSensitiveFields(value, path = "payload") {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoSensitiveFields(item, path + "[" + index + "]"));
+    return;
+  }
+  for (const [key, nested] of Object.entries(value)) {
+    const normalized = key.replace(/[-_]/g, "").toLowerCase();
+    if (SENSITIVE_KEYS.has(normalized)) {
+      throw new Error("sensitive_field_forbidden:" + path + "." + key);
+    }
+    assertNoSensitiveFields(nested, path + "." + key);
+  }
+}
+
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -111,6 +134,7 @@ export function createAgentEvent(input) {
   const occurredAt = requiredText(input.occurredAt, "occurred_at", 64);
   const sequence = input.sequence ?? 0;
   const payload = input.payload ?? {};
+  assertNoSensitiveFields(payload, "event.payload");
 
   if (!EVENT_TYPES.has(eventType)) throw new TypeError("unsupported_event_type");
   if (!Number.isFinite(Date.parse(occurredAt))) throw new TypeError("invalid_occurred_at");
