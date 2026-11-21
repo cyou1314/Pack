@@ -329,49 +329,102 @@ final class AgentWorkspaceState: ObservableObject {
         messagesByConversation[conversationID, default: []].append(userMessage)
         Task {
             defer { isSending = false; activeRun = nil }
-            var assistantText = ""
-            let assistantID = UUID()
             do {
                 try await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "user", content: text)
-                let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: conversation.sessionID)
-                activeRun = run
-                let stream = try await manager.streamEvents(for: run)
-                var responseID: String?
-                for try await event in stream {
-                    if event.kind == .messageDelta {
-                        let delta = event.text ?? ""
-                        assistantText += delta
-                        var current = messagesByConversation[conversationID, default: []]
-                        if let index = current.firstIndex(where: { $0.id == assistantID }) {
-                            current[index].content += delta
-                        } else {
-                            current.append(AgentChatMessage(
-                                id: assistantID, agentID: profile.id, conversationID: conversationID,
-                                role: "assistant", content: delta, createdAt: Date()
-                            ))
-                        }
-                        messagesByConversation[conversationID] = current
-                    }
-                    if let detail = event.detail, detail.hasPrefix("session_id=") {
-                        let sessionID = String(detail.dropFirst("session_id=".count))
-                        responseID = sessionID
-                        try await manager.updateConversationSession(agentID: profile.id, conversationID: conversationID, sessionID: sessionID)
-                        if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
-                            conversations[index].sessionID = sessionID
-                        }
-                    }
-                }
-                if !assistantText.isEmpty {
-                    try await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "assistant", content: assistantText)
-                }
-                note = responseID == nil ? "回复完成" : "回复完成；会话续接 ID 已就绪"
+                try await streamAssistantResponse(
+                    manager: manager, profile: profile, conversation: conversation, prompt: text
+                )
             } catch {
                 self.error = error.localizedDescription
-                if !assistantText.isEmpty {
-                    try? await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "assistant", content: assistantText)
-                }
             }
         }
+    }
+
+    func retryLastMessage() {
+        guard !isSending, let manager, let profile = selectedProfile,
+              let conversation = selectedConversation,
+              let lastUserMessage = messagesByConversation[conversation.id]?.last(where: { $0.role == "user" }) else {
+            return
+        }
+        isSending = true
+        error = ""
+        Task {
+            defer { isSending = false; activeRun = nil }
+            do {
+                try await streamAssistantResponse(
+                    manager: manager, profile: profile, conversation: conversation,
+                    prompt: lastUserMessage.content
+                )
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func streamAssistantResponse(
+        manager: AgentManager,
+        profile: AgentProfile,
+        conversation: AgentConversation,
+        prompt: String
+    ) async throws {
+        let conversationID = conversation.id
+        let run = try await manager.sendMessage(agentID: profile.id, text: prompt, sessionID: conversation.sessionID)
+        activeRun = run
+        let stream = try await manager.streamEvents(for: run)
+        var assistantText = ""
+        let assistantID = UUID()
+        var responseID: String?
+        do {
+            for try await event in stream {
+                if event.kind == .messageDelta {
+                    let delta = event.text ?? ""
+                    guard !delta.isEmpty else { continue }
+                    assistantText += delta
+                    var current = messagesByConversation[conversationID, default: []]
+                    if let index = current.firstIndex(where: { $0.id == assistantID }) {
+                        current[index].content += delta
+                    } else {
+                        current.append(AgentChatMessage(
+                            id: assistantID, agentID: profile.id, conversationID: conversationID,
+                            role: "assistant", content: delta, createdAt: Date()
+                        ))
+                    }
+                    messagesByConversation[conversationID] = current
+                }
+                if let detail = event.detail, detail.hasPrefix("session_id=") {
+                    let sessionID = String(detail.dropFirst("session_id=".count))
+                    responseID = sessionID
+                    try await manager.updateConversationSession(
+                        agentID: profile.id, conversationID: conversationID, sessionID: sessionID
+                    )
+                    if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+                        conversations[index].sessionID = sessionID
+                    }
+                }
+            }
+            if !assistantText.isEmpty {
+                try await manager.appendChatMessage(
+                    agentID: profile.id, conversationID: conversationID,
+                    role: "assistant", content: assistantText
+                )
+            }
+            note = responseID == nil ? "回复完成" : "回复完成；会话续接 ID 已就绪"
+        } catch {
+            if !assistantText.isEmpty {
+                try? await manager.appendChatMessage(
+                    agentID: profile.id, conversationID: conversationID,
+                    role: "assistant", content: assistantText
+                )
+            }
+            throw error
+        }
+    }
+
+    var canRetryLastMessage: Bool {
+        guard !isSending, let conversationID = selectedConversationID,
+              let messages = messagesByConversation[conversationID],
+              let lastMessage = messages.last else { return false }
+        return lastMessage.role == "user" && !error.isEmpty
     }
 
     func removeSelected() {
@@ -587,6 +640,10 @@ struct AgentDirectoryView: View {
                     TextField("发送消息…", text: $state.chatInput, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1...4)
+                    if state.canRetryLastMessage {
+                        Button("重试") { state.retryLastMessage() }
+                            .buttonStyle(.bordered)
+                    }
                     Button("发送") { state.sendMessage() }
                         .buttonStyle(.borderedProminent)
                         .disabled(state.isSending || state.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
