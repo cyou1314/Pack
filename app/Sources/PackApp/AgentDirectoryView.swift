@@ -690,9 +690,7 @@ struct AgentDirectoryView: View {
                 Text(message.role == "user" ? "你" : (message.role == "assistant" ? profile.displayName : "系统"))
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
-                Text((try? AttributedString(markdown: message.content)) ?? AttributedString(message.content))
-                    .font(.system(size: 13))
-                    .textSelection(.enabled)
+                AgentMessageContent(content: message.content)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(12)
@@ -791,3 +789,70 @@ struct AgentDirectoryView: View {
         .frame(width: 420)
     }
 }
+
+private struct AgentMessageContent: View {
+    let content: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(content.components(separatedBy: "```").enumerated()), id: \.offset) { item in
+                if item.offset.isMultiple(of: 2) {
+                    if !item.element.isEmpty {
+                        Text((try? AttributedString(markdown: item.element)) ?? AttributedString(item.element))
+                            .font(.system(size: 13))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    AgentCodeBlock(source: item.element)
+                }
+            }
+        }
+    }
+}
+
+private struct AgentCodeBlock: View {
+    let source: String
+
+    private var language: String {
+        guard let newline = source.firstIndex(of: "\n") else { return "" }
+        let candidate = String(source[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.range(of: "^[a-zA-Z0-9_+.-]{1,24}$", options: .regularExpression) != nil ? candidate : ""
+    }
+
+    private var code: String {
+        guard let newline = source.firstIndex(of: "\n"), !language.isEmpty else {
+            return source.trimmingCharacters(in: .newlines)
+        }
+        return String(source[source.index(after: newline)...]).trimmingCharacters(in: .newlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(language.isEmpty ? "CODE" : language.uppercased())
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                } label: {
+                    Label("复制代码", systemImage: "doc.on.doc")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.borderless)
+            }
+            ScrollView(.horizontal) {
+                Text(code)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .padding(10)
+        .background(Color.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+\n
