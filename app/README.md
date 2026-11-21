@@ -36,6 +36,12 @@ App 读取 `~/.pack/config.json`：
 
 ### 当前支持
 
+- 中断生成：提供本地流式任务取消；当前 OpenAI Adapter 无法确认服务端生成是否同步停止，界面会明确提示服务端状态未确认。
+
+- 聊天管理：可清空当前 Agent 的本地聊天记录；不删除服务商侧会话或 Response ID。
+
+- API Key 更新：可在 Agent 编辑页单独替换 Key；新值先写入 Keychain 并初始化新 Adapter，失败时回滚旧 Key。该步骤只验证本机 Keychain 读取和 Adapter 配置，不代表服务商已接受密钥，也不会发送计费请求。
+
 - Agent 编辑：支持修改显示名称、模型 ID 和自定义 Endpoint；模型或 Endpoint 变化时重建 Adapter 并清除旧 Response ID，需重新测试连接。
 
 - OpenAI 官方 API：Responses API、SSE 流式输出、`previous_response_id` 会话续接。
