@@ -261,6 +261,18 @@ test("Context Package rejects credential and cookie aliases", () => {
   ];
   for (const key of forbiddenKeys) {
     assert.throws(
+      () => createAgentEvent({
+        eventId: "evt-" + key,
+        eventType: "message.completed",
+        providerId: "openai",
+        agentId: "agent-openai",
+        occurredAt: "2026-11-21T08:00:00.000Z",
+        payload: {[key]: "must-not-enter-event"},
+      }),
+      /sensitive_field_forbidden/,
+      "expected sensitive event field to be rejected: " + key,
+    );
+    assert.throws(
       () => createContextPackage({
         roomId: "room-a",
         agentId: "agent-1",
