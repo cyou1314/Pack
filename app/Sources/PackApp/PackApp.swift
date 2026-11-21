@@ -1,5 +1,6 @@
 import SwiftUI
 import Security
+import PackCore
 
 struct RoomItem: Identifiable {
     let id: Int
@@ -467,10 +468,10 @@ final class AppState: ObservableObject {
             if manual { settingsMessage = message }
             return false
         }
-        guard let parts = URLComponents(string: text), ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
-              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else {
-            return fail("地址格式无效，请使用不带凭证或查询参数的 HTTP(S) 地址。")
+        guard let endpoint = HubEndpoint.validatedURL(text) else {
+            return fail("地址无效：远程 Hub 必须使用 HTTPS；HTTP 仅允许本机回环地址，且不能包含凭证、查询参数或片段。")
         }
+        let normalizedURL = endpoint.absoluteString
         let path = PackConfig.configurationURL
         do {
             let loaded = PackConfig.load()
@@ -478,17 +479,17 @@ final class AppState: ObservableObject {
             guard var cfg = loaded.config else { return fail("无法读取本机凭证") }
             let data = try Data(contentsOf: path)
             guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return fail("配置格式无效") }
-            object["hubUrl"] = text
+            object["hubUrl"] = normalizedURL
             let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
             let temporary = path.deletingLastPathComponent().appendingPathComponent(".config-\(UUID().uuidString).tmp")
             guard FileManager.default.createFile(atPath: temporary.path, contents: updated, attributes: [.posixPermissions: 0o600]) else { return fail("无法创建安全的配置临时文件") }
             defer { try? FileManager.default.removeItem(at: temporary) }
             _ = try FileManager.default.replaceItemAt(path, withItemAt: temporary)
             if manual { manualHubURLSaved = true }
-            storedHubURL = text
-            cfg.hubUrl = text
+            storedHubURL = normalizedURL
+            cfg.hubUrl = normalizedURL
             installHubClients(cfg)
-            settingsHubURL = text
+            settingsHubURL = normalizedURL
             if manual { settingsMessage = "地址已保存，正在连接" }
             return true
         } catch { return fail("保存失败，请检查本机配置后重试") }

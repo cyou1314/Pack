@@ -70,3 +70,5 @@ jobs:
         uses: actions/checkout@v6
       - name: Swift build
         run: swift build --package-path app
+      - name: Swift unit tests
+        run: swift test --package-path app

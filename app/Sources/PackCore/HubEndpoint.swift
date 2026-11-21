@@ -1,0 +1,38 @@
+import Foundation
+
+/// Validates the Hub endpoint before any credential-bearing request is sent.
+public enum HubEndpoint {
+    public static func validatedURL(_ value: String) -> URL? {
+        guard value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host, !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              let url = components.url else {
+            return nil
+        }
+
+        switch scheme {
+        case "https":
+            return url
+        case "http" where isLoopbackHost(host):
+            return url
+        default:
+            return nil
+        }
+    }
+
+    public static func isLoopbackHost(_ value: String) -> Bool {
+        var host = value.lowercased()
+        if host.hasPrefix("[") && host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        if host.hasSuffix(".") {
+            host.removeLast()
+        }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
+}
