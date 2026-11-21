@@ -12,6 +12,7 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var chatOutput = ""
     @Published var sessionIDs: [UUID: String] = [:]
     @Published var isAdding = false
+    @Published var addSucceeded = false
     @Published var isTesting = false
     @Published var isSending = false
     @Published var note = ""
@@ -54,6 +55,7 @@ final class AgentWorkspaceState: ObservableObject {
             return
         }
         isAdding = true
+        addSucceeded = false
         error = ""
         Task {
             defer { isAdding = false }
@@ -69,10 +71,19 @@ final class AgentWorkspaceState: ObservableObject {
                 apiKey = ""
                 endpoint = ""
                 note = "Agent 已保存；连接状态为待验证"
+                addSucceeded = true
             } catch {
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    func clearAddDraft() {
+        displayName = ""
+        model = ""
+        apiKey = ""
+        endpoint = ""
+        error = ""
     }
 
     func testSelectedConnection() {
@@ -183,6 +194,12 @@ struct AgentDirectoryView: View {
         .sheet(isPresented: $showingAdd) {
             addSheet
         }
+        .onChange(of: state.addSucceeded) { _, succeeded in
+            if succeeded {
+                showingAdd = false
+                state.addSucceeded = false
+            }
+        }
         .confirmationDialog("移除 Agent？", isPresented: $showRemoveConfirmation, titleVisibility: .visible) {
             Button("移除并删除 Keychain 凭证", role: .destructive) { state.removeSelected() }
             Button("取消", role: .cancel) {}
@@ -259,11 +276,8 @@ struct AgentDirectoryView: View {
             if !state.error.isEmpty { Text(state.error).font(.system(size: 11)).foregroundStyle(.red) }
             HStack {
                 Spacer()
-                Button("取消") { showingAdd = false }
-                Button("保存到本机") {
-                    state.addOpenAI()
-                    if state.error.isEmpty { showingAdd = false }
-                }
+                Button("取消") { state.clearAddDraft(); showingAdd = false }
+                Button("保存到本机") { state.addOpenAI() }
                 .buttonStyle(.borderedProminent)
                 .disabled(state.isAdding)
             }
