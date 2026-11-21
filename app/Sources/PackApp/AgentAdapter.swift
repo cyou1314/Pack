@@ -212,40 +212,6 @@ struct AgentProfile: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
-/// In-memory profile catalog. A durable SQLite repository will replace this
-/// implementation after the schema/migration contract is reviewed.
-actor AgentProfileCatalog {
-    private var profiles: [UUID: AgentProfile] = [:]
-
-    func add(_ profile: AgentProfile) throws {
-        try profile.validate()
-        guard profiles[profile.id] == nil else {
-            throw AgentAdapterError.invalidConfiguration("Agent profile already exists")
-        }
-        profiles[profile.id] = profile
-    }
-
-    func profile(id: UUID) -> AgentProfile? {
-        profiles[id]
-    }
-
-    func allProfiles() -> [AgentProfile] {
-        profiles.values.sorted { $0.createdAt < $1.createdAt }
-    }
-
-    func updateConnection(id: UUID, state: AgentConnectionState, capabilities: Set<AgentCapability>) throws {
-        guard var profile = profiles[id] else { throw AgentAdapterError.invalidConfiguration("Agent profile not found") }
-        profile.connection = state
-        profile.capabilities = capabilities
-        profile.updatedAt = Date()
-        profiles[id] = profile
-    }
-
-    func remove(id: UUID) -> AgentProfile? {
-        profiles.removeValue(forKey: id)
-    }
-}
-
 /// Keychain-backed secret storage. Only references are serialized in AgentProfile.
 enum AgentCredentialVault {
     static func store(
