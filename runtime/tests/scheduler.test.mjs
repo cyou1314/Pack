@@ -38,7 +38,7 @@ test('filters unsupported tasks and dispatches only eligible tasks', async () =>
   h.scheduler = createSchedulerForTest(h);
   await h.scheduler.tick();
   await Promise.resolve();
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.ok(h.events.includes('task:3'));
   assert.ok(!h.events.includes('task:1'));
   assert.ok(!h.events.includes('task:2'));
@@ -64,8 +64,7 @@ test('recovers polling failures without terminating the scheduler', async () => 
 test('runs quota collection only when due and releases its busy marker', async () => {
   const h = setup({ quotaDue: () => true, collectQuota: async () => h.events.push('quota') });
   await h.scheduler.tick();
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.ok(h.events.includes('quota'));
   assert.ok(!h.scheduler.getBusy().has('quota'));
 });
