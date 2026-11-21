@@ -42,6 +42,7 @@ enum AgentCapability: String, Codable, CaseIterable, Hashable, Sendable {
 /// Connection state must not imply that a capability is available.
 enum AgentConnectionStatus: String, Codable, Sendable {
     case disconnected
+    case configured
     case connecting
     case connected
     case degraded
