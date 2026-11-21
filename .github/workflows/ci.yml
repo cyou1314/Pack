@@ -32,6 +32,7 @@ jobs:
           bash -n hub/install-services.sh
           bash -n run-all-suites.sh
           bash -n installer/build-dmg.sh
+          bash -n app/make-bundle.sh
           bash -n local/install-local.sh
           bash -n local/uninstall-local.sh
       - name: Python compile
@@ -43,6 +44,7 @@ jobs:
           python hub/test_resolve_mention.py
           python hub/test_systemd_units.py
           python installer/test_launch_agent_safety.py
+          python installer/test_dmg_manifest.py
           python hub/test_policy_helpers.py
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
@@ -76,3 +78,8 @@ jobs:
         run: swift build --package-path app
       - name: Swift unit tests
         run: swift test --package-path app
+      - name: Build and verify app bundle
+        run: |
+          bash app/make-bundle.sh "$RUNNER_TEMP/Pack.app"
+          plutil -lint "$RUNNER_TEMP/Pack.app/Contents/Info.plist"
+          codesign --verify --deep --strict "$RUNNER_TEMP/Pack.app"
