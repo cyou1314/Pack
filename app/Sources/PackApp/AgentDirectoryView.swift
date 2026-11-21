@@ -559,24 +559,39 @@ struct AgentDirectoryView: View {
                 }
                 Divider()
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        let transcript = state.selectedConversationID.flatMap { state.chatOutputs[$0] } ?? ""
-                        if transcript.isEmpty {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        let messages = state.selectedConversationID.flatMap { state.messagesByConversation[$0] } ?? []
+                        if messages.isEmpty {
                             Text("向 \(profile.displayName) 发送消息，开始这个独立会话。")
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 28)
                         } else {
-                            ForEach(Array(transcript.components(separatedBy: "\\n\\n").enumerated()), id: \\.offset) { item in
-                                Text(item.element)
-                                    .font(.system(size: 13))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(messages) { message in
+                                HStack {
+                                    if message.role == "user" { Spacer(minLength: 48) }
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(message.role == "user" ? "你" : (message.role == "assistant" ? profile.displayName : "系统"))
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(.secondary)
+                                        Text((try? AttributedString(markdown: message.content)) ?? AttributedString(message.content))
+                                            .font(.system(size: 13))
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
                                     .padding(12)
-                                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                                    .frame(maxWidth: 620, alignment: .leading)
+                                    .background(
+                                        message.role == "user" ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08),
+                                        in: RoundedRectangle(cornerRadius: 12)
+                                    )
+                                    if message.role != "user" { Spacer(minLength: 48) }
+                                }
                             }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
                 }
                 HStack {
                     TextField("发送消息…", text: $state.chatInput, axis: .vertical)
