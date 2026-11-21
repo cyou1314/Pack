@@ -152,6 +152,90 @@ protocol AgentAdapter: Sendable {
     func disconnect() async
 }
 
+
+enum AgentMemoryBoundary: String, Codable, Sendable {
+    case providerPrivate
+    case packManaged
+}
+
+/// A Pack-side record for one configured Agent account/profile.
+/// It stores references and capability metadata, never provider secrets.
+struct AgentProfile: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    var displayName: String
+    let providerID: String
+    let mode: AgentConnectionMode
+    let credential: AgentCredentialReference?
+    let endpoint: String?
+    let adapterVersion: String
+    var capabilities: Set<AgentCapability>
+    var connection: AgentConnectionState?
+    let createdAt: Date
+    var updatedAt: Date
+
+    var memoryBoundary: AgentMemoryBoundary {
+        mode == .native ? .providerPrivate : .packManaged
+    }
+
+    func validate() throws {
+        guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AgentAdapterError.invalidConfiguration("display name is required")
+        }
+        guard !providerID.isEmpty,
+              providerID.range(of: "^[a-z0-9][a-z0-9._-]{0,63}$", options: .regularExpression) != nil else {
+            throw AgentAdapterError.invalidConfiguration("provider ID must be a stable lowercase identifier")
+        }
+        guard !adapterVersion.isEmpty else {
+            throw AgentAdapterError.invalidConfiguration("adapter version is required")
+        }
+        if mode == .api && credential == nil {
+            throw AgentAdapterError.invalidConfiguration("API Agent requires a Keychain credential reference")
+        }
+        if let endpoint {
+            guard let url = URL(string: endpoint),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "https" || (scheme == "http" && (url.host == "localhost" || url.host == "127.0.0.1" || url.host == "::1")),
+                  url.user == nil, url.password == nil else {
+                throw AgentAdapterError.invalidConfiguration("endpoint must use HTTPS or a loopback HTTP address and contain no credentials")
+            }
+        }
+    }
+}
+
+/// In-memory profile catalog. A durable SQLite repository will replace this
+/// implementation after the schema/migration contract is reviewed.
+actor AgentProfileCatalog {
+    private var profiles: [UUID: AgentProfile] = [:]
+
+    func add(_ profile: AgentProfile) throws {
+        try profile.validate()
+        guard profiles[profile.id] == nil else {
+            throw AgentAdapterError.invalidConfiguration("Agent profile already exists")
+        }
+        profiles[profile.id] = profile
+    }
+
+    func profile(id: UUID) -> AgentProfile? {
+        profiles[id]
+    }
+
+    func allProfiles() -> [AgentProfile] {
+        profiles.values.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    func updateConnection(id: UUID, state: AgentConnectionState, capabilities: Set<AgentCapability>) throws {
+        guard var profile = profiles[id] else { throw AgentAdapterError.invalidConfiguration("Agent profile not found") }
+        profile.connection = state
+        profile.capabilities = capabilities
+        profile.updatedAt = Date()
+        profiles[id] = profile
+    }
+
+    func remove(id: UUID) -> AgentProfile? {
+        profiles.removeValue(forKey: id)
+    }
+}
+
 /// In-memory registry only. Persistence and UI ownership stay in later layers.
 actor AgentAdapterRegistry {
     private var adapters: [String: any AgentAdapter] = [:]
