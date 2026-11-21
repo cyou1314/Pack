@@ -162,7 +162,7 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 
 ## 9. Runtime 模块化进展（2026-11-21）
 
-本轮已在 `v2-product-alignment` 分支完成第一批纯提取，旧入口 `runtime/runtime.mjs` 保留：
+本轮在 `v2-product-alignment` 分支持续进行纯提取，旧入口 `runtime/runtime.mjs` 保留：
 
 | 模块 | 文件 | 已提取职责 |
 |---|---|---|
@@ -170,11 +170,12 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 | Driver Process Adapter | `runtime/driver-runner.mjs` | ego-browser 子进程、脚本组合、结果解析与取消 |
 | Runtime State Store | `runtime/runtime-state-store.mjs` | chat-state 与 delivery-receipts JSON 读写、原子替换、0600 权限 |
 | Task Lifecycle | `runtime/task-lifecycle.mjs` | 任务认领、转交认领、claim token 校验、网络故障重试与失败阻断 |
+| Approval Manager | `runtime/approval-manager.mjs` | Dispatcher 审批请求、决策识别、等待期间任务状态检查与超时 |
+| Delivery Manager | `runtime/delivery-manager.mjs` | 交付回执持久化、任务匹配、防重复发送、完成确认与恢复 |
 
-对应契约测试位于 `runtime/tests/`。Runtime 模块拆分仍属于进行中：任务执行内部策略、调度、审批等待与聊天业务策略尚未迁移；没有更改状态文件 schema，也没有进行生产部署。
+对应契约测试位于 `runtime/tests/`。审批管理与交付管理已从 Runtime 入口抽离；转交任务历史审批、URL 出口审批、任务执行内部策略、调度和聊天业务策略仍留在入口流程中。没有更改状态文件 schema，也没有进行生产部署。
 
-验证边界：Hub RPC 与 Driver 提取已由 GitHub Actions #162 的 Runtime job 通过；State Store 与 Task Lifecycle 的新测试已加入 CI；GitHub Actions #172 的 Runtime / syntax and behavior job 已通过，Hub 回归和 macOS 构建当时仍在运行。不要将当前模块化进展描述为 Runtime 重构完成。
-
+验证边界：GitHub Actions #179 的 Runtime / syntax and behavior job 已通过，审批模块纳入的测试总数为 34 项且 0 失败。Delivery Manager 与最新入口接线后的 GitHub Actions #183 已触发，当前仍待运行；不能将本轮交付模块标记为 CI 已通过。macOS 本机运行验收尚未执行。
 ## 10. 本轮结论
 
 当前最稳妥的工程顺序是：**先锁定 MCP 工具契约和权限矩阵 → 抽离 Runtime 模块 → 抽离 AppState 网络/业务职责 → 最后拆 Hub 单体 → 接入 API / Native Agent**。不要从重写 UI 或拆 Hub 大文件开始；那两条路径的回归半径最大。
