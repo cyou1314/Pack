@@ -36,6 +36,12 @@ App 读取 `~/.pack/config.json`：
 
 ### 当前支持
 
+- 清空会话：只清空当前会话消息并重置该会话 Response ID，不影响同 Agent 的其他会话。
+
+- 会话迁移：SQLite Schema v3 将旧版每 Agent 单聊天记录迁移到该 Agent 的“默认会话”，迁移在事务中执行；切换模型或 Endpoint 会清除该 Agent 的所有会话续接 ID。
+
+- 多会话：每个 Agent 可创建、切换、重命名和删除多个本地会话；每个会话独立保存消息与 OpenAI Response ID。
+
 - 中断生成：提供本地流式任务取消；当前 OpenAI Adapter 无法确认服务端生成是否同步停止，界面会明确提示服务端状态未确认。
 
 - 聊天管理：可清空当前 Agent 的本地聊天记录；不删除服务商侧会话或 Response ID。
