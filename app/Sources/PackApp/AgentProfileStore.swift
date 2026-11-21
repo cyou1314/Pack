@@ -361,6 +361,14 @@ actor AgentProfileStore {
         return conversation
     }
 
+    func clearConversationSessions(agentID: UUID) throws {
+        let statement = try connection.prepare("UPDATE agent_conversations SET session_id=NULL, updated_at=? WHERE agent_id=?;")
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+        bindText(agentID.uuidString, at: 2, to: statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
+    }
+
     func updateConversationSession(id: UUID, agentID: UUID, sessionID: String) throws {
         let statement = try connection.prepare("UPDATE agent_conversations SET session_id=?, updated_at=? WHERE id=? AND agent_id=?;")
         defer { sqlite3_finalize(statement) }
