@@ -173,6 +173,7 @@ struct AgentProfile: Codable, Hashable, Identifiable, Sendable {
     let adapterVersion: String
     var capabilities: Set<AgentCapability>
     var connection: AgentConnectionState?
+    var lastSessionID: String? = nil
     let createdAt: Date
     var updatedAt: Date
 
