@@ -390,12 +390,12 @@ final class AgentWorkspaceState: ObservableObject {
         )
         try await manager.recordRun(runRecord)
         runHistory.insert(runRecord, at: 0)
-        let stream = try await manager.streamEvents(for: run)
         var assistantText = ""
         let assistantID = UUID()
         var responseID: String?
         var terminalStatus: AgentRunStatus?
         do {
+            let stream = try await manager.streamEvents(for: run)
             for try await event in stream {
                 if let status = event.status {
                     terminalStatus = status
@@ -444,7 +444,11 @@ final class AgentWorkspaceState: ObservableObject {
             }
             if terminalStatus == .completed {
                 note = responseID == nil ? "回复完成" : "回复完成；会话续接 ID 已就绪"
-            } else if terminalStatus != .cancelled {
+            } else if terminalStatus == .cancelled {
+                note = "已停止本地生成；服务端是否停止尚未确认"
+            } else {
+                runRecord.status = .unknown
+                currentRunStatus = .unknown
                 note = "生成流已结束，但未收到明确的完成状态"
             }
             runRecord.updatedAt = Date()
