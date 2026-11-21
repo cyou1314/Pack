@@ -6,6 +6,7 @@ After=network.target
 Type=oneshot
 User=hatch
 Group=hatch
+SupplementaryGroups=systemd-journal
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

@@ -15,7 +15,6 @@ REQUIRED = {
     "PrivateTmp": "true",
     "ProtectSystem": "full",
 }
-
 EXPECTED_SERVICES = {
     "pack-hub.service",
     "pack-room-watch.service",
@@ -54,11 +53,15 @@ class SystemdUnitTests(unittest.TestCase):
                 directives = service_directives(path.read_text(encoding="utf-8"))
                 for key, expected in REQUIRED.items():
                     self.assertEqual(directives.get(key), expected, f"{path.name}: {key}")
+        publisher = service_directives((SYSTEMD / "pack-url-publisher.service").read_text(encoding="utf-8"))
+        self.assertIn("systemd-journal", publisher.get("SupplementaryGroups", "").split())
 
     def test_installer_uses_repo_relative_units_and_restarts_services(self):
         script = INSTALLER.read_text(encoding="utf-8")
         self.assertIn('SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"', script)
         self.assertIn('install -o root -g root -m 0644', script)
+        self.assertIn('chown -R hatch:hatch "$SCRIPT_DIR"', script)
+        self.assertIn('chown -R hatch:hatch "$ADDR_MIRROR"', script)
         self.assertNotIn("/home/hatch/workspace/pack/hub/systemd", script)
         self.assertEqual(script.count("systemctl daemon-reload"), 1)
         for unit in ("pack-hub.service", "pack-room-watch.service", "pack-tunnel.service"):

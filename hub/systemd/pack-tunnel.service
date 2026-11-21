@@ -11,7 +11,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 Environment=HOME=/home/hatch
-ExecStart=/usr/bin/ssh -p 443 -R0:localhost:8794 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o BatchMode=yes -T a.pinggy.io
+ExecStart=/usr/bin/ssh -p 443 -R0:localhost:8794 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/hatch/.ssh/pack_tunnel_known_hosts -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o BatchMode=yes -T a.pinggy.io
 Restart=always
 RestartSec=5
 

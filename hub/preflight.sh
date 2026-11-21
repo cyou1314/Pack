@@ -15,6 +15,7 @@ for cmd in python3 sqlite3; do
   command -v "$cmd" >/dev/null 2>&1 && ok "command: $cmd" || bad "missing command: $cmd"
 done
 id hatch >/dev/null 2>&1 && ok "service account hatch present" || bad "service account hatch missing"
+getent group systemd-journal >/dev/null 2>&1 && ok "systemd-journal group present" || bad "systemd-journal group missing"
 [ -f "$HUB/hub.py" ] && ok "hub.py present" || bad "hub.py missing"
 [ -f "$HUB/room_watch.py" ] && ok "room_watch.py present" || bad "room_watch.py missing"
 [ -x "$HUB/.venv/bin/python" ] && ok "hub venv present" || bad "hub/.venv/bin/python missing"
@@ -44,6 +45,19 @@ for u in pack-hub.service pack-room-watch.service pack-tunnel.service \
   else
     bad "$u identity/umask mismatch (User=$SERVICE_USER Group=$SERVICE_GROUP UMask=$SERVICE_UMASK)"
   fi
+done
+PUBLISHER_GROUPS=$(systemctl show -p SupplementaryGroups --value pack-url-publisher.service 2>/dev/null || true)
+case " $PUBLISHER_GROUPS " in
+  *" systemd-journal "*) ok "URL publisher has journal read group" ;;
+  *) bad "URL publisher missing systemd-journal supplementary group" ;;
+esac
+
+for path in "$HUB" "$HUB"/pack.db* "$HUB"/.dispatcher_token "$HUB"/.room_watch_state.json \
+            "$HUB"/attachments "$HUB"/backups "$HUB"/backup.log "$HUB"/.published_url_addr \
+            "$HUB"/../addr-mirror /home/hatch/.ssh; do
+  [ -e "$path" ] || continue
+  OWNER=$(stat -c '%U' "$path")
+  [ "$OWNER" = "hatch" ] && ok "owner hatch: $path" || bad "owner=$OWNER (expected hatch): $path"
 done
 
 echo "[db]"
