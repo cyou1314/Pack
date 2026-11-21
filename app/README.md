@@ -54,7 +54,7 @@ App 读取 `~/.pack/config.json`：
 
 - 仅 OpenAI 官方 API Adapter 已实现；ChatGPT 个人账号 Native 接入、豆包 Native/API Adapter 尚未实现。
 - 当前不支持附件、服务端会话列表、服务端取消和工具调用。
-- 聊天显示历史与会话 ID 目前只保存在当前 App 进程内；重启后会恢复 Agent Profile，但不会恢复完整聊天 transcript / 会话 ID。
+- 会话续接 ID（OpenAI Response ID）随 Agent Profile 持久化；重启后可以继续同一 API 会话。聊天 transcript 目前只保存在当前 App 进程内，重启后不会恢复完整聊天记录。
 - API Agent 使用 Pack 管理的上下文边界；不会读取或声称拥有 ChatGPT 个人账号里的私有记忆。
 - 自定义 Endpoint 必须使用 HTTPS；请只配置可信服务商地址。
 
