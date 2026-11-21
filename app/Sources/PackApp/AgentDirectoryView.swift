@@ -21,6 +21,7 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var isUpdatingCredential = false
     @Published var activeRun: AgentRun?
     @Published var currentRunStatus: AgentRunStatus = .unknown
+    @Published var runHistory: [AgentRunRecord] = []
     @Published var retryableConversationID: UUID?
     @Published var editSucceeded = false
     @Published var chatInput = ""
@@ -99,6 +100,7 @@ final class AgentWorkspaceState: ObservableObject {
         do {
             let messages = try await manager.chatMessages(agentID: agentID, conversationID: conversationID)
             messagesByConversation[conversationID] = messages
+            runHistory = try await manager.runs(conversationID: conversationID)
         } catch {
             self.error = error.localizedDescription
         }
@@ -381,6 +383,13 @@ final class AgentWorkspaceState: ObservableObject {
         let run = try await manager.sendMessage(agentID: profile.id, text: prompt, sessionID: conversation.sessionID)
         activeRun = run
         currentRunStatus = .running
+        var runRecord = AgentRunRecord(
+            id: UUID(), agentID: profile.id, conversationID: conversationID,
+            providerRunID: run.id, prompt: prompt, status: .running,
+            createdAt: Date(), updatedAt: Date(), errorMessage: nil
+        )
+        try await manager.recordRun(runRecord)
+        runHistory.insert(runRecord, at: 0)
         let stream = try await manager.streamEvents(for: run)
         var assistantText = ""
         let assistantID = UUID()
@@ -391,6 +400,12 @@ final class AgentWorkspaceState: ObservableObject {
                 if let status = event.status {
                     terminalStatus = status
                     currentRunStatus = status
+                    runRecord.status = status
+                    runRecord.updatedAt = Date()
+                    try await manager.recordRun(runRecord)
+                    if let index = runHistory.firstIndex(where: { $0.id == runRecord.id }) {
+                        runHistory[index] = runRecord
+                    }
                     if status == .cancelled {
                         note = "已停止本地生成；服务端是否停止尚未确认"
                     }
@@ -432,7 +447,19 @@ final class AgentWorkspaceState: ObservableObject {
             } else if terminalStatus != .cancelled {
                 note = "生成流已结束，但未收到明确的完成状态"
             }
+            runRecord.updatedAt = Date()
+            try await manager.recordRun(runRecord)
+            if let index = runHistory.firstIndex(where: { $0.id == runRecord.id }) {
+                runHistory[index] = runRecord
+            }
         } catch {
+            runRecord.status = terminalStatus == .cancelled ? .cancelled : .failed
+            runRecord.updatedAt = Date()
+            runRecord.errorMessage = error.localizedDescription
+            try? await manager.recordRun(runRecord)
+            if let index = runHistory.firstIndex(where: { $0.id == runRecord.id }) {
+                runHistory[index] = runRecord
+            }
             if !assistantText.isEmpty {
                 try? await manager.appendChatMessage(
                     agentID: profile.id, conversationID: conversationID,
@@ -692,6 +719,28 @@ struct AgentDirectoryView: View {
                         Spacer()
                         Button("停止生成") { state.cancelCurrentRun() }
                     }
+                }
+                if !state.runHistory.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("最近任务")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(state.runHistory.prefix(5)) { run in
+                            HStack(spacing: 7) {
+                                Circle()
+                                    .fill(run.status == .completed ? Color.green : (run.status == .failed ? Color.red : Color.secondary))
+                                    .frame(width: 6, height: 6)
+                                Text(run.prompt)
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Text(run.status.rawValue)
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .font(.system(size: 10))
+                        }
+                    }
+                    .padding(.top, 6)
                 }
                 if !state.note.isEmpty { Text(state.note).font(.system(size: 11)).foregroundStyle(.secondary) }
                 if !state.error.isEmpty { Text(state.error).font(.system(size: 11)).foregroundStyle(.red) }
