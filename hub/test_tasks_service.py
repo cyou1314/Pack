@@ -7,7 +7,7 @@ from pathlib import Path
 
 import hub
 from core.context import HubContext
-from services.tasks import get_task_audit, list_task_transfers
+from services.tasks import get_task_audit, list_task_transfers, list_tasks
 
 
 class TaskHistoryTests(unittest.TestCase):
@@ -97,6 +97,92 @@ class TaskHistoryTests(unittest.TestCase):
         self.assertTrue(output["events_truncated"])
         self.assertEqual(output["events"][0]["detail"], "task 1 event 000")
         self.assertEqual(output["events"][-1]["detail"], "task 1 event 199")
+
+
+    def test_task_list_priority_status_filter_offset_and_queue_ranks(self):
+        self.conn.execute(
+            "INSERT INTO tasks(id,room_id,title,body,created_by,assignee,status,"
+            "urgent,created_at,updated_at) VALUES(2,1,'priority','',?,?,'claimed',1,8000,8000)",
+            (self.dispatcher, self.dispatcher),
+        )
+        self.conn.execute(
+            "INSERT INTO tasks(id,room_id,title,body,created_by,assignee,status,"
+            "urgent,created_at,updated_at) VALUES(3,1,'done','',?,?,'done',0,8000,8000)",
+            (self.dispatcher, self.dispatcher),
+        )
+        self.conn.execute(
+            "INSERT INTO tasks(id,room_id,title,body,created_by,assignee,status,"
+            "urgent,created_at,updated_at) VALUES(4,1,'unassigned','',?,NULL,'open',1,8000,8000)",
+            (self.dispatcher,),
+        )
+        self.conn.commit()
+        tasks = list_tasks(self.context, {"kind": "internal"}, "open, claimed, done")["tasks"]
+        self.assertEqual([row["id"] for row in tasks], [2, 4, 1, 3, 12])
+        ranks = {row["id"]: row["queue_ahead"] for row in tasks}
+        self.assertEqual(ranks, {2: 0, 4: 0, 1: 1, 3: None, 12: 2})
+        self.assertEqual(
+            [r["id"] for r in list_tasks(
+                self.context, {"kind": "internal"}, "open,claimed,done", offset=2
+            )["tasks"]],
+            [1, 3, 12],
+        )
+        self.assertEqual(
+            [r["id"] for r in list_tasks(
+                self.context, {"kind": "internal"}, "open", room="nonexistent"
+            )["tasks"]],
+            [],
+        )
+
+    def test_task_list_envelope_backoff_and_negative_offset(self):
+        self.conn.execute(
+            "UPDATE tasks SET envelope=?,next_claim_at=? WHERE id=1",
+            ('{"artifacts": ["one"]}', 8030),
+        )
+        self.conn.execute("UPDATE tasks SET envelope=? WHERE id=12", ("invalid-json",))
+        self.conn.commit()
+        result = list_tasks(self.context, {"kind": "internal"}, offset=-200)["tasks"]
+        self.assertEqual([row["id"] for row in result], [1, 12])
+        self.assertEqual(result[0]["envelope"], {"artifacts": ["one"]})
+        self.assertEqual(result[0]["backoff_remaining_sec"], 30)
+        self.assertIsNone(result[1]["envelope"])
+        self.assertEqual(result[1]["backoff_remaining_sec"], 0)
+
+    def test_external_task_list_ignores_supplied_room_and_assignee_filters(self):
+        self.conn.execute(
+            "INSERT INTO members(name,role,token_hash,created_at,kind,bound_room_id)"
+            " VALUES('external-test','member','test-hash',8000,'external',1)"
+        )
+        external_id = self.conn.execute(
+            "SELECT id FROM members WHERE name='external-test'"
+        ).fetchone()[0]
+        self.conn.execute(
+            "INSERT INTO rooms(name,created_at) VALUES('other-room',8000)"
+        )
+        other_id = self.conn.execute(
+            "SELECT id FROM rooms WHERE name='other-room'"
+        ).fetchone()[0]
+        for tid, room_id, assignee_id in (
+            (15, 1, external_id),
+            (16, other_id, external_id),
+            (17, 1, None),
+        ):
+            self.conn.execute(
+                "INSERT INTO tasks(id,room_id,title,body,created_by,assignee,status,"
+                "created_at,updated_at) VALUES(?,?,?,'',?,?,'open',8000,8000)",
+                (tid, room_id, f"task-{tid}", self.dispatcher, assignee_id),
+            )
+        self.conn.commit()
+        me = {"kind": "external", "name": "external-test", "bound_room_id": 1}
+        result = list_tasks(
+            self.context, me, assignee_name="dispatcher", room="other-room"
+        )["tasks"]
+        self.assertEqual([row["id"] for row in result], [15])
+        self.assertEqual(result[0]["assignee"], "external-test")
+        unbound = list_tasks(
+            self.context, {"kind": "external", "name": "external-test",
+                           "bound_room_id": 999}
+        )["tasks"]
+        self.assertEqual(unbound, [])
 
 
 if __name__ == "__main__":
