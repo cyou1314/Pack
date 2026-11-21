@@ -47,6 +47,48 @@ class HubContextTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_init_uses_context_database_clock_and_token_directory(self):
+        import json
+        import os
+        import sqlite3
+        import stat
+
+        import hub
+
+        with tempfile.TemporaryDirectory(prefix="pack-context-init-") as directory:
+            root = Path(directory)
+            context = HubContext(
+                base_dir=str(root),
+                db_path=str(root / "isolated.db"),
+                attachment_dir=str(root / "attachments"),
+                lock=threading.Lock(),
+                clock=lambda: 1234.5,
+            )
+
+            hub.init(context)
+
+            self.assertTrue((root / "isolated.db").is_file())
+            token_path = root / ".dispatcher_token"
+            self.assertTrue(token_path.is_file())
+            self.assertEqual(stat.S_IMODE(token_path.stat().st_mode) & 0o077, 0)
+            connection = sqlite3.connect(root / "isolated.db")
+            try:
+                member = connection.execute(
+                    "SELECT created_at FROM members WHERE role='dispatcher'"
+                ).fetchone()
+                room = connection.execute(
+                    "SELECT created_at FROM rooms WHERE name='pack-main'"
+                ).fetchone()
+                audit = connection.execute(
+                    "SELECT ts,actor,action,detail FROM audit WHERE action='init'"
+                ).fetchone()
+                self.assertEqual(member[0], 1234.5)
+                self.assertEqual(room[0], 1234.5)
+                self.assertEqual(audit, (1234.5, "system", "init", "dispatcher created"))
+                self.assertTrue(token_path.read_text(encoding="utf-8").startswith("pk-disp-"))
+            finally:
+                connection.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -678,10 +678,14 @@ def _used_combos(conn) -> set:
             used.add(a["combo"])
     return used
 
-def init():
-    conn = db()
+def init(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    conn = context.connect()
     conn.executescript(SCHEMA)
-    conn.execute("INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)", (time.time(),))
+    conn.execute(
+        "INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)",
+        (context.clock(),),
+    )
     # 存量 DB 的 members 可能没有 avatar 列：迁移必须先于下面带 avatar 的
     # dispatcher INSERT，否则全新/未迁移 DB 在建调度员时就炸（顺序坑）。
     cols = [r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
@@ -694,9 +698,9 @@ def init():
     if not row:
         tok = "pk-disp-" + secrets.token_urlsafe(32)
         conn.execute("INSERT INTO members(name,role,token_hash,created_at,avatar) VALUES('dispatcher','dispatcher',?,?,?)",
-                     (hash_token(tok), time.time(), json.dumps(avatar_for("dispatcher"))))
-        audit(conn, "system", "init", "dispatcher created")
-        _tok_path = os.path.join(BASE, ".dispatcher_token")
+                     (hash_token(tok), context.clock(), json.dumps(avatar_for("dispatcher"))))
+        context.audit(conn, "system", "init", "dispatcher created")
+        _tok_path = os.path.join(context.base_dir, ".dispatcher_token")
         _tmp_path = _tok_path + f".tmp-{os.getpid()}"
         _fd = os.open(_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(_fd, "w") as f:
