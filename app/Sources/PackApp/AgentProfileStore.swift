@@ -5,6 +5,7 @@ struct AgentConversation: Codable, Hashable, Identifiable, Sendable {
     let id: UUID
     let agentID: UUID
     var title: String
+    var sessionID: String?
     let createdAt: Date
     var updatedAt: Date
 }
@@ -154,6 +155,7 @@ actor AgentProfileStore {
                     id TEXT PRIMARY KEY NOT NULL,
                     agent_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
                     title TEXT NOT NULL,
+                    session_id TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
@@ -166,12 +168,13 @@ actor AgentProfileStore {
             for profile in profiles {
                 let conversationID = UUID()
                 let now = Date().timeIntervalSince1970
-                let insert = try connection.prepare("INSERT INTO agent_conversations (id, agent_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?);")
+                let insert = try connection.prepare("INSERT INTO agent_conversations (id, agent_id, title, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?);")
                 bindText(conversationID.uuidString, at: 1, to: insert)
                 bindText(profile.id.uuidString, at: 2, to: insert)
                 bindText("默认会话", at: 3, to: insert)
-                sqlite3_bind_double(insert, 4, now)
+                if let sessionID = profile.lastSessionID { bindText(sessionID, at: 4, to: insert) } else { sqlite3_bind_null(insert, 4) }
                 sqlite3_bind_double(insert, 5, now)
+                sqlite3_bind_double(insert, 6, now)
                 let inserted = sqlite3_step(insert)
                 sqlite3_finalize(insert)
                 guard inserted == SQLITE_DONE else {
@@ -320,7 +323,7 @@ actor AgentProfileStore {
     }
 
     func conversations(agentID: UUID) throws -> [AgentConversation] {
-        let statement = try connection.prepare("SELECT id, title, created_at, updated_at FROM agent_conversations WHERE agent_id=? ORDER BY updated_at DESC;")
+        let statement = try connection.prepare("SELECT id, title, session_id, created_at, updated_at FROM agent_conversations WHERE agent_id=? ORDER BY updated_at DESC;")
         defer { sqlite3_finalize(statement) }
         bindText(agentID.uuidString, at: 1, to: statement)
         var result: [AgentConversation] = []
@@ -330,7 +333,8 @@ actor AgentProfileStore {
             guard step == SQLITE_ROW, let idText = sqlite3_column_text(statement, 0), let titleText = sqlite3_column_text(statement, 1) else {
                 throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
             }
-            result.append(AgentConversation(id: UUID(uuidString: String(cString: idText)) ?? UUID(), agentID: agentID, title: String(cString: titleText), createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2)), updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))))
+            let sessionID = sqlite3_column_text(statement, 2).map { String(cString: $0) }
+            result.append(AgentConversation(id: UUID(uuidString: String(cString: idText)) ?? UUID(), agentID: agentID, title: String(cString: titleText), sessionID: sessionID, createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 3)), updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))))
         }
         return result
     }
@@ -338,8 +342,8 @@ actor AgentProfileStore {
     func createConversation(agentID: UUID, title: String) throws -> AgentConversation {
         guard try profile(id: agentID) != nil else { throw AgentProfileStoreError.sqlite("Agent profile not found") }
         let now = Date()
-        let conversation = AgentConversation(id: UUID(), agentID: agentID, title: title, createdAt: now, updatedAt: now)
-        let statement = try connection.prepare("INSERT INTO agent_conversations (id, agent_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?);")
+        let conversation = AgentConversation(id: UUID(), agentID: agentID, title: title, sessionID: nil, createdAt: now, updatedAt: now)
+        let statement = try connection.prepare("INSERT INTO agent_conversations (id, agent_id, title, session_id, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?);")
         defer { sqlite3_finalize(statement) }
         bindText(conversation.id.uuidString, at: 1, to: statement)
         bindText(agentID.uuidString, at: 2, to: statement)
@@ -348,6 +352,16 @@ actor AgentProfileStore {
         sqlite3_bind_double(statement, 5, now.timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
         return conversation
+    }
+
+    func updateConversationSession(id: UUID, agentID: UUID, sessionID: String) throws {
+        let statement = try connection.prepare("UPDATE agent_conversations SET session_id=?, updated_at=? WHERE id=? AND agent_id=?;")
+        defer { sqlite3_finalize(statement) }
+        bindText(sessionID, at: 1, to: statement)
+        sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
+        bindText(id.uuidString, at: 3, to: statement)
+        bindText(agentID.uuidString, at: 4, to: statement)
+        guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(connection.db) > 0 else { throw AgentProfileStoreError.sqlite("Conversation not found") }
     }
 
     func renameConversation(id: UUID, agentID: UUID, title: String) throws {
