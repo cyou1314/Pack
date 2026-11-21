@@ -1222,30 +1222,26 @@ final class AppState: ObservableObject {
 
     func approveTask(_ tid: Int) { decideTask(tid, approve: true) }
 
-    /// A persistent allow rule must be scoped to both a concrete action tag
-    /// and an assigned member. Empty keys are wildcards in the Hub rule engine.
+    func approvalRuleScope(for task: PackTask) -> ApprovalRuleScope? {
+        ApprovalRuleScope(taskTitle: task.title, assignee: task.assignee)
+    }
+
     func canCreateScopedApprovalRule(for task: PackTask) -> Bool {
-        guard let target = task.assignee?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !target.isEmpty else { return false }
-        guard let pattern = try? NSRegularExpression(pattern: #"\[[A-Za-z0-9_-]+\]"#) else {
-            return false
-        }
-        let range = NSRange(task.title.startIndex..., in: task.title)
-        return pattern.firstMatch(in: task.title, range: range) != nil
+        approvalRuleScope(for: task) != nil
     }
 
     func approveAlways(_ task: PackTask, requestID: Int) {
-        guard canCreateScopedApprovalRule(for: task) else {
+        guard let scope = approvalRuleScope(for: task) else {
             alwaysRuleErrors[requestID] = "总是允许需要明确的动作标记（如 [ENG]）和已指派成员；为避免创建通配规则，当前任务未被批准。"
             return
         }
         alwaysRuleErrors[requestID] = nil
-        decideTask(task.id, approve: true, always: (requestID, task.title, task.assignee))
+        decideTask(task.id, approve: true, always: (requestID, scope))
     }
 
     func rejectTask(_ tid: Int) { decideTask(tid, approve: false) }
 
-    private func decideTask(_ tid: Int, approve: Bool, always: (requestID: Int, title: String, assignee: String?)? = nil) {
+    private func decideTask(_ tid: Int, approve: Bool, always: (requestID: Int, scope: ApprovalRuleScope)? = nil) {
         guard !decisionsPending.contains(tid), let client else { return }
         decisionsPending.insert(tid)
         decisionErrors[tid] = nil
@@ -1265,19 +1261,19 @@ final class AppState: ObservableObject {
                 _ = try await client.call(name: "room_post", args: ["room": room, "body": body, "kind": "decision"])
                 posted = true
                 if let always {
-                    if let target = always.assignee?.trimmingCharacters(in: .whitespacesAndNewlines), !target.isEmpty {
-                        let pattern = try? NSRegularExpression(pattern: #"\[[A-Za-z0-9_-]+\]"#)
-                        let range = NSRange(always.title.startIndex..., in: always.title)
-                        let match = pattern?.firstMatch(in: always.title, range: range)
-                        let action = match.flatMap { Range($0.range, in: always.title) }.map { String(always.title[$0]) } ?? ""
-                        do {
-                            _ = try await client.call(name: "rule_upsert", args: ["action": action, "target": target, "effect": "allow", "source": "app-always"])
-                            alwaysRuleSucceeded.insert(always.requestID)
-                        } catch {
-                            alwaysRuleErrors[always.requestID] = "本次已批准，但总是允许规则保存未确认，请检查规则后重试。"
-                        }
-                    } else {
-                        alwaysRuleErrors[always.requestID] = "本次已批准，但任务没有指派成员，未保存总是允许规则。"
+                    do {
+                        _ = try await client.call(
+                            name: "rule_upsert",
+                            args: [
+                                "action": always.scope.action,
+                                "target": always.scope.target,
+                                "effect": "allow",
+                                "source": "app-always"
+                            ]
+                        )
+                        alwaysRuleSucceeded.insert(always.requestID)
+                    } catch {
+                        alwaysRuleErrors[always.requestID] = "本次已批准，但总是允许规则保存未确认，请检查规则后重试。"
                     }
                 }
                 if !approve { _ = try await client.call(name: "task_cancel", args: ["task_id": tid]) }
