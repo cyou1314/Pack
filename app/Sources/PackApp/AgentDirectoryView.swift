@@ -10,6 +10,7 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var endpoint = ""
     @Published var chatInput = ""
     @Published var chatOutput = ""
+    @Published var sessionIDs: [UUID: String] = [:]
     @Published var isAdding = false
     @Published var isTesting = false
     @Published var isSending = false
@@ -103,7 +104,7 @@ final class AgentWorkspaceState: ObservableObject {
         Task {
             defer { isSending = false }
             do {
-                let run = try await manager.sendMessage(agentID: profile.id, text: text)
+                let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: sessionIDs[profile.id])
                 let stream = try await manager.streamEvents(for: run)
                 var responseID: String?
                 for try await event in stream {
@@ -112,6 +113,7 @@ final class AgentWorkspaceState: ObservableObject {
                     }
                     if let detail = event.detail, detail.hasPrefix("session_id=") {
                         responseID = String(detail.dropFirst("session_id=".count))
+                        sessionIDs[profile.id] = responseID
                     }
                 }
                 if let responseID {
