@@ -63,7 +63,7 @@ import time
 
 if __package__:
     from .core.schema import SCHEMA
-    from .core.storage import connect, write_audit
+    from .core.context import HubContext
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
 
@@ -75,7 +75,7 @@ if __package__:
     )
 else:
     from core.schema import SCHEMA
-    from core.storage import connect, write_audit
+    from core.context import HubContext
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
 
@@ -121,18 +121,25 @@ def _now():
     return time.time() + TIME_OFFSET
 
 
-_lock = threading.Lock()
+_DEFAULT_CONTEXT = HubContext(
+    base_dir=BASE,
+    db_path=DB_PATH,
+    attachment_dir=ATTACH_DIR,
+    lock=threading.Lock(),
+    clock=time.time,
+)
+_lock = _DEFAULT_CONTEXT.lock
 
 
 def db():
-    return connect(DB_PATH)
+    return _DEFAULT_CONTEXT.connect()
 
 
 
 
 
 def audit(conn, actor, action, detail=""):
-    write_audit(conn, actor, action, detail, timestamp=time.time())
+    _DEFAULT_CONTEXT.audit(conn, actor, action, detail)
 
 
 # ---------------- 附件通道（staging39 / D18） ----------------
