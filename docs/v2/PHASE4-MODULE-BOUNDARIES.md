@@ -104,3 +104,35 @@ Phase 4 不应直接拆 5,000 行 Hub。第一项建议是：
 5. CI 全绿后，再抽取 `HubContext`。
 
 这一步改动面小，能验证模块边界和测试方法，为后续拆分建立样板。
+
+
+## 7. 执行记录（2026-11-21）
+
+Phase 4 已开始执行，当前完成的是“纯策略层提取”样板，尚未进入 HubContext 与领域工具迁移。
+
+### 已落地
+
+- 新增 `hub/core/policy.py`，独立承载无数据库副作用的策略原语：
+  - 动作标记识别、访问模式归一、失败退避、执行体固定标记；
+  - URL/域名规范化、域名覆盖关系、任务文本 host 提取；
+  - 审批规则候选优先级、出口规则最具体匹配选择。
+- `hub.py` 保留原函数名作为兼容导入；数据库查询、审计写入和权限闸门仍留在服务层。
+- 新增 `hub/test_policy.py`，对纯策略和 Hub 数据库适配器分别测试；原有 `hub/test_policy_helpers.py` 保留。
+- CI 增加纯策略测试；`run-all-suites.sh` 在每个临时隔离套件中同时复制 Hub 的 `core/` 包，历史 staging 源目录不变。
+- 修复审查发现的两个部署问题：恢复 `hub/publish-url.sh` 可执行位；将 URL 校验重新内置到单文件 `runtime/pack-agent.mjs`，并增加独立安装回归测试。
+
+### 当前验证状态
+
+- Python 编译、Hub 单元测试：已通过最近一次 CI。
+- Runtime 语法与单元测试：已通过。
+- macOS App 构建、Swift 单元测试：已通过最近一次 CI。
+- 完整默认 staging 回归：正在由最新提交重新验证；此前失败已定位为隔离测试目录漏复制 `hub/core/`，不是历史 staging 源码损坏。
+- 用户 Mac 的 LaunchAgent、Keychain、DMG 和真实登录态验收：尚未开始，继续遵守“仓库整改完成后再跑本机”的顺序。
+
+### 下一步（未完成）
+
+1. 再跑通完整 staging 回归，确认新模块在全部隔离套件中可导入。
+2. 建立 MCP 工具名称/参数 Schema 快照与 SQLite schema/迁移快照。
+3. 建立显式 `HubContext`，逐步移除对全局 DB/config/actor/audit 的隐式依赖。
+4. 按 members/rooms、tasks/approvals/rules、attachments/memory/skills、desktop/runtime 顺序逐域迁移。
+5. 完成 Hub 拆分后，再拆 Swift Core、Transport、Store 与 Feature UI。
