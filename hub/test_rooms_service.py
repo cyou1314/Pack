@@ -109,6 +109,56 @@ class RoomServiceTests(unittest.TestCase):
                 hub.SUMMARY_SECTIONS,
             )
 
+    def test_room_write_services_create_rename_archive_and_summary(self):
+        created = rooms.create_room(self.context, {"name":"dispatcher"}, "work-room")
+        self.assertEqual(created["name"], "work-room")
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            rooms.create_room(self.context, {"name":"dispatcher"}, "work-room")
+        renamed = rooms.rename_room(
+            self.context, {"name":"dispatcher"}, "work-room", "delivery-room"
+        )
+        self.assertEqual(renamed["name"], "delivery-room")
+        with self.assertRaisesRegex(ValueError, "main room"):
+            rooms.rename_room(
+                self.context, {"name":"dispatcher"}, "pack-main", "renamed-main"
+            )
+
+        archived = rooms.archive_room(
+            self.context, {"name":"dispatcher"}, "delivery-room", True
+        )
+        self.assertTrue(archived["archived"])
+        restored = rooms.archive_room(
+            self.context, {"name":"dispatcher"}, "delivery-room", False
+        )
+        self.assertFalse(restored["archived"])
+        with self.assertRaisesRegex(ValueError, "main room"):
+            rooms.archive_room(self.context, {"name":"dispatcher"}, "pack-main", True)
+
+        summary = json.dumps(
+            {"decided":["done"],"in_progress":[],"pending":["next"]},
+            ensure_ascii=False,
+        )
+        saved = rooms.set_room_summary(
+            self.context,
+            {"name":"dispatcher"},
+            "delivery-room",
+            summary,
+            hub._validate_summary,
+        )
+        self.assertEqual(saved["summary"]["decided"], ["done"])
+        with self.assertRaises(ValueError):
+            rooms.set_room_summary(
+                self.context,
+                {"name":"dispatcher"},
+                "delivery-room",
+                "{invalid json",
+                hub._validate_summary,
+            )
+        reread = rooms.get_room_summary(
+            self.context, {"kind":"internal"}, "delivery-room", hub.SUMMARY_SECTIONS
+        )
+        self.assertEqual(reread["summary"]["decided"], ["done"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

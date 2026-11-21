@@ -1602,10 +1602,18 @@ def build_server(context: HubContext | None = None):
         from .services.rooms import list_rooms as _list_rooms
         from .services.rooms import get_room_summary as _get_room_summary
         from .services.rooms import read_new_messages as _read_new_messages
+        from .services.rooms import create_room as _create_room
+        from .services.rooms import rename_room as _rename_room
+        from .services.rooms import archive_room as _archive_room
+        from .services.rooms import set_room_summary as _set_room_summary
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
         from services.rooms import read_new_messages as _read_new_messages
+        from services.rooms import create_room as _create_room
+        from services.rooms import rename_room as _rename_room
+        from services.rooms import archive_room as _archive_room
+        from services.rooms import set_room_summary as _set_room_summary
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -2601,54 +2609,14 @@ def build_server(context: HubContext | None = None):
         令牌全房通用。"""
         me = authenticate()
         require(me, "dispatcher")
-        if not name:
-            raise ValueError("room name must not be empty")
-        if len(name) > 40:
-            raise ValueError(f"room name too long: {len(name)} > 40")
-        if any(ch.isspace() for ch in name) or "/" in name or "\\" in name:
-            raise ValueError(f"room name must not contain whitespace or slashes: {name!r}")
-        conn = db()
-        try:
-            cur = conn.execute("INSERT INTO rooms(name,created_at) VALUES(?,?)",
-                               (name, context.clock()))
-            rid = cur.lastrowid
-            audit(conn, me["name"], "room_create", f"room {rid}: {name}")
-            conn.commit()
-        except sqlite3.IntegrityError:
-            conn.close()
-            raise ValueError(f"room already exists: {name}")
-        conn.close()
-        return {"room_id": rid, "name": name}
-
+        return _create_room(context, me, name)
     @mcp.tool
     def room_rename(room: str, new_name: str) -> dict:
         """调度员给房间改名。new_name 校验与 room_create 同口径（非空、≤40、
         不含空白与斜杠、不重名）。主房间 pack-main 不可改名（App 与转换器以此为锚）。"""
         me = authenticate()
         require(me, "dispatcher")
-        if room == "pack-main":
-            raise ValueError("the main room cannot be renamed")
-        if not new_name:
-            raise ValueError("room name must not be empty")
-        if len(new_name) > 40:
-            raise ValueError(f"room name too long: {len(new_name)} > 40")
-        if any(ch.isspace() for ch in new_name) or "/" in new_name or "\\" in new_name:
-            raise ValueError(f"room name must not contain whitespace or slashes: {new_name!r}")
-        conn = db()
-        try:
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            try:
-                conn.execute("UPDATE rooms SET name=? WHERE id=?", (new_name, r["id"]))
-            except sqlite3.IntegrityError:
-                raise ValueError(f"room already exists: {new_name}")
-            audit(conn, me["name"], "room_rename", f"room {r['id']}: {room} -> {new_name}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"room_id": r["id"], "name": new_name}
-
+        return _rename_room(context, me, room, new_name)
     @mcp.tool
     def room_archive(room: str, archived: bool = True) -> dict:
         """调度员归档/恢复房间。归档只是列表可见性状态：room_list 默认不返回
@@ -2656,22 +2624,7 @@ def build_server(context: HubContext | None = None):
         主房间 pack-main 不可归档。"""
         me = authenticate()
         require(me, "dispatcher")
-        if room == "pack-main":
-            raise ValueError("the main room cannot be archived")
-        conn = db()
-        try:
-            r = conn.execute("SELECT id, archived_at FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            conn.execute("UPDATE rooms SET archived_at=? WHERE id=?",
-                         (_now() if archived else None, r["id"]))
-            audit(conn, me["name"], "room_archive" if archived else "room_unarchive",
-                  f"room {r['id']}: {room}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"room_id": r["id"], "name": room, "archived": bool(archived)}
-
+        return _archive_room(context, me, room, archived)
     @mcp.tool
     def room_list(include_archived: bool = False) -> dict:
         """列出房间（id、name、created_at、archived）及每房最新消息 id
@@ -2697,26 +2650,7 @@ def build_server(context: HubContext | None = None):
         不合法整笔拒绝、原摘要不变。"""
         me = authenticate()
         require(me, "dispatcher")
-        data = _validate_summary(summary)
-        conn = db()
-        try:
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            now = _now()
-            conn.execute(
-                "INSERT INTO room_summaries(room_id,data,updated_at,updated_by) VALUES(?,?,?,?)"
-                " ON CONFLICT(room_id) DO UPDATE SET data=excluded.data,"
-                " updated_at=excluded.updated_at, updated_by=excluded.updated_by",
-                (r["id"], json.dumps(data, ensure_ascii=False), now, me["name"]))
-            audit(conn, me["name"], "room_summary_set",
-                  f"room {r['id']}: {room} decided={len(data['decided'])}"
-                  f" in_progress={len(data['in_progress'])} pending={len(data['pending'])}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"room": room, "summary": data, "updated_at": now, "updated_by": me["name"]}
-
+        return _set_room_summary(context, me, room, summary, _validate_summary)
     @mcp.tool
     def room_read_new(room: str, since_id: int = 0, limit: int = 50,
                       tail: bool = False) -> dict:

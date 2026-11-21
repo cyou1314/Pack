@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any
 
 
@@ -132,3 +133,119 @@ def read_new_messages(context, me, room: str, since_id: int = 0,
             "attachments": amap.get(x["id"], []),
         })
     return {"messages": out}
+
+
+
+def _validate_room_name(name: str) -> None:
+    if not name:
+        raise ValueError("room name must not be empty")
+    if len(name) > 40:
+        raise ValueError(f"room name too long: {len(name)} > 40")
+    if any(char.isspace() for char in name) or "/" in name or "\\" in name:
+        raise ValueError(f"room name must not contain whitespace or slashes: {name!r}")
+
+
+def create_room(context, member, name: str) -> dict[str, Any]:
+    """Create a room and write its audit record in the same transaction."""
+    _validate_room_name(name)
+    connection = context.connect()
+    try:
+        cursor = connection.execute(
+            "INSERT INTO rooms(name,created_at) VALUES(?,?)",
+            (name, context.clock()),
+        )
+        room_id = cursor.lastrowid
+        context.audit(connection, member["name"], "room_create", f"room {room_id}: {name}")
+        connection.commit()
+    except sqlite3.IntegrityError as error:
+        raise ValueError(f"room already exists: {name}") from error
+    finally:
+        connection.close()
+    return {"room_id": room_id, "name": name}
+
+
+def rename_room(context, member, room: str, new_name: str) -> dict[str, Any]:
+    """Rename a non-main room and audit the change."""
+    if room == "pack-main":
+        raise ValueError("the main room cannot be renamed")
+    _validate_room_name(new_name)
+    connection = context.connect()
+    try:
+        row = connection.execute(
+            "SELECT id FROM rooms WHERE name=?", (room,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"no such room: {room}")
+        try:
+            connection.execute(
+                "UPDATE rooms SET name=? WHERE id=?", (new_name, row["id"])
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValueError(f"room already exists: {new_name}") from error
+        context.audit(
+            connection,
+            member["name"],
+            "room_rename",
+            f"room {row['id']}: {room} -> {new_name}",
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return {"room_id": row["id"], "name": new_name}
+
+
+def archive_room(context, member, room: str, archived: bool = True) -> dict[str, Any]:
+    """Archive or restore a room without deleting its messages or tasks."""
+    if room == "pack-main":
+        raise ValueError("the main room cannot be archived")
+    connection = context.connect()
+    try:
+        row = connection.execute(
+            "SELECT id FROM rooms WHERE name=?", (room,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"no such room: {room}")
+        connection.execute(
+            "UPDATE rooms SET archived_at=? WHERE id=?",
+            (context.now() if archived else None, row["id"]),
+        )
+        context.audit(
+            connection,
+            member["name"],
+            "room_archive" if archived else "room_unarchive",
+            f"room {row['id']}: {room}",
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return {"room_id": row["id"], "name": room, "archived": bool(archived)}
+
+
+def set_room_summary(context, member, room: str, summary: str, validate_summary) -> dict[str, Any]:
+    """Validate and atomically replace the room summary."""
+    data = validate_summary(summary)
+    connection = context.connect()
+    try:
+        row = connection.execute(
+            "SELECT id FROM rooms WHERE name=?", (room,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"no such room: {room}")
+        now = context.now()
+        connection.execute(
+            "INSERT INTO room_summaries(room_id,data,updated_at,updated_by) VALUES(?,?,?,?)"
+            " ON CONFLICT(room_id) DO UPDATE SET data=excluded.data,"
+            " updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+            (row["id"], json.dumps(data, ensure_ascii=False), now, member["name"]),
+        )
+        context.audit(
+            connection,
+            member["name"],
+            "room_summary_set",
+            f"room {row['id']}: {room} decided={len(data['decided'])}"
+            f" in_progress={len(data['in_progress'])} pending={len(data['pending'])}",
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return {"room": room, "summary": data, "updated_at": now, "updated_by": member["name"]}
