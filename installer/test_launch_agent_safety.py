@@ -37,7 +37,7 @@ class InstallerPathSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "refusing to overwrite"):
                 manager.require_absent(link, "test path")
 
-    def test_owned_agent_plist_requires_expected_label_and_program_root(self):
+    def test_owned_agent_plist_requires_exact_entry_points(self):
         with tempfile.TemporaryDirectory(prefix="pack-agent-plist-") as directory:
             root = Path(directory)
             hub = root / "local-hub"
@@ -50,16 +50,33 @@ class InstallerPathSafetyTests(unittest.TestCase):
                 "backup": "com.pack.local-backup",
                 "engine": "com.pack.local-engine",
             }
-            plist = root / "agent.plist"
-            document = {
-                "Label": labels["hub"],
-                "ProgramArguments": [str(hub / ".venv/bin/python"), str(hub / "hub.py")],
+            expected_arguments = {
+                "hub": [str(hub / "python/bin/python3"), str(hub / "hub.py"), "serve"],
+                "watch": [str(hub / "python/bin/python3"), str(hub / "room_watch.py")],
+                "backup": ["/bin/bash", str(hub / "backup-db.sh")],
+                "engine": [
+                    str(engine / "Electron.app/Contents/MacOS/Electron"),
+                    str(engine / "app"),
+                ],
             }
-            plist.write_bytes(plistlib.dumps(document))
-
             with patch.object(manager, "hub", hub), patch.object(manager, "engine", engine), patch.object(manager, "labels", labels):
-                self.assertEqual(manager.read_owned_agent_plist("hub", plist)["Label"], labels["hub"])
+                for kind, arguments in expected_arguments.items():
+                    with self.subTest(kind=kind):
+                        plist = root / (kind + ".plist")
+                        plist.write_bytes(plistlib.dumps({
+                            "Label": labels[kind],
+                            "ProgramArguments": arguments,
+                        }))
+                        self.assertEqual(
+                            manager.read_owned_agent_plist(kind, plist)["ProgramArguments"],
+                            arguments,
+                        )
 
+                plist = root / "hub.plist"
+                document = {
+                    "Label": labels["hub"],
+                    "ProgramArguments": expected_arguments["hub"].copy(),
+                }
                 document["ProgramArguments"][1] = str(root / "unrelated" / "hub.py")
                 plist.write_bytes(plistlib.dumps(document))
                 with self.assertRaisesRegex(SystemExit, "outside the Pack service directory"):
@@ -94,6 +111,10 @@ class LaunchAgentTemplateTests(unittest.TestCase):
                 self.assertIn('USER_ID="$(id -u)"', source)
                 self.assertNotIn('UID="$(id -u)"', source)
 
+    def test_manager_keeps_pack_data_root_private(self):
+        source = (ROOT / "installer" / "manager.py").read_text(encoding="utf-8")
+        self.assertIn("base.chmod(0o700)", source)
+
     def test_pack_runtime_launch_agent_uses_private_log_umask(self):
         document = plistlib.loads((ROOT / "runtime" / "com.muse.pack-runtime.plist").read_bytes())
         self.assertEqual(document.get("Label"), "com.muse.pack-runtime")
@@ -109,6 +130,7 @@ class LaunchAgentTemplateTests(unittest.TestCase):
         source = (ROOT / "local" / "uninstall-local.sh").read_text(encoding="utf-8")
         self.assertIn('[[ ! -L "$path" ]] || fail', source)
         self.assertIn('plutil -extract Label raw -o - "$plist"', source)
+        self.assertIn("ProgramArguments:0", source)
         self.assertIn("ProgramArguments:1", source)
         self.assertLess(source.index("plutil -extract Label"), source.index("launchctl bootout"))
         self.assertIn('including pack.db, attachments and backups', source)
