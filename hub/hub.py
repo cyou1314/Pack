@@ -117,15 +117,14 @@ TIME_OFFSET = float(os.environ.get("PACK_HUB_TIME_OFFSET", "0"))
 
 
 def _now():
-    return time.time() + TIME_OFFSET
-
-
+    return _DEFAULT_CONTEXT.now()
 _DEFAULT_CONTEXT = HubContext(
     base_dir=BASE,
     db_path=DB_PATH,
     attachment_dir=ATTACH_DIR,
     lock=threading.Lock(),
     clock=time.time,
+    business_clock=lambda: time.time() + TIME_OFFSET,
 )
 _lock = _DEFAULT_CONTEXT.lock
 
@@ -155,10 +154,13 @@ def _sniff_image_mime(data: bytes):
     return None
 
 
-def _attach_path(sha256: str, mime: str) -> str:
-    return os.path.join(ATTACH_DIR, sha256[:2], sha256 + "." + ATTACH_MIME_EXT[mime])
-
-
+def _attach_path(sha256: str, mime: str, context: HubContext | None = None) -> str:
+    context = context or _DEFAULT_CONTEXT
+    return os.path.join(
+        context.attachment_dir,
+        sha256[:2],
+        sha256 + "." + ATTACH_MIME_EXT[mime],
+    )
 # ---------------- Run 层防重跑（SPEC 附录 G.1 第 4 条） ----------------
 # 任务层已有原子认领+租约；本层补的是「同一次执行只能跑一份」：
 # 执行体认领后、动手前 run_start 登记，拿到按任务单调递增的 fence 号；
@@ -167,21 +169,19 @@ def _attach_path(sha256: str, mime: str) -> str:
 # outcome 分别为 completed/failed/aborted、completed、blocked、cancelled、reaped。
 # Attempt 台账 = runs 表本体，run_list 按 fence 逐次可查。与认领/租约互补，不替代。
 
-def _close_run(conn, task_id, outcome, actor, detail=""):
-    """关闭某任务当前 running 的 run 记录并写 run_close 审计。
-    没有 running 记录时返回 None（不报错，供任务生命周期钩子静默调用）。"""
+def _close_run(conn, task_id, outcome, actor, detail="", context: HubContext | None = None):
+    """Close the current running record and audit it in the same transaction."""
+    context = context or _DEFAULT_CONTEXT
     row = conn.execute(
         "SELECT * FROM runs WHERE task_id=? AND status='running'", (task_id,)).fetchone()
     if not row:
         return None
     conn.execute("UPDATE runs SET status='closed', ended_at=?, outcome=? WHERE id=?",
-                 (time.time(), outcome, row["id"]))
-    audit(conn, actor, "run_close",
-          f"task {task_id} run {row['id']} fence={row['fence']} outcome={outcome}"
-          + (f" {detail}" if detail else ""))
+                 (context.clock(), outcome, row["id"]))
+    context.audit(conn, actor, "run_close",
+                  f"task {task_id} run {row['id']} fence={row['fence']} outcome={outcome}"
+                  + (f" {detail}" if detail else ""))
     return row
-
-
 # ---------------- 批准规则库（SPEC 附录 G.1 第 1 条） ----------------
 # 待批动作在现状里的标识：任务。运行时认领带【需批准】标记的任务后，
 # 经 room_post(kind='approval_request', body='任务#N「标题」需要群主批准…') 发起，
@@ -202,50 +202,42 @@ def rule_eval(conn, action, target):
     return None
 
 
-def _approval_gate(conn, room_id, msg_id, body, poster=None):
-    """approval_request 落库后的规则求值（room_post 调用，同一事务内）。
-    命中 allow/block：以调度员身份按既有决议格式留决议消息（运行时/App 立刻认），
-    另以 actor='rule-engine' 写审计区分真人决议；未命中：不做任何事，走原有弹问流程。
-    顺带把消息的 task_id 补上（原 room_post 不写，App 批准中心按 task_id 过滤待批项）。"""
-    m = TASK_REF_RE.search(body or "")
-    if not m:
+def _approval_gate(conn, room_id, msg_id, body, poster=None,
+                   context: HubContext | None = None):
+    """Evaluate approval rules and write the automatic decision in the caller's transaction."""
+    context = context or _DEFAULT_CONTEXT
+    match = TASK_REF_RE.search(body or "")
+    if not match:
         return {}
-    tid = int(m.group(1))
-    t = conn.execute(
+    task_id = int(match.group(1))
+    task = conn.execute(
         """SELECT t.title, t.assignee, mb.name AS assignee_name FROM tasks t
-           LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (tid,)).fetchone()
-    if not t:
+           LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (task_id,)).fetchone()
+    if not task:
         return {}
-    conn.execute("UPDATE messages SET task_id=? WHERE id=?", (tid, msg_id))
-    # 批准门只认持有人本人（或调度员代发）的请求：非持有人冒发
-    # approval_request 不得触发规则自动决议（staging14 复检 C7 实证）。
-    # 消息本身照常落库，只是不求值——决议权不能被房间里的第三方行使。
+    conn.execute("UPDATE messages SET task_id=? WHERE id=?", (task_id, msg_id))
     if poster is not None and poster["role"] != "dispatcher" \
-            and poster["id"] != t["assignee"]:
+            and poster["id"] != task["assignee"]:
         return {}
-    action = action_tag(t["title"])
-    target = t["assignee_name"] or ""
+    action = action_tag(task["title"])
+    target = task["assignee_name"] or ""
     rule = rule_eval(conn, action, target)
     if not rule:
         return {}
-    disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
-    if not disp:
+    dispatcher = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+    if not dispatcher:
         return {}
     tag = f"{action or '无标记'}→{target or '任意成员'} {rule['effect']}，规则#{rule['id']}"
     if rule["effect"] == "allow":
-        text, act = f"批准 任务#{tid}（规则库自动通过：{tag}）", "approval_auto_allow"
+        message, action_name = f"批准 任务#{task_id}（规则库自动通过：{tag}）", "approval_auto_allow"
     else:
-        text, act = f"拒绝 任务#{tid}（规则库自动拒绝：{tag}）", "approval_auto_block"
-    # 决议消息以 kind='decision' 落库（不是 chat）：message_delete/edit 只认
-    # kind='chat'，决议因此不可被作者软删/编辑抹除——否则 _approval_state 会
-    # 误判未决议、可重新 filing（staging15 批准链完整性修复）。
+        message, action_name = f"拒绝 任务#{task_id}（规则库自动拒绝：{tag}）", "approval_auto_block"
     conn.execute(
         "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'decision',?,?,?)",
-        (room_id, disp["id"], text, tid, time.time()))
-    audit(conn, "rule-engine", act, f"task {tid} rule#{rule['id']} {action}->{target}")
-    return {"auto_decision": rule["effect"], "rule_id": rule["id"], "task_id": tid}
-
-
+        (room_id, dispatcher["id"], message, task_id, context.clock()))
+    context.audit(conn, "rule-engine", action_name,
+                  f"task {task_id} rule#{rule['id']} {action}->{target}")
+    return {"auto_decision": rule["effect"], "rule_id": rule["id"], "task_id": task_id}
 # ---------------- 数据出口管制·中枢判定（SPEC 附录 G.1 第 3 条） ----------------
 # 防线不放在识别注入文本，放在管出口：成员抓任何 http(s) 前先经 egress_check
 # 判定。本轮中枢只落策略与判定，执行体按结论行事（ask 就走 approval_request
@@ -488,32 +480,33 @@ def _mem_validate_scope_key(scope, key):
         _mem_err("invalid_key", f"{scope} 的 key 恒为 \"\"（单行全文）", key=key)
 
 
-def _mem_denied(conn, me, target, scope, what=""):
-    """权限拒绝统一口：先写 memory_access_denied 审计（只记元数据）再抛 forbidden。"""
-    audit(conn, me["name"], "memory_access_denied",
-          json.dumps({"caller": me["name"], "target": target, "scope": scope,
-                      "what": what}, ensure_ascii=False))
+def _mem_denied(conn, me, target, scope, what="", context: HubContext | None = None):
+    """Audit memory access denial before raising the established forbidden error."""
+    context = context or _DEFAULT_CONTEXT
+    context.audit(
+        conn,
+        me["name"],
+        "memory_access_denied",
+        json.dumps(
+            {"caller": me["name"], "target": target, "scope": scope, "what": what},
+            ensure_ascii=False,
+        ),
+    )
     conn.commit()
     _mem_err("forbidden", "无权进行此记忆操作（跨成员仅限调度员、room-shared 仅调度员可写、"
-                          "回滚与 include_text 仅限调度员）")
-
-
-def _mem_target(conn, me, scope, member):
-    """解析目标成员名：默认 = 调用者本人；member 指定他人仅限调度员。
-    room-shared 恒返回保留名（member 入参对该层无意义、忽略）。
-    跨成员尝试 → 审计 + forbidden；调度员指定的成员不存在 → not_found。"""
+                         "回滚与 include_text 仅限调度员）")
+def _mem_target(conn, me, scope, member, context: HubContext | None = None):
+    """Resolve a memory target and audit unauthorized cross-member attempts."""
     if scope == "room-shared":
         return MEM_ROOM_MEMBER
     target = member or me["name"]
     if target != me["name"] and me["role"] != "dispatcher":
-        _mem_denied(conn, me, target, scope, "cross-member")
+        _mem_denied(conn, me, target, scope, "cross-member", context=context)
     if member and me["role"] == "dispatcher":
         row = conn.execute("SELECT id FROM members WHERE name=?", (member,)).fetchone()
         if not row:
             _mem_err("not_found", f"没有这个成员：{member}", member=member)
     return target
-
-
 def _mem_origin(me, origin):
     """origin 定死规则：调度员调用一律服务端强制 dispatcher（代写/自写同口径，
     忽略入参）；成员只能 self / external，自报 dispatcher → invalid_argument。"""
@@ -549,11 +542,13 @@ def _mem_validate_refs(source_refs):
     return out
 
 
-def _mem_append_version(conn, target, scope, key, text, author, origin, refs):
+def _mem_append_version(conn, target, scope, key, text, author, origin, refs,
+                        context: HubContext | None = None):
     """同事务落版 + 更新当前值：先 INSERT 版本行，再 UPSERT 当前值指向新行。
     返回 (version_id, size, now)。调用方负责限额检查、审计与 commit。"""
+    context = context or _DEFAULT_CONTEXT
     size = _mem_measure(scope, text)
-    now = time.time()
+    now = context.clock()
     cur = conn.execute(
         """INSERT INTO member_memory_versions(member,scope,key,text,author,origin,
            source_refs,size,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -800,8 +795,9 @@ def init(context: HubContext | None = None):
 
 # ---------------- auth ----------------
 
-def authenticate():
-    """从 HTTP Authorization 头解析身份，返回 member 行 dict 或 None。"""
+def authenticate(context: HubContext | None = None):
+    """Resolve the current Bearer identity using the supplied Hub context."""
+    context = context or _DEFAULT_CONTEXT
     try:
         from fastmcp.server.dependencies import get_http_headers
         headers = get_http_headers(include={"authorization"})
@@ -811,10 +807,8 @@ def authenticate():
     if not auth.lower().startswith("bearer "):
         return None
     tok = auth[7:].strip()
-    conn = db()
+    conn = context.connect()
     row = conn.execute("SELECT * FROM members WHERE token_hash=?", (hash_token(tok),)).fetchone()
-    # staging51 总开关：external_enabled 关时 external 成员 token 一律
-    # 不认（与已移除同等对待），Muse 成员不受影响（件二总开关口径）。
     ext_blocked = False
     if row and row["removed_at"] is None \
             and "kind" in row.keys() and (row["kind"] or "") == "external":
@@ -825,8 +819,6 @@ def authenticate():
     if ext_blocked:
         return None
     return dict(row) if row else None
-
-
 def require(me, role=None):
     if me is None:
         raise ValueError("unauthorized: missing or bad token")
@@ -859,10 +851,12 @@ QUOTA_RESET_FUTURE_TOLERANCE = 40 * 86400
 QUOTA_ANOMALY_JUMP = 30
 
 
-def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
+def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left,
+                           context: HubContext | None = None):
     """member_quota_report 入参校验（自报通道比调度员通道严：自报值会
     直接驱动接力/巡检判断，荒谬值必须整笔拒绝、库不落任何字段）。
     返回问题列表，空 = 合法。"""
+    context = context or _DEFAULT_CONTEXT
     problems = []
     if week_used_pct is None and week_reset_at is None and extra_tokens_left is None:
         problems.append("nothing to report: give at least one quota field")
@@ -876,7 +870,7 @@ def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
     if week_reset_at is not None:
         try:
             ts = float(week_reset_at)
-            now = _now()
+            now = context.now()
             if ts != ts or not (now - QUOTA_RESET_PAST_TOLERANCE <= ts
                                 <= now + QUOTA_RESET_FUTURE_TOLERANCE):
                 problems.append(f"week_reset_at outside sane range: {week_reset_at}")
@@ -892,11 +886,12 @@ def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
 
 
 def _apply_quota(conn, member_id, week_used_pct, week_reset_at, extra_tokens_left,
-                 source):
+                 source, context: HubContext | None = None):
     """把额度字段写入 members 并刷新 quota_updated_at 与 quota_source
     （member_quota_set 与 member_quota_report 共用；校验由各自调用方先行
     完成）。source ∈ self/dispatcher/fact，记最近一次额度写入的来源。
     返回更新了的字段名列表（不含 quota_updated_at/quota_source 本身）。"""
+    context = context or _DEFAULT_CONTEXT
     sets, args, fields = [], [], []
     if week_used_pct is not None:
         sets.append("quota_week_used_pct=?"); args.append(float(week_used_pct))
@@ -907,37 +902,30 @@ def _apply_quota(conn, member_id, week_used_pct, week_reset_at, extra_tokens_lef
     if extra_tokens_left is not None:
         sets.append("quota_extra_left=?"); args.append(int(extra_tokens_left))
         fields.append("quota_extra_left")
-    sets.append("quota_updated_at=?"); args.append(_now())
+    sets.append("quota_updated_at=?"); args.append(context.now())
     sets.append("quota_source=?"); args.append(source)
     args.append(member_id)
     conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE id=?", args)
     return fields
 
 
-def _auto_relay(conn, t, from_name, reason_label):
-    """尝试把任务自动接力给一名合格成员，走 §4.8 留痕转交的账（pending 转交行
-    + assignee 换人 + 令牌/租约置空，接收方 task_accept_transfer 才算接手）。
-    调用者负责事务与 _lock，并保证任务状态适合转交（blocked，或刚被 sweeper
-    回池的 open）。返回接手成员名；不适用/无合格候选返回 None、任务不变。
-    合格口径（保守）：role=member 且非 owner、非原持有人；心跳新鲜；额度数据
-    新鲜且周已用 <90%（数据缺失/过期 = 不合格，未知不当可用）；标题带执行体
-    标记的任务执行体钉死、不接力；转交链未达 TRANSFER_CAP；无既有 pending
-    转交。多名合格时取周已用最低者。staging51：候选排除 kind=external
-    （外部成员不参与自动接力，件二）；钉死判定改走公用 helper
-    _is_executor_pinned（标题开头或正文包含，四处统一口径）。"""
-    if _is_executor_pinned(t["title"], t["body"]):
+def _auto_relay(conn, task, from_name, reason_label,
+                context: HubContext | None = None):
+    """Try a conservative automatic relay while the caller owns the transaction/lock."""
+    context = context or _DEFAULT_CONTEXT
+    if _is_executor_pinned(task["title"], task["body"]):
         return None
     chain = conn.execute("SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=?",
-                         (t["id"],)).fetchone()["n"]
+                         (task["id"],)).fetchone()["n"]
     if chain >= TRANSFER_CAP:
         return None
-    pend = conn.execute(
+    pending = conn.execute(
         "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=? AND status='pending'",
-        (t["id"],)).fetchone()["n"]
-    if pend:
+        (task["id"],)).fetchone()["n"]
+    if pending:
         return None
-    now = _now()
-    cand = conn.execute(
+    now = context.now()
+    candidate = conn.execute(
         """SELECT * FROM members WHERE role='member' AND removed_at IS NULL AND (kind IS NULL OR kind<>'external') AND name<>? AND name<>'owner'
              AND last_heartbeat IS NOT NULL AND last_heartbeat>=?
              AND quota_updated_at IS NOT NULL AND quota_updated_at>=?
@@ -945,29 +933,27 @@ def _auto_relay(conn, t, from_name, reason_label):
            ORDER BY quota_week_used_pct ASC LIMIT 1""",
         (from_name, now - RELAY_HEARTBEAT_FRESH, now - RELAY_QUOTA_FRESH,
          RELAY_QUOTA_HEADROOM)).fetchone()
-    if not cand:
+    if not candidate:
         return None
     conn.execute(
         "INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,expires_at)"
         " VALUES(?,?,?,?,?,?,?,?)",
-        (t["id"], from_name, cand["name"], f"auto-relay: {reason_label}", "auto-relay",
+        (task["id"], from_name, candidate["name"], f"auto-relay: {reason_label}", "auto-relay",
          now, "pending", now + TRANSFER_ACCEPT_TTL))
     conn.execute(
         "UPDATE tasks SET status='claimed', assignee=?, claim_token=NULL,"
         " lease_expires=NULL, next_claim_at=NULL, sched_at=NULL, updated_at=? WHERE id=?",
-        (cand["id"], now, t["id"]))
-    disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+        (candidate["id"], now, task["id"]))
+    dispatcher = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
     conn.execute(
         "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'chat',?,?,?)",
-        (t["room_id"], disp["id"] if disp else cand["id"],
-         f"任务#{t['id']} 已自动接力：{from_name} {reason_label} → {cand['name']} 接手"
+        (task["room_id"], dispatcher["id"] if dispatcher else candidate["id"],
+         f"任务#{task['id']} 已自动接力：{from_name} {reason_label} → {candidate['name']} 接手"
          f"（第 {chain + 1} 棒），等其接受",
-         t["id"], now))
-    audit(conn, "auto-relay", "task_auto_relay",
-          f"task {t['id']} {from_name}->{cand['name']} reason={reason_label} chain={chain + 1}")
-    return cand["name"]
-
-
+         task["id"], now))
+    context.audit(conn, "auto-relay", "task_auto_relay",
+                  f"task {task['id']} {from_name}->{candidate['name']} reason={reason_label} chain={chain + 1}")
+    return candidate["name"]
 # ---------------- 桌面锁（多成员同机互斥，2026-11-16 群主拍板） ----------------
 # 一台 Mac 只有一个屏幕、一个鼠标指针、一个键盘焦点：涉及 GUI 操控的
 # 任务动手前必须先 desktop_acquire 拿到桌面锁，同一时刻只许一个任务
@@ -985,31 +971,29 @@ def _desktop_snapshot(conn):
     return {"held": False, "holder": None, "task_id": None, "since": None}
 
 
-def _desktop_release_for_task(conn, task_id, actor, reason):
-    """任务离开持有人时顺手放锁（在调用方的同一事务内）；只放本任务
-    正持有的锁，不是本任务的一律不动。放了返回 True 并留审计。"""
+def _desktop_release_for_task(conn, task_id, actor, reason,
+                              context: HubContext | None = None):
+    """Release the desktop lock for this task in the caller's transaction."""
+    context = context or _DEFAULT_CONTEXT
     row = conn.execute(
         "SELECT holder FROM desktop_lock WHERE id=1 AND task_id=?",
         (task_id,)).fetchone()
     if row and row["holder"]:
         conn.execute(
             "UPDATE desktop_lock SET holder=NULL, task_id=NULL, acquired_at=NULL WHERE id=1")
-        audit(conn, actor, "desktop_auto_release",
-              f"task {task_id} reason={reason} holder={row['holder']}")
+        context.audit(conn, actor, "desktop_auto_release",
+                      f"task {task_id} reason={reason} holder={row['holder']}")
         return True
     return False
-
-
-def _week_start_cst(now=None):
-    """本周一 00:00（UTC+8，无夏令时）的 epoch 秒。"""
+def _week_start_cst(now=None, context: HubContext | None = None):
+    """Return Monday 00:00 in UTC+8 for the supplied or context wall-clock time."""
     import datetime as _dt
+    context = context or _DEFAULT_CONTEXT
     tz = _dt.timezone(_dt.timedelta(hours=8))
-    cur = _dt.datetime.fromtimestamp(now if now is not None else time.time(), tz)
-    monday = (cur - _dt.timedelta(days=cur.weekday())).replace(
+    current = _dt.datetime.fromtimestamp(now if now is not None else context.clock(), tz)
+    monday = (current - _dt.timedelta(days=current.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0)
     return monday.timestamp()
-
-
 def sweep_once():
     now = _now()
     conn = db()
@@ -1351,21 +1335,18 @@ def _external_enabled(conn):
     return not (s and s["value"] == "0")
 
 
-def _ext_check(me, tool_name):
-    """工具面白名单闸门（require 层）：external 调用名单外工具一律
-    拒绝并写审计。由 build_server 的工具包装器在每个工具入口调用。"""
+def _ext_check(me, tool_name, context: HubContext | None = None):
+    """Reject external members outside the allowlist and audit the denial."""
     if tool_name in EXTERNAL_ALLOWED_TOOLS:
         return
-    conn = db()
+    context = context or _DEFAULT_CONTEXT
+    conn = context.connect()
     try:
-        audit(conn, me["name"], "external_tool_denied", f"tool={tool_name}")
+        context.audit(conn, me["name"], "external_tool_denied", f"tool={tool_name}")
         conn.commit()
     finally:
         conn.close()
-    raise ValueError(
-        f"forbidden: tool {tool_name} is not available to external members")
-
-
+    raise ValueError(f"forbidden: tool {tool_name} is not available to external members")
 # ---------------- 成员级访问模式预设（staging56 / 搬运四） ----------------
 # 每个成员一个模式（members.access_mode，调度员经 member_access_mode_set
 # 设置）：full = 现行行为；workspace = 只禁出圈/系统级写工具；readonly =
@@ -1394,12 +1375,9 @@ WORKSPACE_DENIED_TOOLS = frozenset({
 })
 
 
-def _mode_check(me, tool_name):
-    """访问模式闸门（_gated_tool 包装器在 authenticate 与 _ext_check
-    之后调用）：readonly 只许 READONLY_ALLOWED_TOOLS；workspace 只禁
-    WORKSPACE_DENIED_TOOLS；full 不拦。拒绝写审计 access_mode_denied
-    （detail 含 tool 与 mode），沿用 _ext_check 的开连接写审计范式
-    （闸门判定本身只读，唯一的写是这条审计）。"""
+def _mode_check(me, tool_name, context: HubContext | None = None):
+    """Enforce the member access mode and audit denied tool calls."""
+    context = context or _DEFAULT_CONTEXT
     mode = _member_access_mode(me)
     if mode == "full":
         return
@@ -1407,17 +1385,14 @@ def _mode_check(me, tool_name):
         return
     if mode == "workspace" and tool_name not in WORKSPACE_DENIED_TOOLS:
         return
-    conn = db()
+    conn = context.connect()
     try:
-        audit(conn, me["name"], "access_mode_denied",
-              f"tool={tool_name} mode={mode}")
+        context.audit(conn, me["name"], "access_mode_denied",
+                      f"tool={tool_name} mode={mode}")
         conn.commit()
     finally:
         conn.close()
-    raise ValueError(
-        f"forbidden: tool {tool_name} is not available in {mode} access mode")
-
-
+    raise ValueError(f"forbidden: tool {tool_name} is not available in {mode} access mode")
 def _ext_msg_retry_after(conn, member_id, now):
     """external 普通发消息三窗口计数（kind<>'approval_request' 的消息，
     含 task_update 落的 report 行）：任一窗口已达上限返回该窗口的
@@ -1514,31 +1489,27 @@ def _mentions_member(body, my_name, all_names):
     return False
 
 
-def _inbox_resolve_room(me, room):
-    """收件箱三工具的房间解析：external 恒用绑定房（显式传了别的房
-    直接拒绝）；既有成员无绑定房，须显式给 room。返回 (room_id, name)。"""
-    conn = db()
+def _inbox_resolve_room(me, room, context: HubContext | None = None):
+    """Resolve an inbox room using the supplied Hub context."""
+    context = context or _DEFAULT_CONTEXT
+    conn = context.connect()
     try:
         if _is_external(me):
-            r = conn.execute("SELECT id, name FROM rooms WHERE id=?",
-                             (me["bound_room_id"],)).fetchone()
-            if not r:
+            resolved = conn.execute("SELECT id, name FROM rooms WHERE id=?",
+                                    (me["bound_room_id"],)).fetchone()
+            if not resolved:
                 raise ValueError("bound room not found")
-            if room and room != r["name"]:
-                raise ValueError(
-                    "forbidden: external members may only access their bound room")
-            return r["id"], r["name"]
+            if room and room != resolved["name"]:
+                raise ValueError("forbidden: external members may only access their bound room")
+            return resolved["id"], resolved["name"]
         if not room:
             raise ValueError("room is required for inbox tools")
-        r = conn.execute("SELECT id, name FROM rooms WHERE name=?",
-                         (room,)).fetchone()
-        if not r:
+        resolved = conn.execute("SELECT id, name FROM rooms WHERE name=?", (room,)).fetchone()
+        if not resolved:
             raise ValueError(f"no such room: {room}")
-        return r["id"], r["name"]
+        return resolved["id"], resolved["name"]
     finally:
         conn.close()
-
-
 def _read_cursor(conn, member_id, room_id, floor):
     """读服务端已读游标（member_read_cursors）；无行按 floor 起步，
     且永不低于 floor（external 的 floor = joined_msg_id 水位）。"""

@@ -21,10 +21,15 @@ class HubContext:
     attachment_dir: str
     lock: Any
     clock: Callable[[], float]
+    business_clock: Callable[[], float] | None = None
 
     def connect(self):
         """Open a database connection using this context's database path."""
         return connect(self.db_path)
+
+    def now(self) -> float:
+        """Return the business clock, which may be offset in isolated tests."""
+        return (self.business_clock or self.clock)()
 
     def audit(self, connection, actor: str, action: str, detail: str = "") -> None:
         """Write an audit row using this context's wall clock."""
