@@ -63,6 +63,7 @@ import time
 
 if __package__:
     from .core.schema import SCHEMA
+    from .core.storage import connect, write_audit
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
 
@@ -74,6 +75,7 @@ if __package__:
     )
 else:
     from core.schema import SCHEMA
+    from core.storage import connect, write_audit
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
 
@@ -123,19 +125,14 @@ _lock = threading.Lock()
 
 
 def db():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
+    return connect(DB_PATH)
 
 
 
 
 
 def audit(conn, actor, action, detail=""):
-    conn.execute("INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
-                 (time.time(), actor, action, detail))
+    write_audit(conn, actor, action, detail, timestamp=time.time())
 
 
 # ---------------- 附件通道（staging39 / D18） ----------------

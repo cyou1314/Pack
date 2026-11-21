@@ -46,6 +46,7 @@ jobs:
           python installer/test_launch_agent_safety.py
           python installer/test_dmg_manifest.py
           python hub/test_policy.py
+          python hub/test_storage.py
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots
         run: python hub/export_contracts.py --check
