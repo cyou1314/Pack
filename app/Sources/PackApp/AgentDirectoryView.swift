@@ -11,6 +11,10 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var editDisplayName = ""
     @Published var editModel = ""
     @Published var editEndpoint = ""
+    @Published var replacementAPIKey = ""
+    @Published var credentialUpdateSucceeded = false
+    @Published var isUpdatingCredential = false
+    @Published var activeRun: AgentRun?
     @Published var editSucceeded = false
     @Published var chatInput = ""
     @Published var chatOutputs: [UUID: String] = [:]
@@ -134,6 +138,60 @@ final class AgentWorkspaceState: ObservableObject {
         }
     }
 
+    func updateSelectedAPIKey() {
+        guard let manager, let profile = selectedProfile else { return }
+        guard !replacementAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            error = "请输入新的 API Key"
+            return
+        }
+        isUpdatingCredential = true
+        error = ""
+        Task {
+            defer { isUpdatingCredential = false }
+            do {
+                try await manager.updateAPIKey(agentID: profile.id, newAPIKey: replacementAPIKey)
+                replacementAPIKey = ""
+                profiles = try await manager.profiles()
+                note = "新 API Key 已写入 Keychain；尚未执行真实 API 验证"
+                credentialUpdateSucceeded = true
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    func clearSelectedChat() {
+        guard let manager, let profile = selectedProfile else { return }
+        Task {
+            do {
+                try await manager.clearChatMessages(agentID: profile.id)
+                chatOutputs[profile.id] = ""
+                note = "该 Agent 的本地聊天记录已清空"
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    func cancelCurrentRun() {
+        guard let manager, let run = activeRun else { return }
+        Task {
+            do {
+                let result = try await manager.cancel(run: run)
+                note = result == .cancelled
+                    ? "已请求中断生成"
+                    : "已停止本地接收；服务端是否停止尚未确认"
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    func clearCredentialDraft() {
+        replacementAPIKey = ""
+        error = ""
+    }
+
     func testSelectedConnection() {
         guard let manager, let selectedAgentID else { return }
         isTesting = true
@@ -161,10 +219,11 @@ final class AgentWorkspaceState: ObservableObject {
         error = ""
         chatOutputs[profile.id, default: ""] += "\n你：\n\(text)\n"
         Task {
-            defer { isSending = false }
+            defer { isSending = false; activeRun = nil }
             do {
                 try await manager.appendChatMessage(agentID: profile.id, role: "user", content: text)
                 let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: sessionIDs[profile.id] ?? profile.lastSessionID)
+                activeRun = run
                 let stream = try await manager.streamEvents(for: run)
                 var responseID: String?
                 var assistantText = ""
@@ -217,6 +276,8 @@ struct AgentDirectoryView: View {
     @ObservedObject var state: AgentWorkspaceState
     @State private var showingAdd = false
     @State private var showingEdit = false
+    @State private var showingCredential = false
+    @State private var showClearChatConfirmation = false
     @State private var showRemoveConfirmation = false
 
     var body: some View {
@@ -259,6 +320,17 @@ struct AgentDirectoryView: View {
         .sheet(isPresented: $showingEdit) {
             editSheet
         }
+        .sheet(isPresented: $showingCredential, onDismiss: {
+            state.clearCredentialDraft()
+        }) {
+            credentialSheet
+        }
+        .onChange(of: state.credentialUpdateSucceeded) { _, succeeded in
+            if succeeded {
+                showingCredential = false
+                state.credentialUpdateSucceeded = false
+            }
+        }
         .onChange(of: state.editSucceeded) { _, succeeded in
             if succeeded {
                 showingEdit = false
@@ -270,6 +342,12 @@ struct AgentDirectoryView: View {
                 showingAdd = false
                 state.addSucceeded = false
             }
+        }
+        .confirmationDialog("清空聊天记录？", isPresented: $showClearChatConfirmation, titleVisibility: .visible) {
+            Button("清空当前 Agent 聊天记录", role: .destructive) { state.clearSelectedChat() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只删除当前 Agent 在本机保存的聊天记录，不会删除服务商侧会话。")
         }
         .confirmationDialog("移除 Agent？", isPresented: $showRemoveConfirmation, titleVisibility: .visible) {
             Button("移除并删除 Keychain 凭证", role: .destructive) { state.removeSelected() }
@@ -297,6 +375,13 @@ struct AgentDirectoryView: View {
                     .disabled(state.isSending || state.isTesting)
                     Button("测试连接") { state.testSelectedConnection() }
                         .disabled(state.isTesting || state.isSending)
+                    Button("更新 Key") {
+                        state.clearCredentialDraft()
+                        showingCredential = true
+                    }
+                    .disabled(state.isSending || state.isTesting || state.isUpdatingCredential)
+                    Button("清空聊天") { showClearChatConfirmation = true }
+                        .disabled(state.isSending)
                     Button(role: .destructive) { showRemoveConfirmation = true } label: {
                         Image(systemName: "trash")
                     }
@@ -322,7 +407,13 @@ struct AgentDirectoryView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(state.isSending || state.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                if state.isSending { ProgressView("正在生成…").controlSize(.small) }
+                if state.isSending {
+                    HStack {
+                        ProgressView("正在生成…").controlSize(.small)
+                        Spacer()
+                        Button("停止生成") { state.cancelCurrentRun() }
+                    }
+                }
                 if !state.note.isEmpty { Text(state.note).font(.system(size: 11)).foregroundStyle(.secondary) }
                 if !state.error.isEmpty { Text(state.error).font(.system(size: 11)).foregroundStyle(.red) }
             }
@@ -338,6 +429,26 @@ struct AgentDirectoryView: View {
                 if !state.error.isEmpty { Text(state.error).foregroundStyle(.red) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var credentialSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("更新 API Key").font(.system(size: 18, weight: .semibold))
+            Text("新密钥将替换本机 Keychain 中该 Agent 的凭证。保存后连接状态回到待验证，不会自动产生 API 费用。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            SecureField("新的 API Key", text: $state.replacementAPIKey)
+                .textFieldStyle(.roundedBorder)
+            if !state.error.isEmpty { Text(state.error).font(.system(size: 11)).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("取消") { showingCredential = false }
+                Button("更新密钥") { state.updateSelectedAPIKey() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.isUpdatingCredential || state.replacementAPIKey.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 
     private var editSheet: some View {
