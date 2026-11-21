@@ -342,6 +342,25 @@ actor AgentProfileStore {
         }
     }
 
+    /// A process restart breaks the local stream. Preserve the run record,
+    /// but do not claim the remote provider task was cancelled or completed.
+    func reconcileInterruptedRuns() throws {
+        let statement = try connection.prepare("""
+            UPDATE agent_runs
+            SET status=?, updated_at=?, error_message=?
+            WHERE status IN (?, ?);
+            """)
+        defer { sqlite3_finalize(statement) }
+        Self.bindText(AgentRunStatus.unknown.rawValue, at: 1, to: statement)
+        sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
+        Self.bindText("Pack restarted before receiving a terminal provider event; remote status is unknown.", at: 3, to: statement)
+        Self.bindText(AgentRunStatus.queued.rawValue, at: 4, to: statement)
+        Self.bindText(AgentRunStatus.running.rawValue, at: 5, to: statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
+        }
+    }
+
     func runs(conversationID: UUID, limit: Int = 50) throws -> [AgentRunRecord] {
         let statement = try connection.prepare("""
             SELECT id, agent_id, provider_run_id, prompt, status, created_at, updated_at, error_message
