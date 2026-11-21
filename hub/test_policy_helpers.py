@@ -82,6 +82,69 @@ class HubPolicyHelperTests(unittest.TestCase):
                 self.assertIn("tool=task_create mode=readonly", rows[0]["detail"])
                 self.assertIn("tool=egress_check mode=workspace", rows[1]["detail"])
 
+    def test_approval_gate_only_accepts_holder_or_dispatcher(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript("""
+            CREATE TABLE tasks(id INTEGER PRIMARY KEY, title TEXT, assignee INTEGER);
+            CREATE TABLE members(id INTEGER PRIMARY KEY, name TEXT, role TEXT);
+            CREATE TABLE messages(
+                id INTEGER PRIMARY KEY, room_id INTEGER, author_id INTEGER,
+                kind TEXT, body TEXT, task_id INTEGER, created_at REAL
+            );
+            CREATE TABLE approval_rules(
+                id INTEGER PRIMARY KEY, action TEXT, target TEXT,
+                effect TEXT, enabled INTEGER
+            );
+            CREATE TABLE audit(
+                id INTEGER PRIMARY KEY, ts REAL, actor TEXT, action TEXT, detail TEXT
+            );
+            INSERT INTO members(id,name,role) VALUES
+                (1,'dispatcher','dispatcher'),
+                (2,'alice','member'),
+                (3,'bob','member');
+            INSERT INTO tasks(id,title,assignee) VALUES (9,'[ENG] inspect',2);
+            INSERT INTO approval_rules(id,action,target,effect,enabled)
+                VALUES (1,'[ENG]','alice','allow',1);
+            INSERT INTO messages(id,room_id,author_id,kind,body,task_id,created_at)
+                VALUES
+                (10,1,2,'approval_request','任务#9 需要批准',NULL,1),
+                (11,1,3,'approval_request','任务#9 需要批准',NULL,2),
+                (12,1,1,'approval_request','任务#9 需要批准',NULL,3);
+        """)
+
+        alice = conn.execute("SELECT * FROM members WHERE id=2").fetchone()
+        bob = conn.execute("SELECT * FROM members WHERE id=3").fetchone()
+        dispatcher = conn.execute("SELECT * FROM members WHERE id=1").fetchone()
+
+        allowed = hub._approval_gate(conn, 1, 10, "任务#9 需要批准", poster=alice)
+        self.assertEqual(allowed["auto_decision"], "allow")
+        self.assertEqual(allowed["task_id"], 9)
+
+        denied = hub._approval_gate(conn, 1, 11, "任务#9 需要批准", poster=bob)
+        self.assertEqual(denied, {})
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM messages WHERE kind='decision'").fetchone()[0],
+            1,
+        )
+
+        dispatcher_allowed = hub._approval_gate(
+            conn, 1, 12, "任务#9 需要批准", poster=dispatcher
+        )
+        self.assertEqual(dispatcher_allowed["auto_decision"], "allow")
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM messages WHERE kind='decision'").fetchone()[0],
+            2,
+        )
+        audit_rows = conn.execute(
+            "SELECT actor, action FROM audit ORDER BY id"
+        ).fetchall()
+        self.assertEqual(
+            [(row["actor"], row["action"]) for row in audit_rows],
+            [("rule-engine", "approval_auto_allow"), ("rule-engine", "approval_auto_allow")],
+        )
+        conn.close()
+
     def test_backoff_policy_is_exponential_and_bounded_at_first_attempt(self):
         self.assertEqual(hub._backoff_seconds("quota", 1), 1800)
         self.assertEqual(hub._backoff_seconds("quota", 2), 3600)
