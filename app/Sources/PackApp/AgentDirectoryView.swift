@@ -541,8 +541,8 @@ struct AgentDirectoryView: View {
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
-                            ForEach(Array(transcript.components(separatedBy: "\\n\\n").enumerated()), id: \\.offset) { _, block in
-                                Text(block)
+                            ForEach(Array(transcript.components(separatedBy: "\\n\\n").enumerated()), id: \\.offset) { item in
+                                Text(item.element)
                                     .font(.system(size: 13))
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
