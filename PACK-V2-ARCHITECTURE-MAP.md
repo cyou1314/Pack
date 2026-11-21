@@ -192,4 +192,4 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 - `AgentAdapter`：定义 connect、capability probe、session listing、send、stream、cancel、status、usage 和 disconnect。
 - `AgentAdapterRegistry`：`AgentProfileCatalog` 与 `AgentAdapterRegistry` 当前均为进程内骨架；持久化、UI 和具体厂商适配器尚未实现。
 
-约束：Native 私有记忆和账号凭证留在 Provider 边界；Pack 只接收明确授权的会话/记忆引用。当前没有 ChatGPT 或豆包 Native Adapter，也没有 API Adapter 实现。GitHub Actions #201 的 Runtime job 与 macOS App / build 均已通过；Hub / regression 仍在执行。新增 Profile Catalog 后的最新 Swift 构建由后续 CI 验证。
+约束：Native 私有记忆和账号凭证留在 Provider 边界；Pack 只接收明确授权的会话/记忆引用。当前没有 ChatGPT 或豆包 Native Adapter，也没有 API Adapter 实现。补充审计证据：`MemberLoginWebView.swift` 的 provider URL 白名单目前只有 `muse.ai`，它是现有 Muse 成员登录容器，不是通用第三方 Agent 登录系统；不能据此宣称已支持 ChatGPT/豆包原生账号。GitHub Actions #201 的 Runtime job 与 macOS App / build 均已通过；Hub / regression 仍在执行。新增 Profile Catalog 后的最新 Swift 构建由后续 CI 验证。
