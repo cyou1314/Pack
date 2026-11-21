@@ -366,7 +366,7 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
     if(e.message==="invalid_transfer_target") { await tool("task_block",{task_id:task.id,claim_token:ctok,reason:"转交目标无效"}); return; }
     throw e;
   }
-  storeReceipt(task, res.reply, res.chatUrl || "");
+  deliveryManager.storeReceipt(task, res.reply, res.chatUrl || "");
   await deliveryManager.completeSafely(task, ctok, deliveryManager.matchingReceipt(task) || deliveryManager.getReceipt(task.id), expectedAttempt);
 }
 
