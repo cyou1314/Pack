@@ -223,6 +223,10 @@ actor AgentManager {
         }
     }
 
+    func clearConversationMessages(agentID: UUID, conversationID: UUID) async throws {
+        try await store.clearConversationMessages(agentID: agentID, conversationID: conversationID)
+    }
+
     func clearChatMessages(agentID: UUID) async throws {
         try await store.clearChatMessages(agentID: agentID)
     }
