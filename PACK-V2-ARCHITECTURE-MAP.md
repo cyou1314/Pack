@@ -184,15 +184,15 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 当前最稳妥的工程顺序是：**先锁定 MCP 工具契约和权限矩阵 → 抽离 Runtime 模块 → 抽离 AppState 网络/业务职责 → 最后拆 Hub 单体 → 接入 API / Native Agent**。不要从重写 UI 或拆 Hub 大文件开始；那两条路径的回归半径最大。
 ## 11. Agent Adapter 契约骨架（2026-11-21）
 
-新增 `app/Sources/PackApp/AgentAdapter.swift`，当前只建立 provider-neutral 契约，不代表已接入任何真实 Provider：
+新增 `app/Sources/PackApp/AgentAdapter.swift`，建立 provider-neutral 契约，并由 OpenAI Responses API Adapter 实现首个 API Provider：
 
 - `AgentConnectionMode`：显式区分 `native` 与 `api`，不允许隐式降级。
 - `AgentAdapterConfiguration`：只保存 Agent ID、Provider、模式、Keychain credential reference、可选 endpoint 与 adapter version；不包含密钥明文。
 - `AgentCapability`：连接后探测会话、流式输出、附件、取消、状态、用量、工具调用和原生记忆等能力。
 - `AgentAdapter`：定义 connect、capability probe、session listing、send、stream、cancel、status、usage 和 disconnect。
-- `AgentAdapterRegistry`：`AgentProfileCatalog` 与 `AgentAdapterRegistry` 当前均为进程内骨架；持久化、UI 和具体厂商适配器尚未实现。
+- `AgentAdapterRegistry`：按 Agent Profile UUID 注册 Adapter，同一 Provider 可配置多个账号。
 
-约束：Native 私有记忆和账号凭证留在 Provider 边界；Pack 只接收明确授权的会话/记忆引用。已新增 `app/Sources/PackApp/OpenAIResponsesAdapter.swift`：使用 OpenAI Responses API 的 SSE 流式输出、Keychain 凭证引用、可选 `previous_response_id` 会话续接和 token usage 读取。当前仍没有 Agent 管理 UI、Profile 持久化或端到端真实 API 凭证验收；ChatGPT 原生个人账号与豆包 Native/API Adapter 均未实现。补充审计证据：`MemberLoginWebView.swift` 的 provider URL 白名单目前只有 `muse.ai`，它是现有 Muse 成员登录容器，不是通用第三方 Agent 登录系统；不能据此宣称已支持 ChatGPT/豆包原生账号。GitHub Actions #201 的 Runtime job 与 macOS App / build 均已通过；Hub / regression 仍在执行。新增 Profile Catalog 后的最新 Swift 构建由后续 CI 验证。
+约束：Native 私有记忆和账号凭证留在 Provider 边界；Pack 只接收明确授权的会话/记忆引用。已新增 `app/Sources/PackApp/OpenAIResponsesAdapter.swift`：使用 OpenAI Responses API 的 SSE 流式输出、Keychain 凭证引用、可选 `previous_response_id` 会话续接和 token usage 读取。当前仍没有 Agent 管理 UI 或端到端真实 API 凭证验收；ChatGPT 原生个人账号与豆包 Native/API Adapter 均未实现。补充审计证据：`MemberLoginWebView.swift` 的 provider URL 白名单目前只有 `muse.ai`，它是现有 Muse 成员登录容器，不是通用第三方 Agent 登录系统；不能据此宣称已支持 ChatGPT/豆包原生账号。GitHub Actions #208 的 Runtime job 与 macOS App / build 均已通过；Hub / regression 仍在执行。
 ## 12. OpenAI API Adapter 首个纵向切片（2026-11-21）
 
 - `OpenAIResponsesAdapter` 实现 Responses API 请求与 SSE 事件解析，处理 `response.created`、`response.output_text.delta`、`response.completed`、`response.failed`、`response.incomplete` 与 `error`。
@@ -203,4 +203,12 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 - 当前能力声明只包含 text input、streaming output、session resume 和 usage。附件、会话列表、服务端取消尚未支持；本地停止 SSE 不等于服务端生成已取消。
 - `previous_response_id` 可由上一次完成事件返回的 `session_id` 续接；本 Adapter 不伪造会话列表。
 
-验证边界：GitHub Actions #208 的 macOS App / build 已通过，说明 OpenAI Adapter 文件可编译；Runtime job 通过。Hub / regression 仍在执行。Keychain Vault、Profile-scoped Registry 与 API Profile model 校验在更新提交中，需以后续 CI 验证。尚未使用真实 API Key 发起线上请求，也未接入 App UI。
+
+- `AgentProfileStore.swift`：本地 SQLite（WAL、FULL synchronous、schema version 1）保存 Agent Profile；目录权限 0700、数据库文件权限 0600；数据库只存 Keychain reference，不存密钥。
+- `AgentManager.swift`：编排 OpenAI Profile 添加、Keychain 凭证写入、Adapter 注册、消息发送、流式事件、显式连接测试、删除和应用启动时恢复 Adapter。
+- API Profile 首次创建状态标记为 `configured`，只有用户触发真实 API 测试并收到完成事件后才标记为 `connected`；避免把“钥匙串可读”误报为“远端 API 可用”。
+- 多账号隔离：每个 Agent Profile 使用独立 UUID 和 Keychain account；Registry 以 UUID 为键，可同时存在多个 OpenAI 账号。
+
+新增约束：当前 AgentManager 尚未接入 SwiftUI 导航或添加 Agent 表单；AgentManager 的真实 API 测试会产生一次 API 调用费用，必须由用户主动触发。
+
+验证边界：GitHub Actions #222 的 macOS App / build 已通过，证明 OpenAI Adapter、SQLite Profile Store 与 AgentManager 首版可编译；Runtime job 通过。Hub / regression 仍在执行。尚未使用真实 API Key 发起线上请求，也未接入 App UI。
