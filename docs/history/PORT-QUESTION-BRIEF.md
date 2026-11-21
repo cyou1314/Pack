@@ -33,7 +33,7 @@
 
 ## 纪律
 
-- 隔离 staging（tests/hub-staging53/，副本 + 全新 DB + 换端口），生产
+- 隔离 staging（tests/archive/hub-staging53/，副本 + 全新 DB + 换端口），生产
   零触碰；基线与生产 hub.py 逐字节一致起步。
 - 测试覆盖：守卫全分支（无 task_id、任务不存在、非执行者提问、同任务
   重复未答、options 越界、纯输入型、答非 question、重复答、非

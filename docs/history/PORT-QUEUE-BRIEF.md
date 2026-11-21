@@ -20,7 +20,7 @@
 
 ## 纪律
 
-- 隔离 staging（tests/hub-staging54/），基线 = 当前生产 hub.py
+- 隔离 staging（tests/archive/hub-staging54/），基线 = 当前生产 hub.py
   （staging53 部署后版本，md5 e40fdb7c…）逐字节复制起步，全新 DB +
   换端口，生产零触碰。
 - 测试覆盖：单组多任务的位次（含 urgent 插队改变位次）、多组互不

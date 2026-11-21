@@ -505,7 +505,7 @@ def _approval_state(conn, task_id):
 # ---------------- 结构化提问卡（staging53 / 搬运一，学 OpenBot ask_ui 自研） ----------------
 # 成员就当前任务向群主发带选项/可输入的提问卡（kind='question'），群主以
 # kind='question_answer' 答复（reply_to_id 指向 question）。契约正本
-# PORT-QUESTION-BRIEF.md：限额写死代码常量（同记忆/技能纪律，改限额 =
+# docs/history/PORT-QUESTION-BRIEF.md：限额写死代码常量（同记忆/技能纪律，改限额 =
 # 改代码 + 群主批准）。完整性守卫与 approval_request 同构：任务引用走
 # 正文「任务#N」+ 落库补写 task_id；非调度员提问者必须是该任务当前
 # 执行者；同任务同时只许一张未答 question；答复仅 dispatcher / owner、
@@ -2506,7 +2506,7 @@ def build_server():
         窗口硬拒、approval_request 独立硬顶）；external 调用由 room_post
         在 _lock 内进入本函数，保证「计数→落库」串行不越窗。
         staging53：新增 question / question_answer 两 kind（结构化提问
-        卡，契约见 PORT-QUESTION-BRIEF.md）——question 与 approval_request
+        卡，契约见 docs/history/PORT-QUESTION-BRIEF.md）——question 与 approval_request
         同门（任务#N 引用 + 当前执行者），另加 payload 结构校验与
         「同任务只许一张未答」；question_answer 仅 dispatcher / owner、
         reply_to_id 必须指向本房未答的 question、禁重复答。两 kind 的
@@ -2694,7 +2694,7 @@ def build_server():
         reply_to_id：回复目标消息 id，仅 question_answer 用（必填、
         指向本房的 question）；其余 kind 传入即忽略。payload：仅
         kind='question' 用，JSON 字符串
-        {"options":[...],"allow_input":bool}，契约见 PORT-QUESTION-BRIEF.md。
+        {"options":[...],"allow_input":bool}，契约见 docs/history/PORT-QUESTION-BRIEF.md。
         staging51：external 调用整体走 _lock（频控计数与落库串行）。
         staging53：question / question_answer 的「未答检查→落库」与
         「重复答检查→落库」同样须串行，一律走 _lock。"""

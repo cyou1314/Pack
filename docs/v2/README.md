@@ -1,0 +1,16 @@
+# Pack v2 文档索引
+
+本目录是 Pack v2 的产品与技术基准。
+
+- PRD.md：产品定位、范围、功能需求和验收场景。
+- ARCHITECTURE.md：控制平面、执行平面、事件和安全架构。
+- PROVIDER-MATRIX.md：各 Provider 的已知能力、待验证事项和限制。
+- IMPLEMENTATION-PLAN.md：迁移策略、实施批次、任务优先级和架构决策。
+
+文档优先级：
+1. v2 产品方向以 PRD 和架构决策为准。
+2. v2 技术边界以 ARCHITECTURE 和 Agent Core 代码契约为准。
+3. Provider 能力以 PROVIDER-MATRIX 的实测证据为准。
+4. SPEC.md 与历史 Brief 保留 v1 协议和兼容要求，不自动视为 v2 产品约束。
+
+所有未通过真实连接和端到端验收的 Provider 能力必须标记为待验证。

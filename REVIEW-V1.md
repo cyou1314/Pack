@@ -67,13 +67,13 @@ Gemini 独立读码后给的分析与本复盘三处完全撞上：连接脆性�
 
 - **未认领巡检口径定稿（Gemini 出、调度员收）**：切开「慢/忙」与「真失联/真没额度」——eligible_at = max(updated_at, next_claim_at, sched_at)，宽限 240 秒（取 4 分钟）；条件 A 心跳为空或过期 >300 秒，条件 B 额度 900 秒内新鲜且周已用 >=90%（数据过期/缺失绝不按 B 触发）。**关键修正：绝不能只清 assignee 回池**——运行时只领指派给自己的卡（runtime.mjs:544 源码实证），清指派等于把卡晾死；正解是直接走 _auto_relay 记账转交，无合格候选时不清指派、只升级提示一次交调度员。
 - **自报防伪造四规则定稿（Gemini 出、调度员全收）**：「同周期单调 + 事实熔断 + 权威压制 + 异常留痕」——同周期自报只升不降（真周期滚动才许回落，自报 reset_at 只许后移）；task_block(quota) 当场置 100 记 source=fact 熔断；调度员 set 永远压过自报；报高照收，单次跳涨 >30 点且期间无交活写 quota_anomaly 审计。
-- **staging48 已部署生产（2026-11-19 23:4x）**：member_quota_report + sweeper 未认领巡检一个增量落地，工具数 64→65；自研断言 42/42、回归 15/16（唯一 FAIL 为 staging15 工具数硬断言，已同步改 65）；生产冒烟实证（自报成功 source=self、报低 19→5 被拦）；preflight ALL GREEN（tools=65）。正本 tests/hub-staging48/REVIEW48.md（含施工期间一次 pkill 误杀生产中枢数分钟的事故如实记录，已恢复、数据零损）。运行时侧接自报上报与 rpc 长连接改造待派 Codex；rev 增量按议定押后。
+- **staging48 已部署生产（2026-11-19 23:4x）**：member_quota_report + sweeper 未认领巡检一个增量落地，工具数 64→65；自研断言 42/42、回归 15/16（唯一 FAIL 为 staging15 工具数硬断言，已同步改 65）；生产冒烟实证（自报成功 source=self、报低 19→5 被拦）；preflight ALL GREEN（tools=65）。正本 tests/archive/hub-staging48/REVIEW48.md（含施工期间一次 pkill 误杀生产中枢数分钟的事故如实记录，已恢复、数据零损）。运行时侧接自报上报与 rpc 长连接改造待派 Codex；rev 增量按议定押后。
 - **守护化第三条路（Gemini 出，调度员收）**：方案一（拉起原版应用点 Continue）否决——与无头引擎共用数据目录/分区，共存易踩 SQLite 锁与 Cookie 损坏。正解：进程守护全交 launchd（桥与运行时已在 launchd 下，裸跑只剩引擎）；熔断恢复在无头引擎补受控本地 resume 入口（paused/failTimes 有主进程内存镜像、改库不行，恢复函数本就在主进程内，缺的只是回环加本机令牌的入口，或挂 L2 交接助手），分级放行：瞬时类冷却 10–15 分钟后最多自动试一次，真失败/未知类先告警、群主在 App 成员详情点「恢复引擎」人工放行。次序：当前冻结真因是服务侧机器不可达、非 paused，resume 入口随 E2 第四步在账号恢复后补；launchd 守护可先行。
 
 ## 附记三：2026-11-20 全日（调度员记）
 
 - **联合审计与分诊**：Gemini 读码审计 11 条经调度员逐条核实全部成立，分诊落地：staging49（连接泄漏修复 + authenticate 补 removed_at 校验）、staging50（task_list 多状态过滤 + room_read_new tail 参数）。深查总账 33 项至此全处置；未查面仍余三处（App 本体全量审计、执行体静态审、生产真人链路其余项），已列给群主未答复。
-- **两张 Mac 施工单收官**（MAC-WORK / MAC-WORK2，正本 MAC-WORK-RESULT.md / MAC-WORK2-RESULT.md）：额度自报真打通（absent quota_source=self）；运行时与桥部署新版；引擎 launchd 守护落地（kill 后自拉起验过）；闲聊回路活体验收通过（房间消息 #182）；7897 定案为 Clash Verge mixed-port，未动代理配置。
+- **两张 Mac 施工单收官**（MAC-WORK / MAC-WORK2，正本 docs/history/MAC-WORK-RESULT.md / docs/history/MAC-WORK2-RESULT.md）：额度自报真打通（absent quota_source=self）；运行时与桥部署新版；引擎 launchd 守护落地（kill 后自拉起验过）；闲聊回路活体验收通过（房间消息 #182）；7897 定案为 Clash Verge mixed-port，未动代理配置。
 - **Gemini 逆向 Muse4AI**（正本 MUSE4AI-INTERNALS.md）：paused 根因在 accountMachine（15 分钟 3 次通用失败熔断、无自动恢复）；47821 无 resume/checkSession 接口，无头恢复唯一路线是给 L2 助手加直调入口；本地额度入口只是缓存快照（>6h 标 stale）；vm_state=UNKNOWN 是服务端直返。调度员补记：其推断的「UNKNOWN→熔断」连锁已被 2026-11-18 的分类修复断开（PRE_SUBMIT_TRANSIENT 不计通用失败），报告未读到 coordinator.ts。
 - **EXTERNAL-AGENT 全线关账**：施工单冻结（1fdbda4）→ Phase A（工具 65→71）被 Gemini 红队拦下六处（转交白名单单向、claim TOCTOU、token_rotate 可轮换调度员等），六修后复核过关，验收项 5 由 Codex 在隔离靶场实打 29/29 → Phase B（71→74，pack-agent.mjs + 收件箱三工具）经 Gemini 裁定 4 处必改后复跑 261 项全绿 → 两阶段依次部署生产（备份链 pre51/pre52）→ 真接入验收：codex-ext 配对入群（id=13），调度员 #184 提问、其 #185 回复、游标推进。件六（App 对 external 隐藏登录按钮）同日落地。遗留：MCP 4MiB 传输上限单独立项未排期。
 - **L2 交接**：半关闭根因由 Codex 隔离复现定案（App 侧 nc 关写端、Node 默认 allowHalfOpen=false），新构建已装；2026-11-20 四次点击失败的定位结论为撞上账号自动检查的 busy 租约，真实交接复验待群主方便时再点一次。

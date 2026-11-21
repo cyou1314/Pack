@@ -26,8 +26,8 @@ Phase A 部署 c3a7634（工具 65→71）、Phase B 部署 0450733（71→74）
 
 ## 验收证据
 
-1. **staging 测试**：Phase A 178→197 项断言 0 失败（tests/hub-staging51/REVIEW51.md）；
-   Phase B 八套件 257→261 项 0 失败（tests/hub-staging52/REVIEW52.md；+4 为 mark-read
+1. **staging 测试**：Phase A 178→197 项断言 0 失败（tests/archive/hub-staging51/REVIEW51.md）；
+   Phase B 八套件 257→261 项 0 失败（tests/archive/hub-staging52/REVIEW52.md；+4 为 mark-read
    死循环回归断言），调度员均独立复跑 EXIT=0。
 2. **Gemini 红队**：Phase A 首轮拦部署（2 必改 + 1 中风险 + 3 小修），六处修复
    e552bc7 后复核过关；最终裁定（2026-11-20 17:2x）：Phase A 放行、egress 节奏假象

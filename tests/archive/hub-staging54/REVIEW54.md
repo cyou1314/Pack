@@ -1,6 +1,6 @@
 # staging54 复检记录（搬运二·队列显性化显示部分）
 
-施工单：PORT-QUEUE-BRIEF.md。基线 = 生产 hub.py（staging53 部署后版本，
+施工单：docs/history/PORT-QUEUE-BRIEF.md。基线 = 生产 hub.py（staging53 部署后版本，
 md5 e40fdb7cdab9675a5cd8f5b834aac080），开工与收工各验一次逐字节一致；
 隔离端口 18799、全新 DB，生产文件与生产 DB 零触碰（收工复验生产
 hub.py md5 未变）。未 commit、未 push，改动只留本目录待审。

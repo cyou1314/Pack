@@ -1,3 +1,7 @@
+> **Pack v2 文档说明（2026-11-21）**：本文件保留 v1 多 Muse 群聊中枢的历史协议与兼容约束。Pack v2 的产品定位、统一 Agent 接入、群聊、Orchestration 和 Mac Computer Use 以 [docs/v2/README.md](docs/v2/README.md) 及其引用文档为准。v1 中单一 Muse 调度员、仅登录账号接入等产品假设不再约束 v2；已上线的任务状态机、审批、权限、审计和成员隔离规则仍作为兼容能力保留。未经迁移验收，不得删除或放宽这些安全机制。
+
+---
+
 # ♾️ · 多 Muse 群聊中枢 · 协议规格 v0
 
 - 日期：2026-11-13
@@ -415,4 +419,4 @@ Muse 不能被另一个 Muse 直接喊醒，只有两条路：
 10. **App 侧预写（未编译验证）**：Models 解析补齐（信封/额度/组合/删改标记/摘要）与两个 SwiftUI 组件（额度环、摘要卡）已入仓，待 Mac 动工日基线构建先行验证——见 UI-IMPL-BRIEF。
 11. **基础设施**：每日 DB 在线备份（留 14 份、双边完整性校验）+ 恢复演练通过；`hub/preflight.sh` 动工日预检六项；看门狗巡检名单补入备份定时器（VM 替换后可自愈重装）。
 12. **对抗复检与 kind 守卫**（staging21，报告 `hub-staging21/REVIEW-ADVERSARIAL.md`）：成员令牌视角系统性复检实证 room_post 的 kind 无白名单——成员可伪造 decision/task_card 消息。已修复上线：task_card 仅中枢内部落库、decision 仅调度员可发（内部决议走直接 INSERT 不受影响）。攻击面 25 项全过（29 工具越权矩阵/令牌冒用六工具/记忆隔离/技能门禁/300 卡压力），decision_kind 回归 17/17。观察项：task_list 有 LIMIT 100 硬顶，App 任务板单列超 100 张会截断，v1 规模可接受、日后再加分页。
-13. **桌面锁**（staging25，报告 `hub-staging25/REVIEW-DESKTOP-LOCK.md`）：多成员同机互斥——一台 Mac 只有一个屏幕/鼠标/键盘焦点，GUI 任务动手前经 `desktop_acquire` 拿锁（须为任务当前持有人，获取走全局锁串行，并行抢锁 3 轮均恰好一个赢家）、`desktop_release` 放锁（调度员可强放）、`desktop_status` 全员可查。锁寿命不超过任务持有期：交活/报卡/取消/转交/租约回收五出口自动放锁，认领时兜底清残锁；无头任务不占锁、可与持锁任务并行。专测 29/29、慢工复检（写路径锁覆盖/越权四类/审计四类）通过、全量回归七套件全绿（skills 工具数断言同步 53→56）。执行纪律同步 delivery-envelope 技能 v2。无等待队列：抢不到者收到 desktop_busy 载荷自行重试（与认领退避同模式），成员变多再加 FIFO。
+13. **桌面锁**（staging25，报告 `tests/archive/hub-staging25/REVIEW-DESKTOP-LOCK.md`）：多成员同机互斥——一台 Mac 只有一个屏幕/鼠标/键盘焦点，GUI 任务动手前经 `desktop_acquire` 拿锁（须为任务当前持有人，获取走全局锁串行，并行抢锁 3 轮均恰好一个赢家）、`desktop_release` 放锁（调度员可强放）、`desktop_status` 全员可查。锁寿命不超过任务持有期：交活/报卡/取消/转交/租约回收五出口自动放锁，认领时兜底清残锁；无头任务不占锁、可与持锁任务并行。专测 29/29、慢工复检（写路径锁覆盖/越权四类/审计四类）通过、全量回归七套件全绿（skills 工具数断言同步 53→56）。执行纪律同步 delivery-envelope 技能 v2。无等待队列：抢不到者收到 desktop_busy 载荷自行重试（与认领退避同模式），成员变多再加 FIFO。
