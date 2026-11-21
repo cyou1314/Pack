@@ -48,8 +48,6 @@ class HubContextTests(unittest.TestCase):
                 connection.close()
 
     def test_init_uses_context_database_clock_and_token_directory(self):
-        import json
-        import os
         import sqlite3
         import stat
 

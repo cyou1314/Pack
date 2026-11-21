@@ -66,7 +66,6 @@ if __package__:
     from .core.context import HubContext
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
-
         action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
         egress_host as _egress_host, egress_pattern as _egress_pattern,
         host_covers as _host_covers, select_egress_rule, task_hosts as _task_hosts,
@@ -133,9 +132,6 @@ _lock = _DEFAULT_CONTEXT.lock
 
 def db():
     return _DEFAULT_CONTEXT.connect()
-
-
-
 
 
 def audit(conn, actor, action, detail=""):
