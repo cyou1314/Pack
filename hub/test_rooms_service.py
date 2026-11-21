@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import hub
+from services import rooms
 from core.context import HubContext
 from services.rooms import get_room_summary, list_rooms
 
