@@ -29,6 +29,13 @@ for index in "${!LABELS[@]}"; do
   elif [[ -f "$plist" ]]; then
     actual_label="$(plutil -extract Label raw -o - "$plist" 2>/dev/null)" || fail "cannot read LaunchAgent label: $plist"
     [[ "$actual_label" == "$label" ]] || fail "LaunchAgent label mismatch: $plist"
+    if [[ "$label" == "com.pack.local-backup" ]]; then
+      expected_launcher="/bin/bash"
+    else
+      expected_launcher="$HUB/.venv/bin/python"
+    fi
+    actual_launcher="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist" 2>/dev/null)" || fail "cannot read LaunchAgent launcher: $plist"
+    [[ "$actual_launcher" == "$expected_launcher" ]] || fail "LaunchAgent launcher mismatch: $plist"
     actual_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$plist" 2>/dev/null)" || fail "cannot read LaunchAgent program path: $plist"
     [[ "$actual_program" == "$expected_program" ]] || fail "LaunchAgent program path mismatch: $plist"
   elif is_loaded "$label"; then

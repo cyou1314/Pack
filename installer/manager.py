@@ -59,14 +59,14 @@ def read_owned_agent_plist(kind, path):
         raise SystemExit(f'Cannot validate LaunchAgent plist: {path}') from exc
     if not isinstance(document, dict) or document.get('Label') != labels[kind]:
         raise SystemExit(f'LaunchAgent label does not belong to this installer: {path}')
-    arguments = document.get('ProgramArguments')
-    expected_root = hub if kind in ('hub', 'watch', 'backup') else engine
-    root_prefix = str(expected_root) + os.sep
-    if not isinstance(arguments, list) or not any(
-        isinstance(argument, str) and argument.startswith(root_prefix)
-        for argument in arguments
-    ):
-        raise SystemExit(f'LaunchAgent program path is outside the Pack service directory: {path}')
+    expected_arguments = {
+        'hub': [str(hub/'python/bin/python3'), str(hub/'hub.py'), 'serve'],
+        'watch': [str(hub/'python/bin/python3'), str(hub/'room_watch.py')],
+        'backup': ['/bin/bash', str(hub/'backup-db.sh')],
+        'engine': [str(engine/'Electron.app/Contents/MacOS/Electron'), str(engine/'app')],
+    }[kind]
+    if document.get('ProgramArguments') != expected_arguments:
+        raise SystemExit(f'LaunchAgent program path is outside the Pack service directory or does not match its entry point: {path}')
     return document
 
 def write_private(path, content):
