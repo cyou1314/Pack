@@ -123,10 +123,20 @@ def install():
     agents.mkdir(parents=True, exist_ok=True)
     shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
     for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
+    shutil.copytree(BUNDLE/'hub'/'core',hub/'core',symlinks=True)
+    shutil.copytree(BUNDLE/'hub'/'services',hub/'services',symlinks=True)
     shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
     subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
     (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
     py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
+    smoke = (
+        'import asyncio,inspect,hub; tools=hub.build_server().list_tools(); '
+        'tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; '
+        'names={tool.name for tool in tools}; '
+        'assert {"room_list","member_list"}.issubset(names), names'
+    )
+    subprocess.run([str(py), '-c', smoke], cwd=hub, check=True,
+                   env={**os.environ, 'PYTHONNOUSERSITE':'1'})
     try:
         write_agent('hub',[py,hub/'hub.py','serve'],{**common,'PACK_HUB_HOST':'127.0.0.1','PACK_HUB_PORT':str(hp)},True)
         for _ in range(120):
@@ -174,7 +184,7 @@ def uninstall():
         if owned_plists[kind]:
             (agents/(label+'.plist')).unlink()
     # Program files only. Database, tokens, config, attachments and engine data stay.
-    for name in ('python','hub.py','room_watch.py','backup-db.sh','verify-backup.sh'):
+    for name in ('python','hub.py','core','services','room_watch.py','backup-db.sh','verify-backup.sh'):
         p=hub/name
         if p.is_symlink(): p.unlink()
         elif p.is_dir(): shutil.rmtree(p)

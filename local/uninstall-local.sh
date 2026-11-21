@@ -53,6 +53,12 @@ for name in hub.py room_watch.py backup-db.sh verify-backup.sh; do
   path="$HUB/$name"
   if [[ -L "$path" || -f "$path" ]]; then rm "$path"; fi
 done
+for name in core services; do
+  path="$HUB/$name"
+  if [[ -L "$path" ]]; then rm "$path"
+  elif [[ -d "$path" ]]; then rm -rf "$path"
+  fi
+done
 # Remove only the service venv. Never remove the data directory or its contents.
 /usr/bin/python3 - "$HUB/.venv" <<'PY'
 import os, shutil, sys

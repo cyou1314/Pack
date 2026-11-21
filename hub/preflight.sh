@@ -32,6 +32,9 @@ else
   bad "URL publisher SSH key missing"
 fi
 [ -f "$HUB/hub.py" ] && ok "hub.py present" || bad "hub.py missing"
+for module in core/context.py core/policy.py core/schema.py core/storage.py services/rooms.py; do
+  [ -f "$HUB/$module" ] && ok "$module present" || bad "$module missing"
+done
 [ -f "$HUB/room_watch.py" ] && ok "room_watch.py present" || bad "room_watch.py missing"
 [ -x "$HUB/.venv/bin/python" ] && ok "hub venv present" || bad "hub/.venv/bin/python missing"
 [ -x "$HUB/backup-db.sh" ] && ok "backup-db.sh executable" || bad "backup-db.sh missing/not executable"

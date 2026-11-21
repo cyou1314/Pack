@@ -16,6 +16,8 @@ rsync -a "$PYROOT/bin/python3.12" "$STAGE/python/bin/"
 ln -s python3.12 "$STAGE/python/bin/python3"
 rsync -a --exclude='pip' --exclude='pip-*' --exclude='__pycache__' "$VENV/lib/python3.12/site-packages/" "$STAGE/python/lib/python3.12/site-packages/"
 for f in hub.py room_watch.py backup-db.sh verify-backup.sh; do cp "$ROOT/hub/$f" "$STAGE/hub/$f"; done
+cp -R "$ROOT/hub/core" "$STAGE/hub/"
+cp -R "$ROOT/hub/services" "$STAGE/hub/"
 for f in headless.cjs gateway-page.js package.json; do cp "$ENGINE/app/$f" "$STAGE/engine/app/$f"; done
 ditto "$ENGINE/Electron.app" "$STAGE/engine/Electron.app"
 /usr/libexec/PlistBuddy -c 'Add :PackInstallerMarker string com.cyou.pack.installer.v1' "$STAGE/Pack.app/Contents/Info.plist"
@@ -26,7 +28,7 @@ for f in manager.py install.command uninstall.command README.txt python-requirem
 ln -s /Applications "$STAGE/Applications"
 # The hub and engine payload must contain no user databases, tokens or sessions.
 if find "$STAGE/hub" "$STAGE/engine" \( -name 'pack.db*' -o -name 'muse.sqlite*' -o -name 'Cookies' -o -name 'vault.json' -o -name '.dispatcher_token' -o -name '.owner_token' -o -name 'tokens.json' -o -name '*.token' -o -name '*.sqlite*' -o -name 'Partitions' -o -name 'session.json' -o -name 'login.json' \) -print | grep -q .; then echo 'Unexpected user data in payload.' >&2; exit 1; fi
-env -i HOME="$STAGE" PATH=/nonexistent PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3" -c 'import fastmcp,sqlite3,ssl; assert fastmcp.__version__ == "4.1.8"'
+env -i HOME="$STAGE" PATH=/nonexistent PYTHONNOUSERSITE=1 PYTHONPATH="$STAGE/hub" "$STAGE/python/bin/python3" -c 'import asyncio,inspect,fastmcp,sqlite3,ssl,hub; assert fastmcp.__version__ == "4.1.8"; tools=hub.build_server().list_tools(); tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; names={tool.name for tool in tools}; assert {"room_list","member_list"}.issubset(names), names'
 APP_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGE/Pack.app/Contents/Info.plist")
 APP_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STAGE/Pack.app/Contents/Info.plist")
 MIN_MACOS=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$STAGE/Pack.app/Contents/Info.plist")

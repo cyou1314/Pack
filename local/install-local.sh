@@ -31,6 +31,19 @@ chmod 700 "$PACK_HOME" "$HUB"
 if [ ! -x "$HUB/.venv/bin/python" ]; then "$PYTHON" -m venv "$HUB/.venv"; fi
 "$HUB/.venv/bin/python" -m pip install 'fastmcp==4.1.8'
 for f in hub.py room_watch.py backup-db.sh verify-backup.sh; do cp "$ROOT/hub/$f" "$HUB/$f"; done
+cp -R "$ROOT/hub/core" "$HUB/"
+cp -R "$ROOT/hub/services" "$HUB/"
+(
+  cd "$HUB"
+  "$HUB/.venv/bin/python" - <<'PY'
+import asyncio, inspect, hub
+tools = hub.build_server().list_tools()
+if inspect.isawaitable(tools):
+    tools = asyncio.run(tools)
+names = {tool.name for tool in tools}
+assert {"room_list", "member_list"}.issubset(names), names
+PY
+)
 "$HUB/.venv/bin/python" "$HUB/hub.py" init
 chmod 600 "$HUB/.dispatcher_token"
 mkdir -p "$HUB/attachments"
