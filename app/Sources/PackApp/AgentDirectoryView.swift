@@ -22,6 +22,7 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var editSucceeded = false
     @Published var chatInput = ""
     @Published var chatOutputs: [UUID: String] = [:]
+    @Published var messagesByConversation: [UUID: [AgentChatMessage]] = [:]
     @Published var sessionIDs: [UUID: String] = [:]
     @Published var isAdding = false
     @Published var addSucceeded = false
@@ -94,6 +95,7 @@ final class AgentWorkspaceState: ObservableObject {
         guard let manager, let conversationID else { return }
         do {
             let messages = try await manager.chatMessages(agentID: agentID, conversationID: conversationID)
+            messagesByConversation[conversationID] = messages
             chatOutputs[conversationID] = messages.map { message in
                 let prefix = message.role == "user" ? "你：" : (message.role == "assistant" ? "Agent：" : "系统：")
                 return "\(prefix)\n\(message.content)"
@@ -111,6 +113,7 @@ final class AgentWorkspaceState: ObservableObject {
                 conversations.insert(conversation, at: 0)
                 selectedConversationID = conversation.id
                 chatOutputs[conversation.id] = ""
+                messagesByConversation[conversation.id] = []
                 note = "已创建新会话"
             } catch { self.error = error.localizedDescription }
         }
@@ -149,6 +152,7 @@ final class AgentWorkspaceState: ObservableObject {
             do {
                 try await manager.removeConversation(agentID: profile.id, conversationID: conversation.id)
                 chatOutputs.removeValue(forKey: conversation.id)
+                messagesByConversation.removeValue(forKey: conversation.id)
                 sessionIDs.removeValue(forKey: conversation.id)
                 conversations = try await manager.conversations(agentID: profile.id)
                 if conversations.isEmpty {
@@ -266,6 +270,7 @@ final class AgentWorkspaceState: ObservableObject {
             do {
                 try await manager.clearConversationMessages(agentID: profile.id, conversationID: conversation.id)
                 chatOutputs[conversation.id] = ""
+                messagesByConversation[conversation.id] = []
                 sessionIDs.removeValue(forKey: conversation.id)
                 if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
                     conversations[index].sessionID = nil
@@ -323,21 +328,37 @@ final class AgentWorkspaceState: ObservableObject {
         chatInput = ""
         isSending = true
         error = ""
+        let userMessage = AgentChatMessage(
+            id: UUID(), agentID: profile.id, conversationID: conversationID,
+            role: "user", content: text, createdAt: Date()
+        )
+        messagesByConversation[conversationID, default: []].append(userMessage)
         chatOutputs[conversationID, default: ""] += "\n你：\n\(text)\n"
         Task {
             defer { isSending = false; activeRun = nil }
+            var assistantText = ""
+            let assistantID = UUID()
             do {
                 try await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "user", content: text)
                 let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: conversation.sessionID)
                 activeRun = run
                 let stream = try await manager.streamEvents(for: run)
                 var responseID: String?
-                var assistantText = ""
                 for try await event in stream {
                     if event.kind == .messageDelta {
                         let delta = event.text ?? ""
                         assistantText += delta
                         chatOutputs[conversationID, default: ""] += delta
+                        var current = messagesByConversation[conversationID, default: []]
+                        if let index = current.firstIndex(where: { $0.id == assistantID }) {
+                            current[index].content += delta
+                        } else {
+                            current.append(AgentChatMessage(
+                                id: assistantID, agentID: profile.id, conversationID: conversationID,
+                                role: "assistant", content: delta, createdAt: Date()
+                            ))
+                        }
+                        messagesByConversation[conversationID] = current
                     }
                     if let detail = event.detail, detail.hasPrefix("session_id=") {
                         let sessionID = String(detail.dropFirst("session_id=".count))
@@ -353,13 +374,12 @@ final class AgentWorkspaceState: ObservableObject {
                     try await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "assistant", content: assistantText)
                     chatOutputs[conversationID, default: ""] += "\n"
                 }
-                if let responseID {
-                    note = "回复完成；会话续接 ID 已就绪"
-                } else {
-                    note = "回复完成"
-                }
+                note = responseID == nil ? "回复完成" : "回复完成；会话续接 ID 已就绪"
             } catch {
                 self.error = error.localizedDescription
+                if !assistantText.isEmpty {
+                    try? await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "assistant", content: assistantText)
+                }
             }
         }
     }
