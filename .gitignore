@@ -17,36 +17,19 @@ hub/*.tmp
 hub/.dispatcher_token
 hub/.venv/
 
-hub-staging*/pack.db
-hub-staging*/pack.db-*
-hub-staging*/attachments/
-hub-staging*/backups/
-hub-staging*/.dispatcher_token
-hub-staging*/.room_watch_state.json
-hub-staging*/room-watch.log
-hub-staging*/regression-run.log
-hub-staging*/serve.log
-
-runtime/config.json
-runtime/*.log
-runtime/delivery-receipts.json
-runtime/results/
-runtime/.runtime-state/
-hub/.member_*_token
-hub-staging*/tokens.json
-hub-staging*/hub.py.regression-bak
 __pycache__/
 
-# Test-run artifacts under tests/hub-staging*/ (dirs moved under tests/;
-# the hub-staging*/ patterns above predate the move and no longer match)
-tests/hub-staging*/pack.db
-tests/hub-staging*/pack.db-*
-tests/hub-staging*/.dispatcher_token
-tests/hub-staging*/.room_watch_state.json
-tests/hub-staging*/attachments/
-tests/hub-staging*/direct_env*/
-tests/hub-staging*/mig53_*/
-tests/hub-staging*/mig56_*/
-tests/hub-staging*/*.log
-tests/hub-staging*/tokens.json
-tests/hub-staging*/test_fixtures.json
+# Regression runner outputs and disposable test-suite state
+/regression-summary.txt
+tests/**/pack.db
+tests/**/pack.db-*
+tests/**/.dispatcher_token
+tests/**/.room_watch_state.json
+tests/**/attachments/
+tests/**/direct_env*/
+tests/**/mig53_*/
+tests/**/mig56_*/
+tests/**/*.log
+tests/**/*.out
+tests/**/tokens.json
+tests/**/test_fixtures.json

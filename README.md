@@ -117,4 +117,6 @@ macOS App 构建：
 
     swift build --package-path app
 
+历史 staging 快照与当前 CI 不再执行的实验套件统一保存在 `tests/archive/`；活跃套件清单见 `tests/README.md`。
+
 修改 Hub、Runtime 或 App 时，先在独立分支完成最小改动和针对性测试，再运行相关回归。不得直接修改生产数据库或凭据文件。

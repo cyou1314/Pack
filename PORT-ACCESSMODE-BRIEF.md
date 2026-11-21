@@ -74,8 +74,8 @@ agent 一个模式开关（只读 / 仅工作区 / 全权），模式即产品�
 
 ## 纪律
 
-隔离目录 tests/hub-staging56/（副本 + 全新 DB + 换端口，harness 模
+隔离目录 tests/archive/hub-staging56/（副本 + 全新 DB + 换端口，harness 模
 式），不碰生产 hub.py 与生产 DB。diff 只许动：迁移段、_gated_tool
 包装段、新 helper（_mode_check 与两张名单常量）、member_list 回读、
 新工具 member_access_mode_set。写完 grep 校验无异常字面量、跑
-py_compile。结果写 tests/hub-staging56/REVIEW56.md。
+py_compile。结果写 tests/archive/hub-staging56/REVIEW56.md。

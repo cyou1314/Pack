@@ -67,7 +67,7 @@ Gemini 独立读码后给的分析与本复盘三处完全撞上：连接脆性�
 
 - **未认领巡检口径定稿（Gemini 出、调度员收）**：切开「慢/忙」与「真失联/真没额度」——eligible_at = max(updated_at, next_claim_at, sched_at)，宽限 240 秒（取 4 分钟）；条件 A 心跳为空或过期 >300 秒，条件 B 额度 900 秒内新鲜且周已用 >=90%（数据过期/缺失绝不按 B 触发）。**关键修正：绝不能只清 assignee 回池**——运行时只领指派给自己的卡（runtime.mjs:544 源码实证），清指派等于把卡晾死；正解是直接走 _auto_relay 记账转交，无合格候选时不清指派、只升级提示一次交调度员。
 - **自报防伪造四规则定稿（Gemini 出、调度员全收）**：「同周期单调 + 事实熔断 + 权威压制 + 异常留痕」——同周期自报只升不降（真周期滚动才许回落，自报 reset_at 只许后移）；task_block(quota) 当场置 100 记 source=fact 熔断；调度员 set 永远压过自报；报高照收，单次跳涨 >30 点且期间无交活写 quota_anomaly 审计。
-- **staging48 已部署生产（2026-11-19 23:4x）**：member_quota_report + sweeper 未认领巡检一个增量落地，工具数 64→65；自研断言 42/42、回归 15/16（唯一 FAIL 为 staging15 工具数硬断言，已同步改 65）；生产冒烟实证（自报成功 source=self、报低 19→5 被拦）；preflight ALL GREEN（tools=65）。正本 tests/hub-staging48/REVIEW48.md（含施工期间一次 pkill 误杀生产中枢数分钟的事故如实记录，已恢复、数据零损）。运行时侧接自报上报与 rpc 长连接改造待派 Codex；rev 增量按议定押后。
+- **staging48 已部署生产（2026-11-19 23:4x）**：member_quota_report + sweeper 未认领巡检一个增量落地，工具数 64→65；自研断言 42/42、回归 15/16（唯一 FAIL 为 staging15 工具数硬断言，已同步改 65）；生产冒烟实证（自报成功 source=self、报低 19→5 被拦）；preflight ALL GREEN（tools=65）。正本 tests/archive/hub-staging48/REVIEW48.md（含施工期间一次 pkill 误杀生产中枢数分钟的事故如实记录，已恢复、数据零损）。运行时侧接自报上报与 rpc 长连接改造待派 Codex；rev 增量按议定押后。
 - **守护化第三条路（Gemini 出，调度员收）**：方案一（拉起原版应用点 Continue）否决——与无头引擎共用数据目录/分区，共存易踩 SQLite 锁与 Cookie 损坏。正解：进程守护全交 launchd（桥与运行时已在 launchd 下，裸跑只剩引擎）；熔断恢复在无头引擎补受控本地 resume 入口（paused/failTimes 有主进程内存镜像、改库不行，恢复函数本就在主进程内，缺的只是回环加本机令牌的入口，或挂 L2 交接助手），分级放行：瞬时类冷却 10–15 分钟后最多自动试一次，真失败/未知类先告警、群主在 App 成员详情点「恢复引擎」人工放行。次序：当前冻结真因是服务侧机器不可达、非 paused，resume 入口随 E2 第四步在账号恢复后补；launchd 守护可先行。
 
 ## 附记三：2026-11-20 全日（调度员记）
