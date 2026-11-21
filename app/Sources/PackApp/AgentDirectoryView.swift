@@ -4,6 +4,10 @@ import SwiftUI
 final class AgentWorkspaceState: ObservableObject {
     @Published var profiles: [AgentProfile] = []
     @Published var selectedAgentID: UUID?
+    @Published var conversations: [AgentConversation] = []
+    @Published var selectedConversationID: UUID?
+    @Published var renameConversationTitle = ""
+    @Published var renameSucceeded = false
     @Published var displayName = ""
     @Published var model = ""
     @Published var apiKey = ""
@@ -42,6 +46,10 @@ final class AgentWorkspaceState: ObservableObject {
         profiles.first { $0.id == selectedAgentID }
     }
 
+    var selectedConversation: AgentConversation? {
+        conversations.first { $0.id == selectedConversationID }
+    }
+
     func bootstrap() async {
         guard let manager else { return }
         do {
@@ -50,17 +58,107 @@ final class AgentWorkspaceState: ObservableObject {
             sessionIDs = Dictionary(uniqueKeysWithValues: profiles.compactMap { profile in
                 profile.lastSessionID.map { (profile.id, $0) }
             })
-            for profile in profiles {
-                let messages = try await manager.chatMessages(agentID: profile.id)
-                chatOutputs[profile.id] = messages.map { message in
-                    let prefix = message.role == "user" ? "你：" : (message.role == "assistant" ? "\(profile.displayName)：" : "系统：")
-                    return "\(prefix)\n\(message.content)"
-                }.joined(separator: "\n\n")
-            }
             if selectedAgentID == nil { selectedAgentID = profiles.first?.id }
+            if let selectedAgentID { await loadConversations(for: selectedAgentID) }
             note = "Agent 配置已从本机数据库加载"
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    func selectAgent(_ agentID: UUID) {
+        guard selectedAgentID != agentID else { return }
+        selectedAgentID = agentID
+        selectedConversationID = nil
+        Task { await loadConversations(for: agentID) }
+    }
+
+    private func loadConversations(for agentID: UUID) async {
+        guard let manager else { return }
+        do {
+            conversations = try await manager.conversations(agentID: agentID)
+            if conversations.isEmpty {
+                let created = try await manager.createConversation(agentID: agentID, title: "新会话")
+                conversations = [created]
+            }
+            if selectedAgentID == agentID {
+                selectedConversationID = conversations.first?.id
+                await loadMessages(for: agentID, conversationID: selectedConversationID)
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func loadMessages(for agentID: UUID, conversationID: UUID?) async {
+        guard let manager, let conversationID else { return }
+        do {
+            let messages = try await manager.chatMessages(agentID: agentID, conversationID: conversationID)
+            chatOutputs[conversationID] = messages.map { message in
+                let prefix = message.role == "user" ? "你：" : (message.role == "assistant" ? "Agent：" : "系统：")
+                return "\(prefix)\n\(message.content)"
+            }.joined(separator: "\n\n")
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func createConversation() {
+        guard let manager, let profile = selectedProfile else { return }
+        Task {
+            do {
+                let conversation = try await manager.createConversation(agentID: profile.id, title: "新会话")
+                conversations.insert(conversation, at: 0)
+                selectedConversationID = conversation.id
+                chatOutputs[conversation.id] = ""
+                note = "已创建新会话"
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func beginRenameConversation() {
+        guard let conversation = selectedConversation else { return }
+        renameConversationTitle = conversation.title
+        renameSucceeded = false
+        error = ""
+    }
+
+    func saveConversationRename() {
+        guard let manager, let profile = selectedProfile, let conversation = selectedConversation else { return }
+        let title = renameConversationTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { error = "会话名称不能为空"; return }
+        Task {
+            do {
+                try await manager.renameConversation(agentID: profile.id, conversationID: conversation.id, title: title)
+                conversations = try await manager.conversations(agentID: profile.id)
+                renameSucceeded = true
+                note = "会话名称已更新"
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func selectConversation(_ conversationID: UUID) {
+        selectedConversationID = conversationID
+        guard let agentID = selectedAgentID else { return }
+        Task { await loadMessages(for: agentID, conversationID: conversationID) }
+    }
+
+    func deleteSelectedConversation() {
+        guard let manager, let profile = selectedProfile, let conversation = selectedConversation else { return }
+        Task {
+            do {
+                try await manager.removeConversation(agentID: profile.id, conversationID: conversation.id)
+                chatOutputs.removeValue(forKey: conversation.id)
+                sessionIDs.removeValue(forKey: conversation.id)
+                conversations = try await manager.conversations(agentID: profile.id)
+                if conversations.isEmpty {
+                    let created = try await manager.createConversation(agentID: profile.id, title: "新会话")
+                    conversations = [created]
+                }
+                selectedConversationID = conversations.first?.id
+                await loadMessages(for: profile.id, conversationID: selectedConversationID)
+                note = "会话已删除"
+            } catch { self.error = error.localizedDescription }
         }
     }
 
@@ -84,6 +182,7 @@ final class AgentWorkspaceState: ObservableObject {
                 )
                 profiles = try await manager.profiles()
                 selectedAgentID = profile.id
+                await loadConversations(for: profile.id)
                 displayName = ""
                 model = ""
                 apiKey = ""
@@ -161,11 +260,11 @@ final class AgentWorkspaceState: ObservableObject {
     }
 
     func clearSelectedChat() {
-        guard let manager, let profile = selectedProfile else { return }
+        guard let manager, let profile = selectedProfile, let conversation = selectedConversation else { return }
         Task {
             do {
                 try await manager.clearChatMessages(agentID: profile.id)
-                chatOutputs[profile.id] = ""
+                chatOutputs[conversation.id] = ""
                 note = "该 Agent 的本地聊天记录已清空"
             } catch {
                 self.error = error.localizedDescription
@@ -200,7 +299,7 @@ final class AgentWorkspaceState: ObservableObject {
             defer { isTesting = false }
             do {
                 let response = try await manager.testConnection(agentID: selectedAgentID)
-                chatOutputs[selectedAgentID, default: ""] += "\n[连接测试]\n" + response + "\n"
+                if let conversationID = selectedConversationID { chatOutputs[conversationID, default: ""] += "\n[连接测试]\n" + response + "\n" }
                 profiles = try await manager.profiles()
                 note = "API 连接测试完成"
             } catch {
@@ -212,17 +311,19 @@ final class AgentWorkspaceState: ObservableObject {
 
     func sendMessage() {
         guard let manager, let profile = selectedProfile else { return }
+        guard let conversation = selectedConversation else { error = "请先创建或选择一个会话"; return }
+        let conversationID = conversation.id
         let text = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         chatInput = ""
         isSending = true
         error = ""
-        chatOutputs[profile.id, default: ""] += "\n你：\n\(text)\n"
+        chatOutputs[conversationID, default: ""] += "\n你：\n\(text)\n"
         Task {
             defer { isSending = false; activeRun = nil }
             do {
-                try await manager.appendChatMessage(agentID: profile.id, role: "user", content: text)
-                let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: sessionIDs[profile.id] ?? profile.lastSessionID)
+                try await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "user", content: text)
+                let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: conversation.sessionID)
                 activeRun = run
                 let stream = try await manager.streamEvents(for: run)
                 var responseID: String?
@@ -231,18 +332,18 @@ final class AgentWorkspaceState: ObservableObject {
                     if event.kind == .messageDelta {
                         let delta = event.text ?? ""
                         assistantText += delta
-                        chatOutputs[profile.id, default: ""] += delta
+                        chatOutputs[conversationID, default: ""] += delta
                     }
                     if let detail = event.detail, detail.hasPrefix("session_id=") {
                         let sessionID = String(detail.dropFirst("session_id=".count))
                         responseID = sessionID
-                        sessionIDs[profile.id] = sessionID
-                        try await manager.updateSessionID(agentID: profile.id, sessionID: sessionID)
+                        sessionIDs[conversationID] = sessionID
+                        try await manager.updateConversationSession(agentID: profile.id, conversationID: conversationID, sessionID: sessionID)
                     }
                 }
                 if !assistantText.isEmpty {
-                    try await manager.appendChatMessage(agentID: profile.id, role: "assistant", content: assistantText)
-                    chatOutputs[profile.id, default: ""] += "\n"
+                    try await manager.appendChatMessage(agentID: profile.id, conversationID: conversationID, role: "assistant", content: assistantText)
+                    chatOutputs[conversationID, default: ""] += "\n"
                 }
                 if let responseID {
                     note = "回复完成；会话续接 ID 已就绪"
@@ -262,8 +363,9 @@ final class AgentWorkspaceState: ObservableObject {
                 _ = try await manager.removeProfile(agentID: selectedAgentID)
                 profiles = try await manager.profiles()
                 self.selectedAgentID = profiles.first?.id
-                chatOutputs.removeValue(forKey: selectedAgentID)
-                sessionIDs.removeValue(forKey: selectedAgentID)
+                for conversation in conversations { chatOutputs.removeValue(forKey: conversation.id); sessionIDs.removeValue(forKey: conversation.id) }
+                conversations = []
+                selectedConversationID = nil
                 note = "Agent 配置已移除"
             } catch {
                 self.error = error.localizedDescription
