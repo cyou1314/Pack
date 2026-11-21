@@ -20,6 +20,7 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var credentialUpdateSucceeded = false
     @Published var isUpdatingCredential = false
     @Published var activeRun: AgentRun?
+    @Published var currentRunStatus: AgentRunStatus = .unknown
     @Published var retryableConversationID: UUID?
     @Published var editSucceeded = false
     @Published var chatInput = ""
@@ -322,6 +323,7 @@ final class AgentWorkspaceState: ObservableObject {
         guard !text.isEmpty else { return }
         chatInput = ""
         isSending = true
+        currentRunStatus = .queued
         error = ""
         retryableConversationID = nil
         let userMessage = AgentChatMessage(
@@ -338,6 +340,7 @@ final class AgentWorkspaceState: ObservableObject {
                 )
             } catch {
                 self.error = error.localizedDescription
+                currentRunStatus = .failed
                 retryableConversationID = conversationID
             }
         }
@@ -350,6 +353,7 @@ final class AgentWorkspaceState: ObservableObject {
             return
         }
         isSending = true
+        currentRunStatus = .queued
         error = ""
         retryableConversationID = nil
         Task {
@@ -361,6 +365,7 @@ final class AgentWorkspaceState: ObservableObject {
                 )
             } catch {
                 self.error = error.localizedDescription
+                currentRunStatus = .failed
                 retryableConversationID = conversation.id
             }
         }
@@ -375,6 +380,7 @@ final class AgentWorkspaceState: ObservableObject {
         let conversationID = conversation.id
         let run = try await manager.sendMessage(agentID: profile.id, text: prompt, sessionID: conversation.sessionID)
         activeRun = run
+        currentRunStatus = .running
         let stream = try await manager.streamEvents(for: run)
         var assistantText = ""
         let assistantID = UUID()
@@ -384,6 +390,7 @@ final class AgentWorkspaceState: ObservableObject {
             for try await event in stream {
                 if let status = event.status {
                     terminalStatus = status
+                    currentRunStatus = status
                     if status == .cancelled {
                         note = "已停止本地生成；服务端是否停止尚未确认"
                     }
@@ -433,6 +440,18 @@ final class AgentWorkspaceState: ObservableObject {
                 )
             }
             throw error
+        }
+    }
+
+    var currentRunStatusLabel: String {
+        switch currentRunStatus {
+        case .queued: return "任务已排队"
+        case .running: return "Agent 正在生成"
+        case .completed: return "任务已完成"
+        case .failed: return "任务失败"
+        case .cancelled: return "已停止本地生成"
+        case .needsUserAction: return "等待用户操作"
+        case .unknown: return "状态未知"
         }
     }
 
@@ -666,7 +685,10 @@ struct AgentDirectoryView: View {
                 }
                 if state.isSending {
                     HStack {
-                        ProgressView("正在生成…").controlSize(.small)
+                        ProgressView().controlSize(.small)
+                        Text(state.currentRunStatusLabel)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                         Spacer()
                         Button("停止生成") { state.cancelCurrentRun() }
                     }
