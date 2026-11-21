@@ -36,7 +36,7 @@ done
 # directories and SSH metadata to the dedicated account before switching users.
 chown -R hatch:hatch "$SCRIPT_DIR"
 if [[ -e "$ADDR_MIRROR" ]]; then chown -R hatch:hatch "$ADDR_MIRROR"; fi
-chown -R hatch:hatch "$SSH_DIR"
+chown hatch:hatch "$SSH_DIR"
 chmod 0700 "$SSH_DIR"
 for private_key in "$SSH_DIR/id_ed25519" "$SSH_DIR/id_rsa" "$SSH_DIR/id_ecdsa" \
                    "$SSH_DIR/pack_addr_ed25519" "$SSH_DIR/pack_deploy_ed25519"; do
