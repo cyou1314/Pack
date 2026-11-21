@@ -16,6 +16,21 @@ for cmd in python3 sqlite3; do
 done
 id hatch >/dev/null 2>&1 && ok "service account hatch present" || bad "service account hatch missing"
 getent group systemd-journal >/dev/null 2>&1 && ok "systemd-journal group present" || bad "systemd-journal group missing"
+SSH_DIR=/home/hatch/.ssh
+if [ -d "$SSH_DIR" ]; then
+  SSH_OWNER=$(stat -c '%U' "$SSH_DIR")
+  SSH_MODE=$(stat -c '%a' "$SSH_DIR")
+  [ "$SSH_OWNER" = "hatch" ] && [ "$SSH_MODE" = "700" ] && ok "SSH directory owner/mode" || bad "SSH directory owner=$SSH_OWNER mode=$SSH_MODE (expected hatch/700)"
+else
+  bad "SSH directory missing"
+fi
+if [ -f "$SSH_DIR/pack_addr_ed25519" ]; then
+  KEY_OWNER=$(stat -c '%U' "$SSH_DIR/pack_addr_ed25519")
+  KEY_MODE=$(stat -c '%a' "$SSH_DIR/pack_addr_ed25519")
+  [ "$KEY_OWNER" = "hatch" ] && [ "$KEY_MODE" = "600" ] && ok "URL publisher key owner/mode" || bad "URL publisher key owner=$KEY_OWNER mode=$KEY_MODE (expected hatch/600)"
+else
+  bad "URL publisher SSH key missing"
+fi
 [ -f "$HUB/hub.py" ] && ok "hub.py present" || bad "hub.py missing"
 [ -f "$HUB/room_watch.py" ] && ok "room_watch.py present" || bad "room_watch.py missing"
 [ -x "$HUB/.venv/bin/python" ] && ok "hub venv present" || bad "hub/.venv/bin/python missing"

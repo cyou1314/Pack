@@ -25,14 +25,26 @@ UNITS=(
   pack-db-backup.timer
 )
 
+# Validate every prerequisite before changing ownership or installing units.
+[[ -d "$SSH_DIR" ]] || { echo "ERROR: SSH directory missing: $SSH_DIR" >&2; exit 1; }
+[[ -f "$SSH_DIR/pack_addr_ed25519" ]] || { echo "ERROR: URL publisher SSH key missing" >&2; exit 1; }
+for unit in "${UNITS[@]}"; do
+  [[ -f "$UNIT_DIR/$unit" ]] || { echo "ERROR: missing unit: $UNIT_DIR/$unit" >&2; exit 1; }
+done
+
 # Earlier system units ran as root. Transfer only Pack-owned runtime/code
 # directories and SSH metadata to the dedicated account before switching users.
 chown -R hatch:hatch "$SCRIPT_DIR"
 if [[ -e "$ADDR_MIRROR" ]]; then chown -R hatch:hatch "$ADDR_MIRROR"; fi
-if [[ -d "$SSH_DIR" ]]; then
-  chown -R hatch:hatch "$SSH_DIR"
-  chmod 0700 "$SSH_DIR"
-fi
+chown -R hatch:hatch "$SSH_DIR"
+chmod 0700 "$SSH_DIR"
+for private_key in "$SSH_DIR/id_ed25519" "$SSH_DIR/id_rsa" "$SSH_DIR/id_ecdsa" \
+                   "$SSH_DIR/pack_addr_ed25519" "$SSH_DIR/pack_deploy_ed25519"; do
+  if [[ -f "$private_key" ]]; then
+    chown hatch:hatch "$private_key"
+    chmod 0600 "$private_key"
+  fi
+done
 for known_hosts in "$SSH_DIR/pack_tunnel_known_hosts" "$SSH_DIR/pack_addr_known_hosts"; do
   if [[ -e "$known_hosts" ]]; then
     chown hatch:hatch "$known_hosts"

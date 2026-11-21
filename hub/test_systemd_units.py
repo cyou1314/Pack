@@ -62,6 +62,9 @@ class SystemdUnitTests(unittest.TestCase):
         self.assertIn('install -o root -g root -m 0644', script)
         self.assertIn('chown -R hatch:hatch "$SCRIPT_DIR"', script)
         self.assertIn('chown -R hatch:hatch "$ADDR_MIRROR"', script)
+        self.assertIn('[[ -f "$SSH_DIR/pack_addr_ed25519" ]]', script)
+        self.assertIn('chmod 0600 "$private_key"', script)
+        self.assertLess(script.index('[[ -f "$UNIT_DIR/$unit" ]]'), script.index('chown -R hatch:hatch "$SCRIPT_DIR"'))
         self.assertNotIn("/home/hatch/workspace/pack/hub/systemd", script)
         self.assertEqual(script.count("systemctl daemon-reload"), 1)
         for unit in ("pack-hub.service", "pack-room-watch.service", "pack-tunnel.service"):
