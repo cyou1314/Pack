@@ -306,6 +306,11 @@ actor AgentAdapterRegistry {
         adapters.keys.sorted { $0.uuidString < $1.uuidString }
     }
 
+    func replace(_ adapter: any AgentAdapter, for agentID: UUID) async {
+        let previous = adapters.updateValue(adapter, forKey: agentID)
+        await previous?.disconnect()
+    }
+
     func remove(agentID: UUID) async {
         guard let adapter = adapters.removeValue(forKey: agentID) else { return }
         await adapter.disconnect()
