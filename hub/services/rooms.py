@@ -69,7 +69,7 @@ def get_room_summary(
     }
 
 
-DELETED_PLACEHOLDER = "\\uff08\\u5df2\\u5220\\u9664\\uff09"
+DELETED_PLACEHOLDER = "（已删除）"
 
 
 def read_new_messages(context, me, room: str, since_id: int = 0,
