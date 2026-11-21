@@ -195,7 +195,9 @@ struct AgentDirectoryView: View {
             Divider()
             detail
         }
-        .sheet(isPresented: $showingAdd) {
+        .sheet(isPresented: $showingAdd, onDismiss: {
+            state.clearAddDraft()
+        }) {
             addSheet
         }
         .onChange(of: state.addSucceeded) { _, succeeded in
