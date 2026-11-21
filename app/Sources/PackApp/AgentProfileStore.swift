@@ -10,6 +10,18 @@ struct AgentConversation: Codable, Hashable, Identifiable, Sendable {
     var updatedAt: Date
 }
 
+struct AgentRunRecord: Codable, Hashable, Identifiable, Sendable {
+    let id: UUID
+    let agentID: UUID
+    let conversationID: UUID
+    let providerRunID: String
+    let prompt: String
+    var status: AgentRunStatus
+    let createdAt: Date
+    var updatedAt: Date
+    var errorMessage: String?
+}
+
 struct AgentChatMessage: Codable, Hashable, Identifiable, Sendable {
     let id: UUID
     let agentID: UUID
@@ -212,6 +224,24 @@ actor AgentProfileStore {
                 throw error
             }
         }
+        if version < 4 {
+            try connection.execute("""
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    agent_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE CASCADE,
+                    conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+                    provider_run_id TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    error_message TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_conversation_time
+                    ON agent_runs(conversation_id, created_at DESC);
+                PRAGMA user_version=4;
+                """)
+        }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: databaseURL.path)
     }
 
@@ -279,6 +309,73 @@ actor AgentProfileStore {
             let length = Int(sqlite3_column_bytes(statement, 0))
             let data = Data(bytes: text, count: length)
             result.append(try decoder.decode(AgentProfile.self, from: data))
+        }
+        return result
+    }
+
+    func recordRun(_ run: AgentRunRecord) throws {
+        let statement = try connection.prepare("""
+            INSERT INTO agent_runs
+                (id, agent_id, conversation_id, provider_run_id, prompt, status, created_at, updated_at, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status=excluded.status,
+                updated_at=excluded.updated_at,
+                error_message=excluded.error_message;
+            """)
+        defer { sqlite3_finalize(statement) }
+        Self.bindText(run.id.uuidString, at: 1, to: statement)
+        Self.bindText(run.agentID.uuidString, at: 2, to: statement)
+        Self.bindText(run.conversationID.uuidString, at: 3, to: statement)
+        Self.bindText(run.providerRunID, at: 4, to: statement)
+        Self.bindText(run.prompt, at: 5, to: statement)
+        Self.bindText(run.status.rawValue, at: 6, to: statement)
+        sqlite3_bind_double(statement, 7, run.createdAt.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 8, run.updatedAt.timeIntervalSince1970)
+        if let errorMessage = run.errorMessage {
+            Self.bindText(errorMessage, at: 9, to: statement)
+        } else {
+            sqlite3_bind_null(statement, 9)
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
+        }
+    }
+
+    func runs(conversationID: UUID, limit: Int = 50) throws -> [AgentRunRecord] {
+        let statement = try connection.prepare("""
+            SELECT id, agent_id, provider_run_id, prompt, status, created_at, updated_at, error_message
+            FROM agent_runs WHERE conversation_id=?
+            ORDER BY created_at DESC LIMIT ?;
+            """)
+        defer { sqlite3_finalize(statement) }
+        Self.bindText(conversationID.uuidString, at: 1, to: statement)
+        sqlite3_bind_int(statement, 2, Int32(max(1, min(limit, 500))))
+        var result: [AgentRunRecord] = []
+        while true {
+            let step = sqlite3_step(statement)
+            if step == SQLITE_DONE { break }
+            guard step == SQLITE_ROW,
+                  let idText = sqlite3_column_text(statement, 0),
+                  let agentText = sqlite3_column_text(statement, 1),
+                  let providerRunText = sqlite3_column_text(statement, 2),
+                  let promptText = sqlite3_column_text(statement, 3),
+                  let statusText = sqlite3_column_text(statement, 4),
+                  let status = AgentRunStatus(rawValue: String(cString: statusText)) else {
+                throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
+            }
+            let errorMessage = sqlite3_column_text(statement, 7).map { String(cString: $0) }
+            result.append(AgentRunRecord(
+                id: UUID(uuidString: String(cString: idText)) ?? UUID(),
+                agentID: UUID(uuidString: String(cString: agentText)) ?? UUID(),
+                conversationID: conversationID,
+                providerRunID: String(cString: providerRunText),
+                prompt: String(cString: promptText),
+                status: status,
+                createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 6)),
+                errorMessage: errorMessage
+            ))
         }
         return result
     }
