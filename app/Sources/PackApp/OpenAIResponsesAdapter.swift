@@ -54,7 +54,7 @@ actor OpenAIResponsesAdapter: AgentAdapter {
 
     func probeCapabilities() async throws -> Set<AgentCapability> {
         guard apiKey != nil else { throw AgentAdapterError.authenticationRequired }
-        return [.textInput, .streamingOutput, .sessionResume, .usage]
+        return [.textInput, .streamingOutput, .sessionResume, .runStatus, .usage]
     }
 
     func listSessions() async throws -> [AgentSession] {
