@@ -190,11 +190,6 @@ function storeReceipt(task, reply, chatUrl) {
   deliveryReceipts[task.id] = { taskId: task.id, title: task.title, body: task.body, reply, chatUrl, state: "pending" };
   saveReceipts();
 }
-function saveReceipts() {
-  const temp = receiptPath + ".tmp";
-  writeFileSync(temp, JSON.stringify(deliveryReceipts, null, 2) + "\n", { mode: 0o600 });
-  renameSync(temp, receiptPath);
-}
 function matchingReceipt(task) {
   const receipt = deliveryReceipts[task.id];
   return receipt?.state === "pending" && receipt.title === task.title && receipt.body === task.body ? receipt : null;
