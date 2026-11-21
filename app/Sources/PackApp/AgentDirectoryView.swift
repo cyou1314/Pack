@@ -379,8 +379,15 @@ final class AgentWorkspaceState: ObservableObject {
         var assistantText = ""
         let assistantID = UUID()
         var responseID: String?
+        var terminalStatus: AgentRunStatus?
         do {
             for try await event in stream {
+                if let status = event.status {
+                    terminalStatus = status
+                    if status == .cancelled {
+                        note = "已停止本地生成；服务端是否停止尚未确认"
+                    }
+                }
                 if event.kind == .messageDelta {
                     let delta = event.text ?? ""
                     guard !delta.isEmpty else { continue }
@@ -413,7 +420,11 @@ final class AgentWorkspaceState: ObservableObject {
                     role: "assistant", content: assistantText
                 )
             }
-            note = responseID == nil ? "回复完成" : "回复完成；会话续接 ID 已就绪"
+            if terminalStatus == .completed {
+                note = responseID == nil ? "回复完成" : "回复完成；会话续接 ID 已就绪"
+            } else if terminalStatus != .cancelled {
+                note = "生成流已结束，但未收到明确的完成状态"
+            }
         } catch {
             if !assistantText.isEmpty {
                 try? await manager.appendChatMessage(
