@@ -176,6 +176,9 @@ actor AgentManager {
             await replacementAdapter?.disconnect()
             throw error
         }
+        if sessionChanged {
+            try await store.clearConversationSessions(agentID: agentID)
+        }
         if let replacementAdapter {
             await registry.replace(replacementAdapter, for: agentID)
         }
