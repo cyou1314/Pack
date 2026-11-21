@@ -130,6 +130,58 @@ actor AgentManager {
         )
     }
 
+    func updateProfile(
+        agentID: UUID,
+        displayName: String,
+        model: String,
+        endpoint: String?
+    ) async throws -> AgentProfile {
+        guard var profile = try await store.profile(id: agentID) else {
+            throw AgentAdapterError.invalidConfiguration("Agent profile was not found")
+        }
+        let cleanName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty, !cleanModel.isEmpty else {
+            throw AgentAdapterError.invalidConfiguration("Agent name and model are required")
+        }
+        let cleanEndpoint = endpoint?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedEndpoint = (cleanEndpoint?.isEmpty == false) ? cleanEndpoint : nil
+        var replacementAdapter: OpenAIResponsesAdapter?
+        if profile.providerID == "openai", profile.mode == .api {
+            let adapter = OpenAIResponsesAdapter()
+            let configuration = AgentAdapterConfiguration(
+                agentID: profile.id, providerID: profile.providerID, mode: profile.mode,
+                credential: profile.credential, endpoint: normalizedEndpoint, model: cleanModel,
+                adapterVersion: profile.adapterVersion
+            )
+            _ = try await adapter.connect(configuration: configuration)
+            profile.capabilities = try await adapter.probeCapabilities()
+            replacementAdapter = adapter
+        } else {
+            throw AgentAdapterError.invalidConfiguration("Editing is not supported for this provider")
+        }
+        let sessionChanged = profile.model != cleanModel || profile.endpoint != normalizedEndpoint
+        profile.displayName = cleanName
+        profile.model = cleanModel
+        profile.endpoint = normalizedEndpoint
+        if sessionChanged { profile.lastSessionID = nil }
+        profile.connection = AgentConnectionState(
+            status: .configured, checkedAt: Date(),
+            message: "Profile updated; live API request not yet re-verified"
+        )
+        profile.updatedAt = Date()
+        do {
+            try await store.save(profile)
+        } catch {
+            await replacementAdapter?.disconnect()
+            throw error
+        }
+        if let replacementAdapter {
+            await registry.replace(replacementAdapter, for: agentID)
+        }
+        return profile
+    }
+
     func appendChatMessage(agentID: UUID, role: String, content: String) async throws {
         try await store.appendChatMessage(agentID: agentID, role: role, content: content)
     }
