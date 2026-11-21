@@ -21,21 +21,6 @@ function assertNoPrivateFields(value, path = "input") {
   }
 }
 
-function isObject(value) {
-  return value !== null && typeof value === "object";
-}
-
-function assertNoPrivateFields(value, path = "input") {
-  if (!isObject(value)) return;
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertNoPrivateFields(item, path + "[" + index + "]"));
-    return;
-  }
-  for (const [key, nested] of Object.entries(value)) {
-    if (PRIVATE_KEYS.has(key)) throw new Error("private_context_forbidden:" + path + "." + key);
-    assertNoPrivateFields(nested, path + "." + key);
-  }
-}
 
 function text(value, field, maxLength, allowEmpty = false) {
   if (typeof value !== "string" || value.length > maxLength || (!allowEmpty && !value.trim())) {
