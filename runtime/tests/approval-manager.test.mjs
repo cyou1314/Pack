@@ -63,11 +63,10 @@ test('only dispatcher messages for the exact task can decide a pending approval'
       { id: 82, author: 'dispatcher', body: '批准 任务#123' },
       { id: 83, author: 'dispatcher', body: '批准 任务#12' },
     ] }),
-    sleep: async () => {}, listActiveTasks: async () => [],
+    sleep: async () => {}, listActiveTasks: async () => [{ ...task, status: 'working' }],
     approvalDecision: parseDecision, log: quietLog,
   });
   const wait = { decision: null, room: 'pack-main', cursor: 80 };
-  manager._pendingForTest = null;
   // Register through the public wait method; the first poll receives the messages above.
   const result = await manager.waitForTaskApproval({ task, claimToken: 'token', wait });
   assert.equal(result, 'approved');
