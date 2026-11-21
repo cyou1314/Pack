@@ -1576,7 +1576,80 @@ _INBOX_MSG_SQL = (
 
 # ---------------- MCP tools ----------------
 
-def build_server():
+# Stable implementation aliases let build_server bind one HubContext without
+# shadowing the compatibility entry points used by init/CLI/background jobs.
+_AUTHENTICATE = authenticate
+_EXT_CHECK = _ext_check
+_MODE_CHECK = _mode_check
+_CLOSE_RUN = _close_run
+_APPROVAL_GATE = _approval_gate
+_MEM_TARGET = _mem_target
+_MEM_APPEND_VERSION = _mem_append_version
+_APPLY_QUOTA = _apply_quota
+_AUTO_RELAY = _auto_relay
+_DESKTOP_RELEASE_FOR_TASK = _desktop_release_for_task
+_WEEK_START_CST = _week_start_cst
+_VALIDATE_QUOTA_REPORT = _validate_quota_report
+_ATTACH_PATH = _attach_path
+_INBOX_RESOLVE_ROOM = _inbox_resolve_room
+
+
+def build_server(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    # Bind every tool closure to the same runtime dependencies. The default
+    # context preserves the current process behavior; isolated contexts are
+    # available to tests and future multi-instance service assembly.
+    db = context.connect
+    audit = context.audit
+    _lock = context.lock
+    _now = context.now
+
+    def authenticate():
+        return _AUTHENTICATE(context)
+
+    def _ext_check(me, tool_name):
+        return _EXT_CHECK(me, tool_name, context)
+
+    def _mode_check(me, tool_name):
+        return _MODE_CHECK(me, tool_name, context)
+
+    def _close_run(conn, task_id, outcome, actor, detail=""):
+        return _CLOSE_RUN(conn, task_id, outcome, actor, detail, context)
+
+    def _approval_gate(conn, room_id, msg_id, body, poster=None):
+        return _APPROVAL_GATE(conn, room_id, msg_id, body, poster, context)
+
+    def _mem_target(conn, me, scope, member):
+        return _MEM_TARGET(conn, me, scope, member, context)
+
+    def _mem_append_version(conn, target, scope, key, text, author, origin, refs):
+        return _MEM_APPEND_VERSION(conn, target, scope, key, text, author, origin, refs, context)
+
+    def _apply_quota(conn, member_id, week_used_pct, week_reset_at, extra_tokens_left, source):
+        return _APPLY_QUOTA(
+            conn, member_id, week_used_pct, week_reset_at, extra_tokens_left, source, context
+        )
+
+    def _auto_relay(conn, task, from_name, reason_label):
+        return _AUTO_RELAY(conn, task, from_name, reason_label, context)
+
+    def _desktop_release_for_task(conn, task_id, actor, reason):
+        return _DESKTOP_RELEASE_FOR_TASK(conn, task_id, actor, reason, context)
+
+    def _week_start_cst(now=None):
+        return _WEEK_START_CST(now, context)
+
+    def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
+        return _VALIDATE_QUOTA_REPORT(
+            week_used_pct, week_reset_at, extra_tokens_left, context
+        )
+
+    def _attach_path(sha256, mime):
+        return _ATTACH_PATH(sha256, mime, context)
+
+    def _inbox_resolve_room(me, room):
+        return _INBOX_RESOLVE_ROOM(me, room, context)
+
     from fastmcp import FastMCP
     # FastMCP 4 内部已禁用 SDK 的 DNS 重绑定保护、Host 守卫默认关；
     # 中枢真正的门是每成员 Bearer token（见 authenticate）。
@@ -1672,7 +1745,7 @@ def build_server():
                 login_state = "pending" if provider else None
                 cur = conn.execute(
                     "INSERT INTO members(name,role,token_hash,profile,created_at,avatar,provider,login_state) VALUES(?,'member',?,?,?,?,?,?)",
-                    (name, hash_token(tok), profile or None, time.time(), json.dumps(av),
+                    (name, hash_token(tok), profile or None, context.clock(), json.dumps(av),
                      provider or None, login_state))
                 mid = cur.lastrowid
                 audit(conn, me["name"], "member_register", name)
@@ -1712,7 +1785,7 @@ def build_server():
                     raise ValueError("cannot remove the owner")
                 if row["removed_at"] is not None:
                     raise ValueError(f"member already removed: {name}")
-                now = time.time()
+                now = context.clock()
                 mid = row["id"]
                 for t in conn.execute(
                         "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','working')",
@@ -2021,7 +2094,7 @@ def build_server():
         if len(display_name or "") > 80:
             raise ValueError("display_name too long: > 80 chars")
         code = "pk-pair-" + secrets.token_urlsafe(32)
-        now = time.time()
+        now = context.clock()
         exp = now + PAIR_CODE_TTL
         with _lock:
             conn = db()
@@ -2101,7 +2174,7 @@ def build_server():
                 " ORDER BY c.id DESC LIMIT 200").fetchall()
         finally:
             conn.close()
-        now = time.time()
+        now = context.clock()
         out = []
         for x in rows:
             if x["revoked_at"]:
@@ -2147,7 +2220,7 @@ def build_server():
                 cur = conn.execute(
                     "UPDATE pair_codes SET revoked_at=? WHERE id=?"
                     " AND revoked_at IS NULL AND redeemed_at IS NULL",
-                    (time.time(), code_id))
+                    (context.clock(), code_id))
                 if cur.rowcount != 1:
                     raise ValueError(
                         f"pair code {code_id} cannot be revoked now")
@@ -2413,7 +2486,7 @@ def build_server():
         if ext:
             # 频控在落库前判定：普通消息走三窗口（approval_request 不
             # 计入），approval_request 走独立硬顶（单任务 + 单成员每小时）。
-            nowx = time.time()
+            nowx = context.clock()
             if kind == "approval_request":
                 m2 = TASK_REF_RE.search(body or "")
                 tid2 = int(m2.group(1)) if m2 else None
@@ -2450,7 +2523,7 @@ def build_server():
         cur = conn.execute(
             "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at,reply_to_id,payload)"
             " VALUES(?,?,?,?,?,?,?,?)",
-            (r["id"], me["id"], kind, body, msg_task_id, time.time(),
+            (r["id"], me["id"], kind, body, msg_task_id, context.clock(),
              int(reply_to_id) or None, msg_payload))
         mid = cur.lastrowid
         if attachment_ids:
@@ -2527,7 +2600,7 @@ def build_server():
         conn = db()
         try:
             cur = conn.execute("INSERT INTO rooms(name,created_at) VALUES(?,?)",
-                               (name, time.time()))
+                               (name, context.clock()))
             rid = cur.lastrowid
             audit(conn, me["name"], "room_create", f"room {rid}: {name}")
             conn.commit()
@@ -2750,7 +2823,7 @@ def build_server():
         require(me)
         ua = _agent_version_gate()
         room_id, room_name = _inbox_resolve_room(me, room)
-        now = time.time()
+        now = context.clock()
         conn = db()
         try:
             conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?",
@@ -2888,7 +2961,7 @@ def build_server():
                 conn.execute(
                     "INSERT OR IGNORE INTO message_op_keys"
                     "(member_id,op_key,message_id,created_at) VALUES(?,?,?,?)",
-                    (me["id"], op_key, out["message_id"], time.time()))
+                    (me["id"], op_key, out["message_id"], context.clock()))
                 audit(conn, me["name"], "inbox_send",
                       f"room={room_name} msg={out['message_id']} op_key=1")
                 conn.commit()
@@ -2954,7 +3027,7 @@ def build_server():
                 day_n = conn.execute(
                     "SELECT COUNT(*) AS n FROM attachments"
                     " WHERE uploader_id=? AND created_at>=?",
-                    (me["id"], time.time() - 86400)).fetchone()["n"]
+                    (me["id"], context.clock() - 86400)).fetchone()["n"]
                 mine = conn.execute(
                     "SELECT COALESCE(SUM(size),0) AS s FROM attachments"
                     " WHERE uploader_id=?", (me["id"],)).fetchone()["s"]
@@ -2984,7 +3057,7 @@ def build_server():
                 os.replace(tmp, path)
             cur = conn.execute(
                 "INSERT INTO attachments(sha256,mime,size,original_name,uploader_id,room_id,message_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)",
-                (sha, mime, len(data), name, me["id"], r["id"], time.time()))
+                (sha, mime, len(data), name, me["id"], r["id"], context.clock()))
             aid = cur.lastrowid
             audit(conn, me["name"], "attachment_put",
                   f"attachment {aid} room {room} size {len(data)}")
@@ -3092,7 +3165,7 @@ def build_server():
         # 并发删同一条会一路成功（staging14 复检 C3：4 路并发 4 成功 4 审计）。
         cur = conn.execute(
             "UPDATE messages SET body=?, deleted_at=? WHERE id=? AND deleted_at IS NULL",
-            (DELETED_PLACEHOLDER, time.time(), message_id))
+            (DELETED_PLACEHOLDER, context.clock(), message_id))
         if cur.rowcount != 1:
             conn.close()
             raise ValueError(f"message {message_id} already deleted")
@@ -3131,7 +3204,7 @@ def build_server():
             raise ValueError(f"message {message_id} already deleted")
         cur = conn.execute(
             "UPDATE messages SET body=?, edited_at=? WHERE id=? AND deleted_at IS NULL",
-            (new_body, time.time(), message_id))
+            (new_body, context.clock(), message_id))
         if cur.rowcount != 1:
             conn.close()
             raise ValueError(f"message {message_id} already deleted")
@@ -3177,7 +3250,7 @@ def build_server():
                         f"permanent: executor-pinned tasks cannot be assigned"
                         f" to external member {assignee_name}")
             assignee = a["id"]
-        now = time.time()
+        now = context.clock()
         cur = conn.execute(
             "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,urgent,created_at,updated_at) VALUES(?,?,?,?,?,'open',?,?,?)",
             (r["id"], title, body, me["id"], assignee, 1 if urgent else 0, now, now))
@@ -3470,13 +3543,13 @@ def build_server():
                         raise ValueError(
                             f"note too long for external members:"
                             f" > {EXT_NOTE_MAX_CHARS} chars")
-                    ra = _ext_msg_retry_after(conn, me["id"], time.time())
+                    ra = _ext_msg_retry_after(conn, me["id"], context.clock())
                     if ra is not None:
                         audit(conn, me["name"], "external_rate_limited",
                               f"kind=task_update_note retry_after={ra}")
                         conn.commit()
                         raise _ext_rate_error(ra)
-            now = time.time()
+            now = context.clock()
             # UPDATE 带持有人守卫 + rowcount 复核：_holder 是先检后写，两步之间
             # 租约可能被 sweeper 回收并被他人重认领，无守卫 UPDATE 会覆盖新认领
             # （staging14 复检 C6 语句级实证）。complete/block 同此修。
@@ -3541,7 +3614,7 @@ def build_server():
                         {"error": "invalid_envelope", "task_id": task_id,
                          "problems": problems}, ensure_ascii=False))
                 stored = env["summary"]
-            now = time.time()
+            now = context.clock()
             cur = conn.execute(
                 "UPDATE tasks SET status='review', result=?, envelope=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND assignee=? AND claim_token=?",
                 (stored, json.dumps(env, ensure_ascii=False) if env else None, now, task_id,
@@ -3707,7 +3780,7 @@ def build_server():
             return {"task_id": task_id, "status": t["status"]}
         conn.execute(
             "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
-            (time.time(), task_id))
+            (context.clock(), task_id))
         _close_run(conn, task_id, "cancelled", me["name"])
         _desktop_release_for_task(conn, task_id, me["name"], "cancel")
         audit(conn, me["name"], "task_cancel", f"task {task_id}")
@@ -3983,7 +4056,7 @@ def build_server():
                     holder_name = holder_row["name"] if holder_row else str(t["assignee"])
                     disp0 = conn.execute(
                         "SELECT id FROM members WHERE role='dispatcher'").fetchone()
-                    now0 = time.time()
+                    now0 = context.clock()
                     conn.execute(
                         """INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)
                            VALUES(?,?,'chat',?,?,?)""",
@@ -4036,7 +4109,7 @@ def build_server():
                     "SELECT name FROM members WHERE id=?", (t["assignee"],)).fetchone()
                 from_name = from_row["name"] if from_row else str(t["assignee"])
                 _close_run(conn, task_id, "transferred", me["name"])
-                now = time.time()
+                now = context.clock()
                 expires_at = now + TRANSFER_ACCEPT_TTL
                 conn.execute(
                     """UPDATE tasks SET assignee=?, claim_token=NULL, lease_expires=NULL,
@@ -4103,7 +4176,7 @@ def build_server():
                 if x["status"] == "expired":
                     raise ValueError(
                         f"transfer {x['id']} for task {task_id} already expired")
-                now = time.time()
+                now = context.clock()
                 if x["expires_at"] is not None and x["expires_at"] <= now:
                     raise ValueError(
                         f"transfer {x['id']} for task {task_id} expired at "
@@ -4223,7 +4296,7 @@ def build_server():
                 fence = conn.execute(
                     "SELECT COALESCE(MAX(fence),0)+1 AS f FROM runs WHERE task_id=?",
                     (task_id,)).fetchone()["f"]
-                now = time.time()
+                now = context.clock()
                 cur = conn.execute(
                     """INSERT INTO runs(task_id,member_id,fence,claim_token,status,started_at)
                        VALUES(?,?,?,?,'running',?)""",
@@ -4310,7 +4383,7 @@ def build_server():
                VALUES(?,?,?,?,1,?,?)
                ON CONFLICT(action,target) DO UPDATE SET
                  effect=excluded.effect, source=excluded.source, enabled=1""",
-            (action, target, effect, source, me["name"], time.time()))
+            (action, target, effect, source, me["name"], context.clock()))
         row = conn.execute("SELECT id FROM approval_rules WHERE action=? AND target=?",
                            (action, target)).fetchone()
         audit(conn, me["name"], "rule_upsert", f"{action}->{target} = {effect}")
@@ -4362,7 +4435,7 @@ def build_server():
                VALUES(?,?,?,1,?,?)
                ON CONFLICT(pattern) DO UPDATE SET
                  effect=excluded.effect, source=excluded.source, enabled=1""",
-            (pattern, effect, source, me["name"], time.time()))
+            (pattern, effect, source, me["name"], context.clock()))
         row = conn.execute("SELECT id FROM egress_rules WHERE pattern=?",
                            (pattern,)).fetchone()
         audit(conn, me["name"], "egress_rule_upsert", f"{pattern} = {effect}")
@@ -4404,7 +4477,7 @@ def build_server():
                     "SELECT COUNT(*) AS n FROM audit WHERE actor='egress'"
                     " AND action='egress_check' AND ts>=?"
                     " AND substr(detail,1,?)=?",
-                    (time.time() - 60, len(prefix), prefix)).fetchone()["n"]
+                    (context.clock() - 60, len(prefix), prefix)).fetchone()["n"]
                 if n >= EXT_EGRESS_PER_MIN:
                     audit(conn, me["name"], "external_egress_throttled",
                           f"count={n} window=60s")
@@ -4469,7 +4542,7 @@ def build_server():
                     raise ValueError(
                         f"task {task_id} already decided (via {decided_by}); "
                         "review_file only handles undecided approvals")
-                now = time.time()
+                now = context.clock()
                 cur = conn.execute(
                     """INSERT INTO review_log(task_id,target_url,owner_quote,member_desc,
                        verdict,reviewer,created_at) VALUES(?,?,?,?,?,?,?)""",
@@ -4732,7 +4805,7 @@ def build_server():
             # 全局 _lock 串行化，否则并发 publish 撞 UNIQUE(skill_id,version)
             # 只有一条成功、其余抛原始 sqlite 错（复检 B1/B2 实证）。
             with _lock:
-                now = time.time()
+                now = context.clock()
                 s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
                 if not s:
                     cur = conn.execute(
@@ -4895,7 +4968,7 @@ def build_server():
                         f"no such version: skill '{s['name']}' version {version} "
                         f"(current_version={s['current_version']})")
                 nv = s["current_version"] + 1
-                now = time.time()
+                now = context.clock()
                 conn.execute(
                     "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
                     "VALUES(?,?,?,?,?)", (s["id"], nv, v["body"], me["name"], now))
@@ -5003,7 +5076,7 @@ def build_server():
         me = authenticate()
         require(me)
         conn = db()
-        conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?", (time.time(), me["id"]))
+        conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?", (context.clock(), me["id"]))
         conn.commit()
         conn.close()
         return {"ok": True, "member": me["name"]}
@@ -5025,7 +5098,7 @@ def build_server():
         code = payload.get("code") if isinstance(payload, dict) else None
         if isinstance(code, str):
             code = code.strip()
-        now = time.time()
+        now = context.clock()
         with _lock:
             conn = db()
             try:
