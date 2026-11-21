@@ -382,6 +382,14 @@ actor AgentProfileStore {
         guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(connection.db) > 0 else { throw AgentProfileStoreError.sqlite("Conversation not found") }
     }
 
+    func clearConversationMessages(agentID: UUID, conversationID: UUID) throws {
+        let statement = try connection.prepare("DELETE FROM agent_chat_messages WHERE agent_id=? AND conversation_id=?;")
+        defer { sqlite3_finalize(statement) }
+        bindText(agentID.uuidString, at: 1, to: statement)
+        bindText(conversationID.uuidString, at: 2, to: statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
+    }
+
     func clearChatMessages(agentID: UUID) throws {
         let statement = try connection.prepare("DELETE FROM agent_chat_messages WHERE agent_id=?;")
         defer { sqlite3_finalize(statement) }
