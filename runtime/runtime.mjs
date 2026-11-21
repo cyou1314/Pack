@@ -147,7 +147,7 @@ async function discoverHubUrl() {
     const tmp = configPath + ".tmp";
     writeFileSync(tmp, JSON.stringify(disk, null, 2) + "\n", {mode:0o600});
     chmodSync(tmp, 0o600); renameSync(tmp, configPath);
-    console.log('hub address updated and saved');cfg.hubUrl=url;sessionId=null;
+    console.log('hub address updated and saved');cfg.hubUrl=url;hubRpc.resetSession();
   } }
   catch(e) { console.error('hub discovery failed:',e.message); }
 }
@@ -266,7 +266,7 @@ async function completeSafely(task, claimToken, receipt, expectedAttempt = task.
         }
       } catch (checkError) {
         console.error(`task ${task.id} delivery status check failed:`, checkError.message);
-        sessionId = null;
+        hubRpc.resetSession();
         await discoverHubUrl();
         try { await enqueue(mcpInit); } catch {}
       }
@@ -496,7 +496,7 @@ async function main() {
     try { await mcpInit(); break; }
     catch (e) {
       console.error("boot connect failed, retrying in 20s:", e.message);
-      sessionId = null;
+      hubRpc.resetSession();
       await discoverHubUrl();
       await sleep(20000);
     }
@@ -540,7 +540,7 @@ async function main() {
         failStreak = 0;
         await discoverHubUrl();
       }
-      sessionId = null;
+      hubRpc.resetSession();
       try { await mcpInit(); } catch {}
     }
     await sleep(POLL_MS);
