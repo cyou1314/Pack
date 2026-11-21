@@ -81,6 +81,9 @@ final class AgentWorkspaceState: ObservableObject {
                 let created = try await manager.createConversation(agentID: agentID, title: "新会话")
                 conversations = [created]
             }
+            for conversation in conversations {
+                if let sessionID = conversation.sessionID { sessionIDs[conversation.id] = sessionID }
+            }
             if selectedAgentID == agentID {
                 selectedConversationID = conversations.first?.id
                 await loadMessages(for: agentID, conversationID: selectedConversationID)
@@ -263,7 +266,7 @@ final class AgentWorkspaceState: ObservableObject {
         guard let manager, let profile = selectedProfile, let conversation = selectedConversation else { return }
         Task {
             do {
-                try await manager.clearChatMessages(agentID: profile.id)
+                try await manager.clearConversationMessages(agentID: profile.id, conversationID: conversation.id)
                 chatOutputs[conversation.id] = ""
                 note = "该 Agent 的本地聊天记录已清空"
             } catch {
@@ -380,6 +383,8 @@ struct AgentDirectoryView: View {
     @State private var showingEdit = false
     @State private var showingCredential = false
     @State private var showClearChatConfirmation = false
+    @State private var showDeleteConversationConfirmation = false
+    @State private var showingRenameConversation = false
     @State private var showRemoveConfirmation = false
 
     var body: some View {
@@ -393,7 +398,7 @@ struct AgentDirectoryView: View {
                     }.buttonStyle(.borderedProminent)
                 }
                 ForEach(state.profiles) { profile in
-                    Button { state.selectedAgentID = profile.id } label: {
+                    Button { state.selectAgent(profile.id) } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(profile.displayName).font(.system(size: 13, weight: .medium))
                             Text("\(profile.providerID.uppercased()) · \(profile.model ?? "未设置模型")")
@@ -422,10 +427,16 @@ struct AgentDirectoryView: View {
         .sheet(isPresented: $showingEdit) {
             editSheet
         }
+        .sheet(isPresented: $showingRenameConversation) {
+            renameConversationSheet
+        }
         .sheet(isPresented: $showingCredential, onDismiss: {
             state.clearCredentialDraft()
         }) {
             credentialSheet
+        }
+        .onChange(of: state.renameSucceeded) { _, succeeded in
+            if succeeded { showingRenameConversation = false; state.renameSucceeded = false }
         }
         .onChange(of: state.credentialUpdateSucceeded) { _, succeeded in
             if succeeded {
@@ -446,11 +457,15 @@ struct AgentDirectoryView: View {
             }
         }
         .confirmationDialog("清空聊天记录？", isPresented: $showClearChatConfirmation, titleVisibility: .visible) {
-            Button("清空当前 Agent 聊天记录", role: .destructive) { state.clearSelectedChat() }
+            Button("清空当前会话记录", role: .destructive) { state.clearSelectedChat() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("只删除当前 Agent 在本机保存的聊天记录，不会删除服务商侧会话。")
+            Text("只删除当前会话在本机保存的消息，不会删除服务商侧会话。")
         }
+        .confirmationDialog("删除会话？", isPresented: $showDeleteConversationConfirmation, titleVisibility: .visible) {
+            Button("删除当前会话", role: .destructive) { state.deleteSelectedConversation() }
+            Button("取消", role: .cancel) {}
+        } message: { Text("只删除当前会话及其本地消息，不影响其他会话或 Agent。") }
         .confirmationDialog("移除 Agent？", isPresented: $showRemoveConfirmation, titleVisibility: .visible) {
             Button("移除并删除 Keychain 凭证", role: .destructive) { state.removeSelected() }
             Button("取消", role: .cancel) {}
@@ -494,12 +509,49 @@ struct AgentDirectoryView: View {
                     Spacer()
                     Text(profile.connection?.message ?? "尚未测试").foregroundStyle(.secondary)
                 }.font(.system(size: 11))
+                HStack(spacing: 8) {
+                    Text("会话").font(.system(size: 12, weight: .semibold))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(state.conversations) { conversation in
+                                Button(conversation.title) { state.selectConversation(conversation.id) }
+                                    .buttonStyle(.bordered)
+                                    .tint(state.selectedConversationID == conversation.id ? .accentColor : .secondary)
+                            }
+                        }
+                    }
+                    Button { state.createConversation() } label: { Image(systemName: "plus") }
+                        .help("新建会话")
+                    Button {
+                        state.beginRenameConversation()
+                        showingRenameConversation = true
+                    } label: { Image(systemName: "pencil") }
+                    .disabled(state.selectedConversation == nil || state.isSending)
+                    .help("重命名会话")
+                    Button(role: .destructive) { showDeleteConversationConfirmation = true } label: { Image(systemName: "trash") }
+                        .disabled(state.selectedConversation == nil || state.isSending)
+                        .help("删除会话")
+                }
                 Divider()
                 ScrollView {
-                    Text((state.chatOutputs[profile.id] ?? "").isEmpty ? "发送一条消息，验证 Agent API 适配器。" : (state.chatOutputs[profile.id] ?? ""))
-                        .font(.system(size: 13, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 12) {
+                        let transcript = state.selectedConversationID.flatMap { state.chatOutputs[$0] } ?? ""
+                        if transcript.isEmpty {
+                            Text("向 \(profile.displayName) 发送消息，开始这个独立会话。")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            ForEach(Array(transcript.components(separatedBy: "\\n\\n").enumerated()), id: \\.offset) { _, block in
+                                Text(block)
+                                    .font(.system(size: 13))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(12)
+                                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 HStack {
                     TextField("发送消息…", text: $state.chatInput, axis: .vertical)
@@ -531,6 +583,23 @@ struct AgentDirectoryView: View {
                 if !state.error.isEmpty { Text(state.error).foregroundStyle(.red) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var renameConversationSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("重命名会话").font(.system(size: 18, weight: .semibold))
+            TextField("会话名称", text: $state.renameConversationTitle)
+                .textFieldStyle(.roundedBorder)
+            if !state.error.isEmpty { Text(state.error).font(.system(size: 11)).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("取消") { showingRenameConversation = false }
+                Button("保存") { state.saveConversationRename() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
     }
 
     private var credentialSheet: some View {
