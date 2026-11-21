@@ -209,4 +209,4 @@ hub/backup-db.sh     # 手动在线备份（定时器每日自动跑，备份与
 - [完整文档索引](docs/INDEX.md)
 - [v2 产品规格与改造路线](PACK-V2-PLAN.md)
 - [v2 仓库审计](PACK-V2-AUDIT-2026-11-21.md)
-- [测试治理与回归矩阵](PACK-V2-TEST-GOVERNANCE.md)
+- [测试治理与回归矩阵](PACK-V2-TEST-GOVERNANCE.md)\n- [现状架构图与 v2 模块边界](PACK-V2-ARCHITECTURE-MAP.md)
