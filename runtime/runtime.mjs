@@ -401,6 +401,7 @@ async function main() {
       try { await mcpInit(); } catch {}
     },
   });
-  await scheduler.run();}
+  await scheduler.run();
+}
 
 main();
