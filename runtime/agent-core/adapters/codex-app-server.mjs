@@ -218,7 +218,7 @@ export class CodexAppServerAdapter {
     const approval = this.#pendingApprovals.get(String(requestId));
     if (!approval) throw new Error("codex_approval_not_pending");
     if (!APPROVAL_DECISIONS.has(decision)) throw new TypeError("unsupported_codex_approval_decision");
-    if (approval.availableDecisions.length && !approval.availableDecisions.includes(decision)) {
+    if (approval.availableDecisionsProvided && !approval.availableDecisions.includes(decision)) {
       throw new Error("codex_approval_decision_unavailable");
     }
 
@@ -329,7 +329,8 @@ export class CodexAppServerAdapter {
 
     const params = message.params ?? {};
     const requestId = String(message.id);
-    const availableDecisions = Array.isArray(params.availableDecisions)
+    const availableDecisionsProvided = Array.isArray(params.availableDecisions);
+    const availableDecisions = availableDecisionsProvided
       ? params.availableDecisions.filter((item) => APPROVAL_DECISIONS.has(item))
       : [];
 
@@ -340,6 +341,7 @@ export class CodexAppServerAdapter {
       turnId: params.turnId,
       itemId: params.itemId,
       availableDecisions,
+      availableDecisionsProvided,
       timer: null,
     };
     approval.timer = setTimeout(() => {
@@ -433,6 +435,9 @@ export class CodexAppServerAdapter {
     this.#exitHandled = true;
     this.#connected = false;
     this.#lastError = reason;
+    this.#child = null;
+    this.#reader?.close();
+    this.#reader = null;
 
     for (const pending of this.#pendingRequests.values()) {
       clearTimeout(pending.timer);

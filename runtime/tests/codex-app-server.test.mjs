@@ -10,7 +10,7 @@ import {
 import {AgentAdapterRegistry} from "../agent-core/registry.mjs";
 
 class FakeCodexProcess extends EventEmitter {
-  constructor({approvalOnTurn = false} = {}) {
+  constructor({approvalOnTurn = false, approvalDecisions = ["accept", "decline", "cancel"]} = {}) {
     super();
     this.stdin = new PassThrough();
     this.stdout = new PassThrough();
@@ -18,6 +18,7 @@ class FakeCodexProcess extends EventEmitter {
     this.exitCode = null;
     this.killed = false;
     this.approvalOnTurn = approvalOnTurn;
+    this.approvalDecisions = approvalDecisions;
     this.received = [];
     this.buffer = "";
 
@@ -66,7 +67,7 @@ class FakeCodexProcess extends EventEmitter {
             turnId: "turn-1",
             itemId: "item-approval",
             reason: "Run the requested test command",
-            availableDecisions: ["accept", "decline", "cancel"],
+            availableDecisions: this.approvalDecisions,
           },
         });
       } else {
@@ -182,5 +183,24 @@ test("Codex adapter can be registered in the shared registry", async () => {
   assert.ok(CODEX_APP_SERVER_DESCRIPTOR.capabilities.includes("approvals.request"));
   const adapter = await registry.create("codex.app-server");
   assert.equal(typeof adapter.sendMessage, "function");
+  await adapter.disconnect();
+});
+
+test("Codex approval never upgrades to a persistent session grant", async () => {
+  const child = new FakeCodexProcess({approvalOnTurn: true, approvalDecisions: ["acceptForSession"]});
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+    approvalTimeoutMs: 5000,
+  });
+  await adapter.connect();
+  await adapter.createSession();
+  const approvalEvent = waitForEvent(adapter, "approval.requested");
+  await adapter.sendMessage({sessionId: "thr-new", text: "Run a command"});
+  const event = await approvalEvent;
+  await assert.rejects(
+    () => adapter.respondToApproval({requestId: event.payload.requestId, decision: "accept"}),
+    /codex_approval_decision_unavailable/,
+  );
   await adapter.disconnect();
 });
