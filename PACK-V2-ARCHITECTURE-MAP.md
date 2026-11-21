@@ -8,7 +8,7 @@ Pack 当前是三条主要运行路径共享一个 Hub 的 v1 系统，而不是
 
 1. **macOS App**：SwiftUI 原生客户端；`AppState` 管理大部分界面状态、轮询、业务动作与 Hub 工具调用；`HubClient` 自己实现 MCP Streamable HTTP / JSON-RPC。
 2. **Hub**：`hub/hub.py` 单文件约 5,397 行；在 `build_server()` 内注册75 个 MCP 工具，负责成员认证、权限闸门、任务状态机、消息/房间、批准、记忆、技能、附件、审计、SQLite 持久化与后台 sweeper。
-3. **Runtime**：`runtime/runtime.mjs` 约 587 行，负责轮询、任务认领/交付、审批等待、闲聊、额度自报、地址发现和 ego-browser 驱动编排；复用 `pack-contracts.mjs`、`runtime-helpers.mjs`、策略模块。
+3. **Runtime**：`runtime/runtime.mjs` 约 525 行（抽取后），负责轮询、任务认领/交付、审批等待、闲聊、额度自报、地址发现和 ego-browser 驱动编排；复用 `pack-contracts.mjs`、`runtime-helpers.mjs`、策略模块。
 4. **Muse4AI Bridge**：`runtime/muse4ai-bridge/bridge.mjs` 约 302 行，另有自己的 Hub MCP 客户端和 Muse4AI 本机 HTTP 客户端，读取独立状态/凭证文件，访问 `127.0.0.1:47821`。
 5. **L2 handoff**：通过本机 IPC/socket 将任务交给 headless 引擎；与 Runtime、Bridge 不是同一个生命周期，必须作为独立执行器边界处理。
 
@@ -49,7 +49,7 @@ flowchart TB
 |---|---|---|---|
 | macOS UI | `app/Sources/PackApp/Views.swift`、`PackApp.swift` | 视图 + 大型 AppState | Views 只呈现；ViewModel/UseCase 负责交互；Domain 不依赖 SwiftUI |
 | Hub 协议客户端 | `HubClient.swift` | 手写 MCP 会话、JSON-RPC、工具调用 | `HubTransport` 协议 + v1 MCP Adapter；新本地 Core 不直接依赖具体传输 |
-| Hub 工具入口 | `hub/hub.py` `build_server()` | 约 82 个工具注册、认证/授权包装 | API/Transport 层与领域服务分离；保持现有 MCP schema 兼容 |
+| Hub 工具入口 | `hub/hub.py` `build_server()` | 75 个工具注册、认证/授权包装 | API/Transport 层与领域服务分离；保持现有 MCP schema 兼容 |
 | Hub 领域逻辑 | `hub/hub.py` | 任务、成员、房间、批准、记忆、技能、附件、审计混合 | Task / Agent / Conversation / Approval / Memory / Artifact / Policy 服务 |
 | Hub 持久化 | `hub/hub.py` 中 `db()`、`init()` 及 SQL | SQLite schema、查询、事务与迁移混在业务逻辑 | Repository + migration 层；先定义事务边界和契约，不先拆表 |
 | 主执行器 | `runtime/runtime.mjs` | 轮询、认领、执行、完成、聊天和额度循环 | Task Engine + Scheduler + Agent Adapter + Event/Run 状态 |
@@ -130,7 +130,7 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 
 1. 先从 `hub.py` 提取无副作用纯函数和 schema/validation 模块。
 2. 再抽 Repository 和事务服务；数据库迁移仍集中管理。
-3. 最后按领域抽 Tool Router / Service，保持 82 个现有工具名、参数、权限顺序和返回 schema 不变。
+3. 最后按领域抽 Tool Router / Service，保持 75 个现有工具名、参数、权限顺序和返回 schema 不变。
 4. 每个提取批次对比 MCP tools/list、JSON schema、角色权限矩阵、DB migration 和全量 staging 回归。
 
 ### Phase E：Agent Registry 与适配器
@@ -160,6 +160,20 @@ v2 中 Pack 管理 Agent Profile、连接元数据、任务、权限、上下文
 | Native ChatGPT / 豆包 | 未验证 | 没有真实适配器连接测试 |
 | L2 真实交接 | 未验证 | 既有记录要求暂停再次点击，须另行授权与复验 |
 
-## 9. 本轮结论
+## 9. Runtime 模块化进展（2026-11-21）
+
+本轮已在 `v2-product-alignment` 分支完成第一批纯提取，旧入口 `runtime/runtime.mjs` 保留：
+
+| 模块 | 文件 | 已提取职责 |
+|---|---|---|
+| Hub RPC Transport | `runtime/hub-rpc-client.mjs` | MCP JSON-RPC、SSE 响应、Session ID 与重置 |
+| Driver Process Adapter | `runtime/driver-runner.mjs` | ego-browser 子进程、脚本组合、结果解析与取消 |
+| Runtime State Store | `runtime/runtime-state-store.mjs` | chat-state 与 delivery-receipts JSON 读写、原子替换、0600 权限 |
+
+对应契约测试位于 `runtime/tests/`。Runtime 模块拆分仍属于进行中：任务生命周期、调度、审批等待与聊天业务策略尚未迁移；没有更改状态文件 schema，也没有进行生产部署。
+
+验证边界：Hub RPC 与 Driver 提取已由 GitHub Actions #162 的 Runtime job 通过；State Store 的新测试已加入 CI，但最新提交的完整流水线尚待完成。不要将当前模块化进展描述为 Runtime 重构完成。
+
+## 10. 本轮结论
 
 当前最稳妥的工程顺序是：**先锁定 MCP 工具契约和权限矩阵 → 抽离 Runtime 模块 → 抽离 AppState 网络/业务职责 → 最后拆 Hub 单体 → 接入 API / Native Agent**。不要从重写 UI 或拆 Hub 大文件开始；那两条路径的回归半径最大。
