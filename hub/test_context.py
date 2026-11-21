@@ -146,6 +146,55 @@ class HubContextTests(unittest.TestCase):
                 registered = asyncio.run(registered)
             self.assertEqual(len(registered), 75)
 
+    def test_sweeper_uses_context_database_business_clock_and_lock(self):
+        import sqlite3
+
+        import hub
+
+        with tempfile.TemporaryDirectory(prefix="pack-context-sweeper-") as directory:
+            root = Path(directory)
+            context = HubContext(
+                base_dir=str(root),
+                db_path=str(root / "isolated.db"),
+                attachment_dir=str(root / "attachments"),
+                lock=threading.Lock(),
+                clock=lambda: 1500.0,
+                business_clock=lambda: 2000.0,
+            )
+            hub.init(context)
+            connection = context.connect()
+            try:
+                dispatcher_id = connection.execute(
+                    "SELECT id FROM members WHERE role='dispatcher'"
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,"
+                    "claim_token,lease_expires,attempts,created_at,updated_at) "
+                    "VALUES(1,'expired context task','',?,?, 'claimed','lease-token',"
+                    "1999,0,1000,1000)",
+                    (dispatcher_id, dispatcher_id),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            self.assertEqual(hub.sweep_once(context), 1)
+            connection = sqlite3.connect(root / "isolated.db")
+            try:
+                task = connection.execute(
+                    "SELECT status,fail_class,next_claim_at,updated_at FROM tasks "
+                    "WHERE title='expired context task'"
+                ).fetchone()
+                self.assertEqual(task, ("open", "transient", 2060.0, 2000.0))
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM audit WHERE action='lease_expired_requeue'"
+                    ).fetchone()[0],
+                    1,
+                )
+            finally:
+                connection.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
