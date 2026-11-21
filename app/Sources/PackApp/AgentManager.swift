@@ -241,6 +241,14 @@ actor AgentManager {
         return try await adapter.cancel(run: run)
     }
 
+    func recordRun(_ run: AgentRunRecord) async throws {
+        try await store.recordRun(run)
+    }
+
+    func runs(conversationID: UUID) async throws -> [AgentRunRecord] {
+        try await store.runs(conversationID: conversationID)
+    }
+
     func appendChatMessage(agentID: UUID, conversationID: UUID, role: String, content: String) async throws {
         try await store.appendChatMessage(agentID: agentID, conversationID: conversationID, role: role, content: content)
     }
