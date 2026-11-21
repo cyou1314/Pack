@@ -69,7 +69,7 @@ final class PackConfigTests: XCTestCase {
         XCTAssertNil(cleaned["token"])
         XCTAssertNil(cleaned["ownerToken"])
         XCTAssertEqual(cleaned["hubUrl"] as? String, "https://hub.example.com/mcp")
-        XCTAssertEqual(try permissions(fixture.file) & 0o077, 0)
+        XCTAssertEqual(try permissions(fixture.file), 0o600)
 
         let second = PackConfig.load(path: fixture.file, service: service, credentialStore: store)
         XCTAssertEqual(second.config?.token, "dispatcher-secret")
@@ -190,7 +190,7 @@ final class PackConfigTests: XCTestCase {
 
         _ = PackConfig.load(path: fixture.file, service: service, credentialStore: store)
 
-        XCTAssertEqual(try permissions(fixture.file) & 0o077, 0)
+        XCTAssertEqual(try permissions(fixture.file), 0o600)
     }
 
     func testInvalidHubURLPreventsCredentialLoading() throws {

@@ -199,12 +199,12 @@ public struct PackConfig {
                 return false
             }
             let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o777
-            if permissions & 0o077 != 0 {
+            if permissions != 0o600 {
                 try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
             }
             let verified = try fileManager.attributesOfItem(atPath: path.path)
             let verifiedPermissions = (verified[.posixPermissions] as? NSNumber)?.intValue ?? 0o777
-            return verifiedPermissions & 0o077 == 0
+            return verifiedPermissions == 0o600
         } catch {
             return false
         }
