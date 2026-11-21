@@ -230,7 +230,8 @@ final class AgentWorkspaceState: ObservableObject {
                 )
                 profiles = try await manager.profiles()
                 if let updated = profiles.first(where: { $0.id == profile.id }), updated.lastSessionID == nil {
-                    sessionIDs.removeValue(forKey: profile.id)
+                    for conversation in conversations { sessionIDs.removeValue(forKey: conversation.id) }
+                    await loadConversations(for: profile.id)
                 }
                 note = "Agent 配置已更新；请重新测试连接"
                 editSucceeded = true
@@ -342,6 +343,9 @@ final class AgentWorkspaceState: ObservableObject {
                         responseID = sessionID
                         sessionIDs[conversationID] = sessionID
                         try await manager.updateConversationSession(agentID: profile.id, conversationID: conversationID, sessionID: sessionID)
+                        if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+                            conversations[index].sessionID = sessionID
+                        }
                     }
                 }
                 if !assistantText.isEmpty {
