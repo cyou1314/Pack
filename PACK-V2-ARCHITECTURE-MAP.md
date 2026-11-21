@@ -7,7 +7,7 @@
 Pack 当前是三条主要运行路径共享一个 Hub 的 v1 系统，而不是已经模块化的多 Agent 平台：
 
 1. **macOS App**：SwiftUI 原生客户端；`AppState` 管理大部分界面状态、轮询、业务动作与 Hub 工具调用；`HubClient` 自己实现 MCP Streamable HTTP / JSON-RPC。
-2. **Hub**：`hub/hub.py` 单文件约 5,397 行；在 `build_server()` 内注册约 82 个 MCP 工具，负责成员认证、权限闸门、任务状态机、消息/房间、批准、记忆、技能、附件、审计、SQLite 持久化与后台 sweeper。
+2. **Hub**：`hub/hub.py` 单文件约 5,397 行；在 `build_server()` 内注册75 个 MCP 工具，负责成员认证、权限闸门、任务状态机、消息/房间、批准、记忆、技能、附件、审计、SQLite 持久化与后台 sweeper。
 3. **Runtime**：`runtime/runtime.mjs` 约 587 行，负责轮询、任务认领/交付、审批等待、闲聊、额度自报、地址发现和 ego-browser 驱动编排；复用 `pack-contracts.mjs`、`runtime-helpers.mjs`、策略模块。
 4. **Muse4AI Bridge**：`runtime/muse4ai-bridge/bridge.mjs` 约 302 行，另有自己的 Hub MCP 客户端和 Muse4AI 本机 HTTP 客户端，读取独立状态/凭证文件，访问 `127.0.0.1:47821`。
 5. **L2 handoff**：通过本机 IPC/socket 将任务交给 headless 引擎；与 Runtime、Bridge 不是同一个生命周期，必须作为独立执行器边界处理。
