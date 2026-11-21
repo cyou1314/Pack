@@ -191,7 +191,6 @@ actor AgentProfileStore {
                     throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
                 }
             }
-            try connection.execute("PRAGMA user_version=3;")
                 try connection.execute("PRAGMA user_version=3;")
                 try connection.execute("COMMIT;")
             } catch {
