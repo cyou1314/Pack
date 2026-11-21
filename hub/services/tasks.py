@@ -214,3 +214,65 @@ def set_task_urgent(context, actor, task_id: int, urgent: bool) -> dict:
     finally:
         conn.close()
     return {"task_id": task_id, "urgent": bool(urgent)}
+
+
+def schedule_task(context, actor, room: str, title: str, body: str,
+                  member_name: str, at_epoch: float, *,
+                  is_executor_pinned) -> dict:
+    """Create a scheduled task plus room card and audit in one transaction."""
+    now = context.now()
+    if not (at_epoch > now):
+        raise ValueError(
+            f"at_epoch must be in the future: {at_epoch} <= {now:.0f}"
+        )
+    conn = context.connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM rooms WHERE name=?", (room,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"no such room: {room}")
+        target = conn.execute(
+            "SELECT id, role, removed_at, kind, bound_room_id"
+            " FROM members WHERE name=?", (member_name,)
+        ).fetchone()
+        if not target:
+            raise ValueError(f"no such member: {member_name}")
+        if target["removed_at"] is not None:
+            raise ValueError(f"member is removed: {member_name}")
+        if target["role"] != "member" or member_name == "owner":
+            raise ValueError(
+                f"cannot schedule for {member_name}: not an AI member"
+            )
+        if (target["kind"] or "") == "external":
+            if target["bound_room_id"] != row["id"]:
+                raise ValueError(
+                    f"permanent: external member {member_name} is bound to another room"
+                )
+            if is_executor_pinned(title, body):
+                raise ValueError(
+                    f"permanent: executor-pinned tasks cannot be assigned"
+                    f" to external member {member_name}"
+                )
+        cursor = conn.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,"
+            "next_claim_at,sched_at,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,'open',?,?,?,?)",
+            (row["id"], title, body, actor["id"], target["id"],
+             float(at_epoch), float(at_epoch), now, now),
+        )
+        task_id = cursor.lastrowid
+        conn.execute(
+            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)"
+            " VALUES(?,?,'task_card',?,?,?)",
+            (row["id"], actor["id"], f"任务#{task_id} {title}", task_id, now),
+        )
+        context.audit(
+            conn, actor["name"], "task_schedule",
+            f"task {task_id} -> {member_name} at {float(at_epoch):.0f}",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"task_id": task_id, "status": "open",
+            "assignee": member_name, "scheduled_at": float(at_epoch)}

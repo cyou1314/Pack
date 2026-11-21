@@ -1640,12 +1640,14 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import list_tasks as _list_tasks
         from .services.tasks import create_task as _create_task
         from .services.tasks import set_task_urgent as _set_task_urgent
+        from .services.tasks import schedule_task as _schedule_task
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
         from services.tasks import list_tasks as _list_tasks
         from services.tasks import create_task as _create_task
         from services.tasks import set_task_urgent as _set_task_urgent
+        from services.tasks import schedule_task as _schedule_task
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -2867,49 +2869,8 @@ def build_server(context: HubContext | None = None):
         目标须是 role=member 且非 owner 的成员。"""
         me = authenticate()
         require(me, "dispatcher")
-        now = _now()
-        if not (at_epoch > now):
-            raise ValueError(f"at_epoch must be in the future: {at_epoch} <= {now:.0f}")
-        conn = db()
-        try:
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            a = conn.execute("SELECT id, role, removed_at, kind, bound_room_id FROM members WHERE name=?", (member_name,)).fetchone()
-            if not a:
-                raise ValueError(f"no such member: {member_name}")
-            if a["removed_at"] is not None:
-                # staging49：已移除成员不得再被排班（同 task_create 口径）
-                raise ValueError(f"member is removed: {member_name}")
-            if a["role"] != "member" or member_name == "owner":
-                raise ValueError(f"cannot schedule for {member_name}: not an AI member")
-            if (a["kind"] or "") == "external":
-                # staging51 红队修复：对齐 task_create 的 external
-                # 口径——跨房排班与引擎标记卡对 external 是永远
-                # 认领不了的死卡（task_claim 三重限制兜底虽在，但
-                # 排班侧不应开出死卡），同给永久性拒绝。
-                if a["bound_room_id"] != r["id"]:
-                    raise ValueError(
-                        f"permanent: external member {member_name} is bound to another room")
-                if _is_executor_pinned(title, body):
-                    raise ValueError(
-                        f"permanent: executor-pinned tasks cannot be assigned"
-                        f" to external member {member_name}")
-            cur = conn.execute(
-                "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,next_claim_at,sched_at,created_at,updated_at)"
-                " VALUES(?,?,?,?,?,'open',?,?,?,?)",
-                (r["id"], title, body, me["id"], a["id"], float(at_epoch), float(at_epoch), now, now))
-            tid = cur.lastrowid
-            conn.execute(
-                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'task_card',?,?,?)",
-                (r["id"], me["id"], f"任务#{tid} {title}", tid, now))
-            audit(conn, me["name"], "task_schedule",
-                  f"task {tid} -> {member_name} at {float(at_epoch):.0f}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"task_id": tid, "status": "open", "assignee": member_name,
-                "scheduled_at": float(at_epoch)}
+        return _schedule_task(context, me, room, title, body, member_name,
+                              at_epoch, is_executor_pinned=_is_executor_pinned)
 
     @mcp.tool
     def template_upsert(name: str, title_tpl: str, body_tpl: str, assignee: str = "") -> dict:

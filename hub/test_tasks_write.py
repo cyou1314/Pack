@@ -8,7 +8,7 @@ from pathlib import Path
 
 import hub
 from core.context import HubContext
-from services.tasks import create_task, set_task_urgent
+from services.tasks import create_task, set_task_urgent, schedule_task
 
 
 class TaskWriteTests(unittest.TestCase):
@@ -152,6 +152,72 @@ class TaskWriteTests(unittest.TestCase):
                     "SELECT urgent FROM tasks WHERE id=?", (tid,)
                 ).fetchone()[0], 0,
             )
+
+    def schedule(self, room="pack-main", member_name="remote",
+                 title="Scheduled", body="Body", at_epoch=8700):
+        return schedule_task(
+            self.context, self.actor, room, title, body, member_name,
+            at_epoch, is_executor_pinned=hub._is_executor_pinned,
+        )
+
+    def test_schedule_creates_deferred_task_card_and_audit(self):
+        result = self.schedule()
+        tid = result["task_id"]
+        self.assertEqual(
+            result, {"task_id": tid, "status": "open",
+                     "assignee": "remote", "scheduled_at": 8700.0}
+        )
+        task = self.conn.execute(
+            "SELECT status,next_claim_at,sched_at,created_at,updated_at"
+            " FROM tasks WHERE id=?", (tid,),
+        ).fetchone()
+        self.assertEqual(tuple(task), ("open", 8700.0, 8700.0, 8300.0, 8300.0))
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT kind,body FROM messages WHERE task_id=?", (tid,)
+            ).fetchone()["kind"], "task_card",
+        )
+        audit = self.conn.execute(
+            "SELECT actor,detail FROM audit WHERE action='task_schedule'"
+        ).fetchone()
+        self.assertEqual(tuple(audit), ("dispatcher", f"task {tid} -> remote at 8700"))
+
+    def test_schedule_rejects_invalid_dates_members_and_room_binding(self):
+        for room, member, title, at, expected in [
+            ("pack-main", "remote", "Scheduled", 8300, "future"),
+            ("missing-room", "remote", "Scheduled", 8700, "no such room"),
+            ("pack-main", "missing", "Scheduled", 8700, "no such member"),
+            ("pack-main", "removed", "Scheduled", 8700, "member is removed"),
+            ("pack-main", "dispatcher", "Scheduled", 8700, "not an AI member"),
+            ("other-room", "remote", "Scheduled", 8700, "permanent:"),
+            ("pack-main", "remote", hub.EXECUTOR_MARKERS[0] + " fixed",
+             8700, "permanent:"),
+        ]:
+            with self.assertRaisesRegex(ValueError, expected):
+                self.schedule(
+                    room=room, member_name=member, title=title, at_epoch=at
+                )
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 0
+        )
+
+    def test_schedule_rolls_back_task_when_card_insert_fails(self):
+        self.conn.execute(
+            "CREATE TRIGGER fail_scheduled_card BEFORE INSERT ON messages "
+            "WHEN NEW.kind='task_card' BEGIN "
+            "SELECT RAISE(ABORT, 'schedule card rejected'); END"
+        )
+        self.conn.commit()
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "schedule card rejected"):
+            self.schedule()
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 0
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM audit WHERE action='task_schedule'"
+            ).fetchone()[0], 0,
+        )
 
 
 if __name__ == "__main__":
