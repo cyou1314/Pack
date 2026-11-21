@@ -8,6 +8,7 @@ import {createDriverRunner} from './driver-runner.mjs';
 import {createRuntimeStateStore} from './runtime-state-store.mjs';
 import {createTaskLifecycle} from './task-lifecycle.mjs';
 import {createApprovalManager} from './approval-manager.mjs';
+import {createDeliveryManager} from './delivery-manager.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -186,57 +187,25 @@ async function checkChat(busy) {
     chatState.last_chat_id = message.id; saveChatState();
   }
 }
-let deliveryReceipts = stateStore.loadDeliveryReceipts();
-function saveReceipts() { stateStore.saveDeliveryReceipts(deliveryReceipts); }
-function storeReceipt(task, reply, chatUrl) {
-  deliveryReceipts[task.id] = { taskId: task.id, title: task.title, body: task.body, reply, chatUrl, state: "pending" };
-  saveReceipts();
-}
-function matchingReceipt(task) {
-  const receipt = deliveryReceipts[task.id];
-  return receipt?.state === "pending" && receipt.title === task.title && receipt.body === task.body ? receipt : null;
-}
-async function completeSafely(task, claimToken, receipt, expectedAttempt = task.attempts + 1) {
-  const artifacts=[];
-  if (!receipt.memorySettlement) { receipt.memorySettlement=await settleTaskMemory({call:tool},task,receipt.reply); saveReceipts(); if(receipt.memorySettlement.written) console.log(`task ${task.id} memory version=${receipt.memorySettlement.version_id} written`); }
-  if (Array.from(receipt.reply).length > 500) {
-    const dir=path.join(DIR,"results"); mkdirSync(dir,{recursive:true,mode:0o700});
-    const target=path.join(dir,`task-${task.id}-attempt-${expectedAttempt}.txt`);
-    writeFileSync(target,receipt.reply,{mode:0o600}); artifacts.push({kind:"text",path:target});
-  }
-  for (;;) {
-    try {
-      await completeWithEnvelope({call:tool}, { taskId: task.id, claimToken, result: receipt.reply,
-        envelope: { verdict:"done", summary:Array.from(receipt.reply).slice(0,500).join(""), artifacts, self_check:{ran:true,evidence:"驾驶层返回经核对的助手回复"}, known_issues:["Muse 会话自主浏览无法逐次执行出口检查",...(receipt.memorySettlement?.issue?[receipt.memorySettlement.issue]:[])], followups:[] } });
-      receipt.state = "completed"; saveReceipts();
-      quotaRequested = true;
-      console.log(`task ${task.id} delivered from saved receipt`);
-      return;
-    } catch (e) {
-      console.error(`task ${task.id} completion retry:`, e.message);
-      await sleep(POLL_MS);
-      try {
-        const result = await listActiveTasks(tool, {status:"open,claimed,working,review,done", assignee_name:cfg.memberName});
-        const current = result.find(t => t.id === task.id);
-        const summary=Array.from(receipt.reply).slice(0,500).join("").trim();
-        if (current && ["review", "done"].includes(current.status) && current.result === summary) {
-          receipt.state = "completed"; saveReceipts();
-          console.log(`task ${task.id} delivery already confirmed`);
-          return;
-        }
-        if (!current || !["claimed", "working"].includes(current.status) || current.assignee !== cfg.memberName || current.attempts !== expectedAttempt) {
-          console.error(`task ${task.id} no longer held; saved receipt retained`);
-          return;
-        }
-      } catch (checkError) {
-        console.error(`task ${task.id} delivery status check failed:`, checkError.message);
-        hubRpc.resetSession();
-        await discoverHubUrl();
-        try { await enqueue(mcpInit); } catch {}
-      }
-    }
-  }
-}
+const deliveryManager = createDeliveryManager({
+  stateStore,
+  call: tool,
+  settleTaskMemory,
+  completeWithEnvelope,
+  listActiveTasks,
+  sleep,
+  memberName: cfg.memberName,
+  resultsDir: path.join(DIR, 'results'),
+  mkdir: mkdirSync,
+  writeFile: writeFileSync,
+  pollMs: POLL_MS,
+  onDelivered: () => { quotaRequested = true; },
+  onRecoveryError: async () => {
+    hubRpc.resetSession();
+    await discoverHubUrl();
+    try { await enqueue(mcpInit); } catch {}
+  },
+});
 
 const approvalManager = createApprovalManager({
   call: tool,
@@ -256,10 +225,10 @@ const processTask = createTaskLifecycle({
 
 async function processClaimedTask(task, ctok, transferred, expectedAttempt, state) {
   // Receipt check precedes every re-entry, so a verified result is never resent.
-  const saved = transferred ? null : matchingReceipt(task);
+  const saved = transferred ? null : deliveryManager.matchingReceipt(task);
   if (saved) {
     console.log(`task ${task.id} recovering verified reply without resending`);
-    await completeSafely(task, ctok, saved, expectedAttempt);
+    await deliveryManager.completeSafely(task, ctok, saved, expectedAttempt);
     return;
   }
   if (!state.runStarted) {
@@ -398,7 +367,7 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
     throw e;
   }
   storeReceipt(task, res.reply, res.chatUrl || "");
-  await completeSafely(task, ctok, deliveryReceipts[task.id], expectedAttempt);
+  await deliveryManager.completeSafely(task, ctok, deliveryManager.matchingReceipt(task) || deliveryManager.getReceipt(task.id), expectedAttempt);
 }
 
 async function main() {
@@ -441,7 +410,7 @@ async function main() {
         if (t.status !== "open" && !(["claimed", "working"].includes(t.status) && t.assignee === cfg.memberName && t.lease_expires == null)) continue;
         // A single browser space must process at most one task at a time.
         if (busy.size) break;
-        if (t.assignee !== cfg.memberName && !(t.assignee == null && matchingReceipt(t))) continue;
+        if (t.assignee !== cfg.memberName && !(t.assignee == null && deliveryManager.matchingReceipt(t))) continue;
         if (busy.has(t.id)) continue;
         busy.add(t.id);
         processTask(t).catch((e) => console.error("task", t.id, e.message)).finally(() => busy.delete(t.id));
