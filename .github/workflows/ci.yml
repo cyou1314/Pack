@@ -35,6 +35,8 @@ jobs:
           bash -n installer/build-dmg.sh
       - name: Python compile
         run: python -m compileall -q hub tests
+      - name: Hub MCP tool manifest
+        run: python tests/check_hub_tool_manifest.py
       - name: Unit tests
         run: |
           bash hub/test_backup.sh
