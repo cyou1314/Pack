@@ -20,6 +20,7 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var credentialUpdateSucceeded = false
     @Published var isUpdatingCredential = false
     @Published var activeRun: AgentRun?
+    @Published var retryableConversationID: UUID?
     @Published var editSucceeded = false
     @Published var chatInput = ""
     @Published var messagesByConversation: [UUID: [AgentChatMessage]] = [:]
@@ -322,6 +323,7 @@ final class AgentWorkspaceState: ObservableObject {
         chatInput = ""
         isSending = true
         error = ""
+        retryableConversationID = nil
         let userMessage = AgentChatMessage(
             id: UUID(), agentID: profile.id, conversationID: conversationID,
             role: "user", content: text, createdAt: Date()
@@ -336,6 +338,7 @@ final class AgentWorkspaceState: ObservableObject {
                 )
             } catch {
                 self.error = error.localizedDescription
+                retryableConversationID = conversationID
             }
         }
     }
@@ -348,6 +351,7 @@ final class AgentWorkspaceState: ObservableObject {
         }
         isSending = true
         error = ""
+        retryableConversationID = nil
         Task {
             defer { isSending = false; activeRun = nil }
             do {
@@ -357,6 +361,7 @@ final class AgentWorkspaceState: ObservableObject {
                 )
             } catch {
                 self.error = error.localizedDescription
+                retryableConversationID = conversation.id
             }
         }
     }
@@ -422,8 +427,9 @@ final class AgentWorkspaceState: ObservableObject {
 
     var canRetryLastMessage: Bool {
         guard !isSending, let conversationID = selectedConversationID,
+              retryableConversationID == conversationID,
               let messages = messagesByConversation[conversationID] else { return false }
-        return !error.isEmpty && messages.contains(where: { $0.role == "user" })
+        return messages.contains(where: { $0.role == "user" })
     }
 
     func removeSelected() {
