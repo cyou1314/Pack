@@ -42,7 +42,7 @@ class HubPackageLayoutTests(unittest.TestCase):
         self.assertIn('cp -R "$ROOT/hub/services" "$HUB/"', local)
         self.assertIn('cp -R "$ROOT/hub/core" "$STAGE/hub/"', dmg)
         self.assertIn('cp -R "$ROOT/hub/services" "$STAGE/hub/"', dmg)
-        self.assertIn('PYTHONPATH="$STAGE/hub"', dmg)
+        self.assertIn('sys.path.insert(0,sys.argv[1])', dmg)
 
     def test_manager_installs_and_uninstalls_hub_packages(self):
         source = (ROOT / "installer" / "manager.py").read_text(encoding="utf-8")

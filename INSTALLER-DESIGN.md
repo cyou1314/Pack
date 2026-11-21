@@ -5,7 +5,7 @@
 无隧道、无 git 地址发布。群主现行 VM 形态保持不变、互不影响。
 
 ## 本地中枢模式（第 2 件）
-- hub.py 原样复用（FastMCP+SQLite），Mac 上以 launchd 用户代理常驻
+- Hub 运行包包含 `hub.py`、`core/` 与 `services/`（FastMCP+SQLite），Mac 上以 launchd 用户代理常驻
   （~/Library/LaunchAgents），监听 127.0.0.1:8794。
 - watcher（room_watch.py）同为 launchd 代理，PACK_WATCH_URL 指向本机。
 - 初始化：安装器首启跑 hub init（建库、默认房、生成调度员令牌），
@@ -16,7 +16,7 @@
 - 备份：沿用 hub/backup-db.sh，改 launchd 定时。
 
 ## 安装包（第 3 件）
-- 内容：Pack.app（预构建、ad-hoc 签名）、hub/（hub.py + venv 构建脚本
+- 内容：Pack.app（预构建、ad-hoc 签名）、hub/（hub.py + core/ + services/ + venv 构建脚本
   + room_watch.py + launchd plists）、engine/（E2 后的自研引擎）、
   安装/卸载脚本、README（右键打开说明、首启三步）。
 - 形态：.dmg 拖拽装 App + 一次「安装本地服务」脚本（或 .pkg 一把梭；
@@ -31,7 +31,7 @@
 
 ## 与现行形态的关系
 - 仓库同一套代码双形态：VM 部署（群主自用）与本地部署（分发）共用
-  hub.py/watcher/App，仅部署脚本与配置不同；任何中枢增量仍走现有
+  hub.py + core/ + services/ / watcher / App，仅部署脚本与配置不同；任何中枢增量仍走现有
   staging 纪律、双形态都受益。
 
 2026-11-19 本机模拟结果：随包内嵌可重定位 Python 3.12 与锁版本依赖；跨机裸机仍待实证。
