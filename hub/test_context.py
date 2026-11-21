@@ -88,6 +88,7 @@ class HubContextTests(unittest.TestCase):
                 connection.close()
 
     def test_context_is_used_by_auth_gates_inbox_and_server_factory(self):
+        import json
         import sqlite3
         from unittest.mock import patch
 
@@ -141,10 +142,25 @@ class HubContextTests(unittest.TestCase):
             import asyncio
             import inspect
 
-            registered = hub.build_server(context).list_tools()
+            server = hub.build_server(context)
+            registered = server.list_tools()
             if inspect.isawaitable(registered):
                 registered = asyncio.run(registered)
             self.assertEqual(len(registered), 75)
+
+            from fastmcp import Client
+
+            async def call_member_list():
+                async with Client(server) as client:
+                    return await client.call_tool("member_list")
+
+            with patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                return_value={"authorization": f"Bearer {token}"},
+            ):
+                result = asyncio.run(call_member_list())
+            self.assertIsNotNone(result.data)
+            self.assertIn("dispatcher", json.dumps(result.data, ensure_ascii=False))
 
     def test_sweeper_uses_context_database_business_clock_and_lock(self):
         import sqlite3
