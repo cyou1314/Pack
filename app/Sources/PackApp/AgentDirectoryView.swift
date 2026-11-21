@@ -8,6 +8,10 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var model = ""
     @Published var apiKey = ""
     @Published var endpoint = ""
+    @Published var editDisplayName = ""
+    @Published var editModel = ""
+    @Published var editEndpoint = ""
+    @Published var editSucceeded = false
     @Published var chatInput = ""
     @Published var chatOutputs: [UUID: String] = [:]
     @Published var sessionIDs: [UUID: String] = [:]
@@ -96,6 +100,40 @@ final class AgentWorkspaceState: ObservableObject {
         error = ""
     }
 
+    func beginEditSelected() {
+        guard let profile = selectedProfile else { return }
+        editDisplayName = profile.displayName
+        editModel = profile.model ?? ""
+        editEndpoint = profile.endpoint ?? ""
+        error = ""
+        editSucceeded = false
+    }
+
+    func saveSelectedEdit() {
+        guard let manager, let profile = selectedProfile else { return }
+        isAdding = true
+        error = ""
+        Task {
+            defer { isAdding = false }
+            do {
+                _ = try await manager.updateProfile(
+                    agentID: profile.id,
+                    displayName: editDisplayName,
+                    model: editModel,
+                    endpoint: editEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : editEndpoint
+                )
+                profiles = try await manager.profiles()
+                if let updated = profiles.first(where: { $0.id == profile.id }), updated.lastSessionID == nil {
+                    sessionIDs.removeValue(forKey: profile.id)
+                }
+                note = "Agent 配置已更新；请重新测试连接"
+                editSucceeded = true
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
     func testSelectedConnection() {
         guard let manager, let selectedAgentID else { return }
         isTesting = true
@@ -178,6 +216,7 @@ final class AgentWorkspaceState: ObservableObject {
 struct AgentDirectoryView: View {
     @ObservedObject var state: AgentWorkspaceState
     @State private var showingAdd = false
+    @State private var showingEdit = false
     @State private var showRemoveConfirmation = false
 
     var body: some View {
@@ -217,6 +256,15 @@ struct AgentDirectoryView: View {
         }) {
             addSheet
         }
+        .sheet(isPresented: $showingEdit) {
+            editSheet
+        }
+        .onChange(of: state.editSucceeded) { _, succeeded in
+            if succeeded {
+                showingEdit = false
+                state.editSucceeded = false
+            }
+        }
         .onChange(of: state.addSucceeded) { _, succeeded in
             if succeeded {
                 showingAdd = false
@@ -242,6 +290,10 @@ struct AgentDirectoryView: View {
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button("编辑") {
+                        state.beginEditSelected()
+                        showingEdit = true
+                    }
                     Button("测试连接") { state.testSelectedConnection() }
                         .disabled(state.isTesting)
                     Button(role: .destructive) { showRemoveConfirmation = true } label: {
@@ -285,6 +337,27 @@ struct AgentDirectoryView: View {
                 if !state.error.isEmpty { Text(state.error).foregroundStyle(.red) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var editSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("编辑 Agent").font(.system(size: 18, weight: .semibold))
+            Text("修改名称、模型或 Endpoint。切换模型或 Endpoint 后会清除旧会话续接 ID。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            TextField("显示名称", text: $state.editDisplayName).textFieldStyle(.roundedBorder)
+            TextField("模型 ID", text: $state.editModel).textFieldStyle(.roundedBorder)
+            TextField("自定义 API Endpoint（可选）", text: $state.editEndpoint).textFieldStyle(.roundedBorder)
+            if !state.error.isEmpty { Text(state.error).font(.system(size: 11)).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("取消") { showingEdit = false }
+                Button("保存修改") { state.saveSelectedEdit() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.isAdding)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 
     private var addSheet: some View {
