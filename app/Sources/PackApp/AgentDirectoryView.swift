@@ -55,9 +55,6 @@ final class AgentWorkspaceState: ObservableObject {
         do {
             _ = try await manager.restoreAdapters()
             profiles = try await manager.profiles()
-            sessionIDs = Dictionary(uniqueKeysWithValues: profiles.compactMap { profile in
-                profile.lastSessionID.map { (profile.id, $0) }
-            })
             if selectedAgentID == nil { selectedAgentID = profiles.first?.id }
             if let selectedAgentID { await loadConversations(for: selectedAgentID) }
             note = "Agent 配置已从本机数据库加载"
@@ -76,18 +73,18 @@ final class AgentWorkspaceState: ObservableObject {
     private func loadConversations(for agentID: UUID) async {
         guard let manager else { return }
         do {
-            conversations = try await manager.conversations(agentID: agentID)
-            if conversations.isEmpty {
+            var loaded = try await manager.conversations(agentID: agentID)
+            if loaded.isEmpty {
                 let created = try await manager.createConversation(agentID: agentID, title: "新会话")
-                conversations = [created]
+                loaded = [created]
             }
-            for conversation in conversations {
+            guard selectedAgentID == agentID else { return }
+            conversations = loaded
+            for conversation in loaded {
                 if let sessionID = conversation.sessionID { sessionIDs[conversation.id] = sessionID }
             }
-            if selectedAgentID == agentID {
-                selectedConversationID = conversations.first?.id
-                await loadMessages(for: agentID, conversationID: selectedConversationID)
-            }
+            selectedConversationID = loaded.first?.id
+            await loadMessages(for: agentID, conversationID: selectedConversationID)
         } catch {
             self.error = error.localizedDescription
         }
@@ -269,7 +266,11 @@ final class AgentWorkspaceState: ObservableObject {
             do {
                 try await manager.clearConversationMessages(agentID: profile.id, conversationID: conversation.id)
                 chatOutputs[conversation.id] = ""
-                note = "该 Agent 的本地聊天记录已清空"
+                sessionIDs.removeValue(forKey: conversation.id)
+                if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
+                    conversations[index].sessionID = nil
+                }
+                note = "当前会话记录已清空"
             } catch {
                 self.error = error.localizedDescription
             }
