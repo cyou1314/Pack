@@ -166,15 +166,29 @@ actor AgentProfileStore {
                 ALTER TABLE agent_chat_messages ADD COLUMN conversation_id TEXT
                     REFERENCES agent_conversations(id) ON DELETE CASCADE;
                 """)
-            let profiles = try allProfiles()
+            let profiles: [AgentProfile] = try {
+                let statement = try connection.prepare("SELECT profile_json FROM agent_profiles ORDER BY created_at ASC;")
+                defer { sqlite3_finalize(statement) }
+                var loaded: [AgentProfile] = []
+                while true {
+                    let step = sqlite3_step(statement)
+                    if step == SQLITE_DONE { break }
+                    guard step == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else {
+                        throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
+                    }
+                    let data = Data(bytes: text, count: Int(sqlite3_column_bytes(statement, 0)))
+                    loaded.append(try decoder.decode(AgentProfile.self, from: data))
+                }
+                return loaded
+            }()
             for profile in profiles {
                 let conversationID = UUID()
                 let now = Date().timeIntervalSince1970
                 let insert = try connection.prepare("INSERT INTO agent_conversations (id, agent_id, title, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?);")
-                bindText(conversationID.uuidString, at: 1, to: insert)
-                bindText(profile.id.uuidString, at: 2, to: insert)
-                bindText("默认会话", at: 3, to: insert)
-                if let sessionID = profile.lastSessionID { bindText(sessionID, at: 4, to: insert) } else { sqlite3_bind_null(insert, 4) }
+                Self.bindText(conversationID.uuidString, at: 1, to: insert)
+                Self.bindText(profile.id.uuidString, at: 2, to: insert)
+                Self.bindText("默认会话", at: 3, to: insert)
+                if let sessionID = profile.lastSessionID { Self.bindText(sessionID, at: 4, to: insert) } else { sqlite3_bind_null(insert, 4) }
                 sqlite3_bind_double(insert, 5, now)
                 sqlite3_bind_double(insert, 6, now)
                 let inserted = sqlite3_step(insert)
@@ -183,8 +197,8 @@ actor AgentProfileStore {
                     throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
                 }
                 let update = try connection.prepare("UPDATE agent_chat_messages SET conversation_id=? WHERE agent_id=? AND conversation_id IS NULL;")
-                bindText(conversationID.uuidString, at: 1, to: update)
-                bindText(profile.id.uuidString, at: 2, to: update)
+                Self.bindText(conversationID.uuidString, at: 1, to: update)
+                Self.bindText(profile.id.uuidString, at: 2, to: update)
                 let updated = sqlite3_step(update)
                 sqlite3_finalize(update)
                 guard updated == SQLITE_DONE else {
@@ -279,12 +293,12 @@ actor AgentProfileStore {
             VALUES (?, ?, ?, ?, ?, ?);
             """)
         defer { sqlite3_finalize(statement) }
-        bindText(UUID().uuidString, at: 1, to: statement)
-        bindText(agentID.uuidString, at: 2, to: statement)
-        bindText(role, at: 3, to: statement)
-        bindText(content, at: 4, to: statement)
+        Self.bindText(UUID().uuidString, at: 1, to: statement)
+        Self.bindText(agentID.uuidString, at: 2, to: statement)
+        Self.bindText(role, at: 3, to: statement)
+        Self.bindText(content, at: 4, to: statement)
         sqlite3_bind_double(statement, 5, Date().timeIntervalSince1970)
-        bindText(conversationID.uuidString, at: 6, to: statement)
+        Self.bindText(conversationID.uuidString, at: 6, to: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
         }
@@ -303,8 +317,8 @@ actor AgentProfileStore {
             ORDER BY created_at ASC, rowid ASC;
             """)
         defer { sqlite3_finalize(statement) }
-        bindText(agentID.uuidString, at: 1, to: statement)
-        bindText(conversationID.uuidString, at: 2, to: statement)
+        Self.bindText(agentID.uuidString, at: 1, to: statement)
+        Self.bindText(conversationID.uuidString, at: 2, to: statement)
         sqlite3_bind_int(statement, 3, Int32(max(1, min(limit, 5000))))
         var result: [AgentChatMessage] = []
         while true {
@@ -332,7 +346,7 @@ actor AgentProfileStore {
     func conversations(agentID: UUID) throws -> [AgentConversation] {
         let statement = try connection.prepare("SELECT id, title, session_id, created_at, updated_at FROM agent_conversations WHERE agent_id=? ORDER BY updated_at DESC;")
         defer { sqlite3_finalize(statement) }
-        bindText(agentID.uuidString, at: 1, to: statement)
+        Self.bindText(agentID.uuidString, at: 1, to: statement)
         var result: [AgentConversation] = []
         while true {
             let step = sqlite3_step(statement)
@@ -352,9 +366,9 @@ actor AgentProfileStore {
         let conversation = AgentConversation(id: UUID(), agentID: agentID, title: title, sessionID: nil, createdAt: now, updatedAt: now)
         let statement = try connection.prepare("INSERT INTO agent_conversations (id, agent_id, title, session_id, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?);")
         defer { sqlite3_finalize(statement) }
-        bindText(conversation.id.uuidString, at: 1, to: statement)
-        bindText(agentID.uuidString, at: 2, to: statement)
-        bindText(title, at: 3, to: statement)
+        Self.bindText(conversation.id.uuidString, at: 1, to: statement)
+        Self.bindText(agentID.uuidString, at: 2, to: statement)
+        Self.bindText(title, at: 3, to: statement)
         sqlite3_bind_double(statement, 4, now.timeIntervalSince1970)
         sqlite3_bind_double(statement, 5, now.timeIntervalSince1970)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
@@ -365,56 +379,56 @@ actor AgentProfileStore {
         let statement = try connection.prepare("UPDATE agent_conversations SET session_id=NULL, updated_at=? WHERE agent_id=?;")
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
-        bindText(agentID.uuidString, at: 2, to: statement)
+        Self.bindText(agentID.uuidString, at: 2, to: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
     }
 
     func updateConversationSession(id: UUID, agentID: UUID, sessionID: String) throws {
         let statement = try connection.prepare("UPDATE agent_conversations SET session_id=?, updated_at=? WHERE id=? AND agent_id=?;")
         defer { sqlite3_finalize(statement) }
-        bindText(sessionID, at: 1, to: statement)
+        Self.bindText(sessionID, at: 1, to: statement)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
-        bindText(id.uuidString, at: 3, to: statement)
-        bindText(agentID.uuidString, at: 4, to: statement)
+        Self.bindText(id.uuidString, at: 3, to: statement)
+        Self.bindText(agentID.uuidString, at: 4, to: statement)
         guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(connection.db) > 0 else { throw AgentProfileStoreError.sqlite("Conversation not found") }
     }
 
     func renameConversation(id: UUID, agentID: UUID, title: String) throws {
         let statement = try connection.prepare("UPDATE agent_conversations SET title=?, updated_at=? WHERE id=? AND agent_id=?;")
         defer { sqlite3_finalize(statement) }
-        bindText(title, at: 1, to: statement)
+        Self.bindText(title, at: 1, to: statement)
         sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
-        bindText(id.uuidString, at: 3, to: statement)
-        bindText(agentID.uuidString, at: 4, to: statement)
+        Self.bindText(id.uuidString, at: 3, to: statement)
+        Self.bindText(agentID.uuidString, at: 4, to: statement)
         guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(connection.db) > 0 else { throw AgentProfileStoreError.sqlite("Conversation not found") }
     }
 
     func removeConversation(id: UUID, agentID: UUID) throws {
         let statement = try connection.prepare("DELETE FROM agent_conversations WHERE id=? AND agent_id=?;")
         defer { sqlite3_finalize(statement) }
-        bindText(id.uuidString, at: 1, to: statement)
-        bindText(agentID.uuidString, at: 2, to: statement)
+        Self.bindText(id.uuidString, at: 1, to: statement)
+        Self.bindText(agentID.uuidString, at: 2, to: statement)
         guard sqlite3_step(statement) == SQLITE_DONE, sqlite3_changes(connection.db) > 0 else { throw AgentProfileStoreError.sqlite("Conversation not found") }
     }
 
     func clearConversationMessages(agentID: UUID, conversationID: UUID) throws {
         let statement = try connection.prepare("DELETE FROM agent_chat_messages WHERE agent_id=? AND conversation_id=?;")
         defer { sqlite3_finalize(statement) }
-        bindText(agentID.uuidString, at: 1, to: statement)
-        bindText(conversationID.uuidString, at: 2, to: statement)
+        Self.bindText(agentID.uuidString, at: 1, to: statement)
+        Self.bindText(conversationID.uuidString, at: 2, to: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
         let reset = try connection.prepare("UPDATE agent_conversations SET session_id=NULL, updated_at=? WHERE id=? AND agent_id=?;")
         defer { sqlite3_finalize(reset) }
         sqlite3_bind_double(reset, 1, Date().timeIntervalSince1970)
-        bindText(conversationID.uuidString, at: 2, to: reset)
-        bindText(agentID.uuidString, at: 3, to: reset)
+        Self.bindText(conversationID.uuidString, at: 2, to: reset)
+        Self.bindText(agentID.uuidString, at: 3, to: reset)
         guard sqlite3_step(reset) == SQLITE_DONE else { throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db))) }
     }
 
     func clearChatMessages(agentID: UUID) throws {
         let statement = try connection.prepare("DELETE FROM agent_chat_messages WHERE agent_id=?;")
         defer { sqlite3_finalize(statement) }
-        bindText(agentID.uuidString, at: 1, to: statement)
+        Self.bindText(agentID.uuidString, at: 1, to: statement)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
         }
@@ -424,7 +438,7 @@ actor AgentProfileStore {
     func remove(id: UUID) throws -> Bool {
         let statement = try connection.prepare("DELETE FROM agent_profiles WHERE id=?;")
         defer { sqlite3_finalize(statement) }
-        bindText(id.uuidString, at: 1, to: statement)
+        Self.bindText(id.uuidString, at: 1, to: statement)
         let result = sqlite3_step(statement)
         guard result == SQLITE_DONE else {
             throw AgentProfileStoreError.sqlite(String(cString: sqlite3_errmsg(connection.db)))
@@ -449,7 +463,7 @@ actor AgentProfileStore {
         sqlite3_bind_double(statement, 7, profile.updatedAt.timeIntervalSince1970)
     }
 
-    private func bindText(_ value: String, at index: Int32, to statement: OpaquePointer) {
+    nonisolated private static func bindText(_ value: String, at index: Int32, to statement: OpaquePointer) {
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(statement, index, value, -1, transient)
     }
