@@ -79,8 +79,6 @@ final class AgentWorkspaceState: ObservableObject {
             }
             guard selectedAgentID == agentID else { return }
             conversations = loaded
-            for conversation in loaded {
-            }
             selectedConversationID = loaded.first?.id
             await loadMessages(for: agentID, conversationID: selectedConversationID)
         } catch {
@@ -220,9 +218,9 @@ final class AgentWorkspaceState: ObservableObject {
                     endpoint: editEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : editEndpoint
                 )
                 profiles = try await manager.profiles()
-                if let updated = profiles.first(where: { $0.id == profile.id }), updated.lastSessionID == nil {
-                        await loadConversations(for: profile.id)
-                }
+                let previousConversationID = selectedConversationID
+                conversations = try await manager.conversations(agentID: profile.id)
+                selectedConversationID = conversations.first(where: { $0.id == previousConversationID })?.id ?? conversations.first?.id
                 note = "Agent 配置已更新；请重新测试连接"
                 editSucceeded = true
             } catch {
