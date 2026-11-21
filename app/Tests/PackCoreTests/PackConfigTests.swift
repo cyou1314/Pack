@@ -180,6 +180,37 @@ final class PackConfigTests: XCTestCase {
         XCTAssertTrue(result.credentialStatus.contains("未找到调度员凭证"))
     }
 
+    func testConfigDirectoryPermissionsAreRestrictedBeforeUse() throws {
+        let fixture = try makeConfig([
+            "hubUrl": "https://hub.example.com/mcp",
+            "token": "dispatcher-secret"
+        ])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let store = FakeCredentialStore()
+
+        let result = PackConfig.load(path: fixture.file, service: service, credentialStore: store)
+
+        XCTAssertNotNil(result.config)
+        let attributes = try FileManager.default.attributesOfItem(atPath: fixture.directory.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    }
+
+    func testConfigSymlinkIsRejectedWithoutReadingTargetCredentials() throws {
+        let fixture = try makeConfig([
+            "hubUrl": "https://hub.example.com/mcp",
+            "token": "dispatcher-secret"
+        ])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let link = fixture.directory.appendingPathComponent("linked-config.json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: fixture.file)
+        let store = FakeCredentialStore()
+
+        let result = PackConfig.load(path: link, service: service, credentialStore: store)
+
+        XCTAssertNil(result.config)
+        XCTAssertTrue(store.entries.isEmpty)
+    }
+
     func testInsecureConfigPermissionsAreRestrictedBeforeUse() throws {
         let fixture = try makeConfig([
             "hubUrl": "https://hub.example.com/mcp",

@@ -193,6 +193,25 @@ public struct PackConfig {
 
     private static func secureConfigFile(_ path: URL, fileManager: FileManager) -> Bool {
         do {
+            // Do not follow a config-file symlink: otherwise an attacker or an
+            // accidental link can redirect credential migration outside ~/.pack.
+            let resourceValues = try path.resourceValues(forKeys: [.isSymbolicLinkKey])
+            guard resourceValues.isSymbolicLink != true else { return false }
+
+            let directory = path.deletingLastPathComponent()
+            let directoryAttributes = try fileManager.attributesOfItem(atPath: directory.path)
+            guard let directoryType = directoryAttributes[.type] as? FileAttributeType,
+                  directoryType == .typeDirectory else {
+                return false
+            }
+            let directoryPermissions = (directoryAttributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o777
+            if directoryPermissions != 0o700 {
+                try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            }
+            let verifiedDirectory = try fileManager.attributesOfItem(atPath: directory.path)
+            let verifiedDirectoryPermissions = (verifiedDirectory[.posixPermissions] as? NSNumber)?.intValue ?? 0o777
+            guard verifiedDirectoryPermissions == 0o700 else { return false }
+
             let attributes = try fileManager.attributesOfItem(atPath: path.path)
             guard let type = attributes[.type] as? FileAttributeType,
                   type == .typeRegular else {
