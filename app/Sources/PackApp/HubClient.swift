@@ -125,7 +125,17 @@ actor HubClient {
                 sessionId = nil
                 return try await callOnce(name: name, args: args)
             }
-            NSLog("Pack App hub call %@ failed: %@", name, String(describing: error))
+            let category: String
+            if let hubError = error as? HubError {
+                switch hubError {
+                case .badResponse: category = "bad_response"
+                case .toolError: category = "tool_error"
+                }
+            } else {
+                category = "network_or_io"
+            }
+            // Server error text can contain user data; keep logs to stable categories.
+            NSLog("Pack App hub call %@ failed (%@)", name, category)
             throw error
         }
     }
