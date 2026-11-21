@@ -2,7 +2,7 @@ name: Pack CI
 
 on:
   push:
-    branches: ["main", "codex/**"]
+    branches: ["main", "codex/**", "v2-product-alignment"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -31,6 +31,7 @@ jobs:
           bash -n hub/test_backup.sh
           bash -n hub/install-services.sh
           bash -n run-all-suites.sh
+          bash -n tests/run-hub-staging56.sh
           bash -n installer/build-dmg.sh
       - name: Python compile
         run: python -m compileall -q hub tests
@@ -41,6 +42,8 @@ jobs:
           python hub/test_resolve_mention.py
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
+      - name: Latest Hub aggregate regression (staging56)
+        run: PY=python3 bash tests/run-hub-staging56.sh
 
   runtime:
     name: Runtime / syntax
@@ -53,6 +56,8 @@ jobs:
         run: |
           find runtime -type f \( -name "*.mjs" -o -name "*.js" \) -print0 | while IFS= read -r -d '' f; do
             node --check "$f"
+      - name: Runtime behavior tests
+        run: node --test runtime/tests/*.test.mjs
           done
 
   app:
