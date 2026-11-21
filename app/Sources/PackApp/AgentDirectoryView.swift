@@ -859,4 +859,3 @@ private struct AgentCodeBlock: View {
         .background(Color.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 }
-\n
