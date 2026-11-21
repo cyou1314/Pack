@@ -188,13 +188,18 @@ struct AgentProfile: Codable, Hashable, Identifiable, Sendable {
         guard !adapterVersion.isEmpty else {
             throw AgentAdapterError.invalidConfiguration("adapter version is required")
         }
-        if mode == .api && credential == nil {
-            throw AgentAdapterError.invalidConfiguration("API Agent requires a Keychain credential reference")
+        if mode == .api {
+            guard let credential,
+                  !credential.keychainService.isEmpty,
+                  !credential.account.isEmpty else {
+                throw AgentAdapterError.invalidConfiguration("API Agent requires a valid Keychain credential reference")
+            }
         }
         if let endpoint {
             guard let url = URL(string: endpoint),
+                  let host = url.host, !host.isEmpty,
                   let scheme = url.scheme?.lowercased(),
-                  scheme == "https" || (scheme == "http" && (url.host == "localhost" || url.host == "127.0.0.1" || url.host == "::1")),
+                  scheme == "https" || (scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1")),
                   url.user == nil, url.password == nil else {
                 throw AgentAdapterError.invalidConfiguration("endpoint must use HTTPS or a loopback HTTP address and contain no credentials")
             }
