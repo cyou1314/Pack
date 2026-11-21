@@ -354,8 +354,10 @@ class MemberWriteTests(unittest.TestCase):
             (worker_id, skill_id),
         )
         self.db.execute(
-            "UPDATE desktop_lock SET holder='worker',task_id=NULL,acquired_at=8900"
-            " WHERE id=1"
+            "INSERT INTO desktop_lock(id,holder,task_id,acquired_at)"
+            " VALUES(1,'worker',NULL,8900)"
+            " ON CONFLICT(id) DO UPDATE SET holder=excluded.holder,"
+            " task_id=excluded.task_id,acquired_at=excluded.acquired_at"
         )
         self.db.commit()
         result = self._remove("worker")
