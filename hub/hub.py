@@ -1618,6 +1618,14 @@ def build_server(context: HubContext | None = None):
         from .services.members import list_members as _list_members
     else:
         from services.members import list_members as _list_members
+    if __package__:
+        from .services.members import set_login_state as _set_login_state
+        from .services.members import set_access_mode as _set_access_mode
+        from .services.members import rename_member as _rename_member
+    else:
+        from services.members import set_login_state as _set_login_state
+        from services.members import set_access_mode as _set_access_mode
+        from services.members import rename_member as _rename_member
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -2072,27 +2080,7 @@ def build_server(context: HubContext | None = None):
         未移除。每次回写写审计，返回该成员的 provider 与新状态。"""
         me = authenticate()
         require(me, "dispatcher")
-        if state not in LOGIN_STATES:
-            raise ValueError(
-                f"bad login_state: {state!r} (allowed: {', '.join(LOGIN_STATES)})")
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute(
-                    "SELECT id, removed_at, provider FROM members WHERE name=?",
-                    (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                conn.execute("UPDATE members SET login_state=? WHERE id=?",
-                             (state, row["id"]))
-                audit(conn, me["name"], "member_login_state_set", f"{name}: {state}")
-                conn.commit()
-                out = {"name": name, "provider": row["provider"], "login_state": state}
-            finally:
-                conn.close()
-        return out
+        return _set_login_state(context, me, name, state, LOGIN_STATES)
 
     @mcp.tool
     def pair_code_create(member_name: str, provider: str, room: str,
@@ -2300,35 +2288,7 @@ def build_server(context: HubContext | None = None):
         轮换 dispatcher 的教训）。成员须存在且未移除。写审计。"""
         me = authenticate()
         require(me, "dispatcher")
-        if mode not in ACCESS_MODES:
-            raise ValueError(
-                f"bad access mode: {mode} (want full/workspace/readonly)")
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute(
-                    "SELECT id, removed_at, role, access_mode FROM members"
-                    " WHERE name=?", (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                if row["role"] == "dispatcher":
-                    raise ValueError(
-                        "cannot set access mode for the dispatcher")
-                if row["role"] == "owner":
-                    raise ValueError("cannot set access mode for the owner")
-                old = (row["access_mode"]
-                       if row["access_mode"] in ACCESS_MODES else "full")
-                conn.execute(
-                    "UPDATE members SET access_mode=? WHERE id=?",
-                    (mode, row["id"]))
-                audit(conn, me["name"], "member_access_mode_set",
-                      f"{name}: {old} -> {mode}")
-                conn.commit()
-            finally:
-                conn.close()
-        return {"name": name, "access_mode": mode}
+        return _set_access_mode(context, me, name, mode, ACCESS_MODES)
 
     @mcp.tool
     def external_gate(enabled: bool = None, reason: str = "") -> dict:
@@ -2364,26 +2324,7 @@ def build_server(context: HubContext | None = None):
         均按 name 字符串关联，改 name 会断链）。成员须存在且未移除。"""
         me = authenticate()
         require(me, "dispatcher")
-        dn = (display_name or "").strip()
-        if not dn or len(dn) > 80:
-            raise ValueError("display_name must be 1-80 chars")
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute(
-                    "SELECT id, removed_at FROM members WHERE name=?",
-                    (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                conn.execute("UPDATE members SET display_name=? WHERE id=?",
-                             (dn, row["id"]))
-                audit(conn, me["name"], "member_rename", f"{name} -> {dn}")
-                conn.commit()
-            finally:
-                conn.close()
-        return {"name": name, "display_name": dn}
+        return _rename_member(context, me, name, display_name)
 
     def _room_post_impl(me, room: str, body: str, kind: str = "chat",
                         attachment_ids: str = "", reply_to_id: int = 0,
