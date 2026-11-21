@@ -243,6 +243,7 @@ const approvalManager = createApprovalManager({
   sleep,
   listActiveTasks,
   approvalDecision,
+  memberName: cfg.memberName,
 });
 async function checkApprovals() { await approvalManager.checkPendingApprovals(); }
 
