@@ -234,12 +234,28 @@ actor AgentManager {
         return try await adapter.cancel(run: run)
     }
 
-    func appendChatMessage(agentID: UUID, role: String, content: String) async throws {
-        try await store.appendChatMessage(agentID: agentID, role: role, content: content)
+    func appendChatMessage(agentID: UUID, conversationID: UUID, role: String, content: String) async throws {
+        try await store.appendChatMessage(agentID: agentID, conversationID: conversationID, role: role, content: content)
     }
 
-    func chatMessages(agentID: UUID) async throws -> [AgentChatMessage] {
-        try await store.chatMessages(agentID: agentID)
+    func chatMessages(agentID: UUID, conversationID: UUID) async throws -> [AgentChatMessage] {
+        try await store.chatMessages(agentID: agentID, conversationID: conversationID)
+    }
+
+    func conversations(agentID: UUID) async throws -> [AgentConversation] {
+        try await store.conversations(agentID: agentID)
+    }
+
+    func createConversation(agentID: UUID, title: String) async throws -> AgentConversation {
+        try await store.createConversation(agentID: agentID, title: title)
+    }
+
+    func renameConversation(agentID: UUID, conversationID: UUID, title: String) async throws {
+        try await store.renameConversation(id: conversationID, agentID: agentID, title: title)
+    }
+
+    func removeConversation(agentID: UUID, conversationID: UUID) async throws {
+        try await store.removeConversation(id: conversationID, agentID: agentID)
     }
 
     func updateSessionID(agentID: UUID, sessionID: String) async throws {
