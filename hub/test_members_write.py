@@ -7,7 +7,7 @@ from pathlib import Path
 
 import hub
 from core.context import HubContext
-from services.members import rename_member, rotate_member_token, set_access_mode, set_login_state, set_member_quota
+from services.members import rename_member, rotate_member_token, set_access_mode, set_login_state, set_member_quota, report_member_quota
 
 
 class MemberWriteTests(unittest.TestCase):
@@ -187,6 +187,74 @@ class MemberWriteTests(unittest.TestCase):
         self.assertEqual(self.db.execute(
             "SELECT COUNT(*) FROM audit WHERE action='member_quota_set'"
         ).fetchone()[0], 0)
+
+
+    def _report(self, pct=None, reset=None, extra=None):
+        member = self.db.execute("SELECT id,name FROM members WHERE name='worker'").fetchone()
+        return report_member_quota(
+            self.context, dict(member), pct, reset, extra,
+            validate_report=lambda a,b,c: hub._validate_quota_report(a,b,c,self.context),
+            apply_quota=lambda conn,mid,a,b,c,source:
+                hub._apply_quota(conn,mid,a,b,c,source,self.context),
+            quota_anomaly_jump=hub.QUOTA_ANOMALY_JUMP,
+        )
+
+    def test_self_report_blocks_decrease_and_preserves_audit(self):
+        self.db.execute(
+            "UPDATE members SET quota_week_used_pct=80,quota_week_reset_at=12000,"
+            "quota_source='fact' WHERE name='worker'"
+        )
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, "quota report blocked"):
+            self._report(pct=20)
+        row=self.db.execute(
+            "SELECT quota_week_used_pct,quota_source FROM members WHERE name='worker'"
+        ).fetchone()
+        self.assertEqual(tuple(row),(80,"fact"))
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM audit WHERE action='member_quota_drop_blocked'"
+        ).fetchone()[0],1)
+        partial=self._report(pct=20,extra=30)
+        self.assertEqual(partial["quota_week_used_pct"],80)
+        self.assertEqual(partial["quota_extra_left"],30)
+        self.assertIn("week_used_pct",partial["blocked_fields"])
+
+    def test_self_report_reset_rollback_and_cycle_rollover(self):
+        self.db.execute(
+            "UPDATE members SET quota_week_used_pct=90,quota_week_reset_at=8500,"
+            "quota_source='dispatcher' WHERE name='worker'"
+        )
+        self.db.commit()
+        accepted=self._report(pct=10,reset=9300)
+        self.assertEqual(accepted["quota_week_used_pct"],10)
+        self.assertEqual(accepted["quota_week_reset_at"],9300)
+        with self.assertRaisesRegex(ValueError,"quota report blocked"):
+            self._report(reset=9200)
+        self.assertEqual(self.db.execute(
+            "SELECT quota_week_reset_at FROM members WHERE name='worker'"
+        ).fetchone()[0],9300)
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM audit WHERE action='member_quota_reset_blocked'"
+        ).fetchone()[0],1)
+
+    def test_self_report_spike_and_invalid_input(self):
+        self.db.execute(
+            "UPDATE members SET quota_week_used_pct=10,quota_source='self' "
+            "WHERE name='worker'"
+        )
+        self.db.commit()
+        result=self._report(pct=55)
+        self.assertEqual(result["quota_week_used_pct"],55)
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM audit WHERE action='quota_anomaly'"
+        ).fetchone()[0],1)
+        with self.assertRaisesRegex(ValueError,"invalid quota report"):
+            self._report(pct=101)
+        with self.assertRaisesRegex(ValueError,"invalid quota report"):
+            self._report(reset=9000 + 86400 * 50)
+        self.assertEqual(self.db.execute(
+            "SELECT quota_week_used_pct FROM members WHERE name='worker'"
+        ).fetchone()[0],55)
 
 
 if __name__ == "__main__":

@@ -1624,12 +1624,14 @@ def build_server(context: HubContext | None = None):
         from .services.members import rename_member as _rename_member
         from .services.members import rotate_member_token as _rotate_member_token
         from .services.members import set_member_quota as _set_member_quota
+        from .services.members import report_member_quota as _report_member_quota
     else:
         from services.members import set_login_state as _set_login_state
         from services.members import set_access_mode as _set_access_mode
         from services.members import rename_member as _rename_member
         from services.members import rotate_member_token as _rotate_member_token
         from services.members import set_member_quota as _set_member_quota
+        from services.members import report_member_quota as _report_member_quota
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -1965,88 +1967,11 @@ def build_server(context: HubContext | None = None):
         另写 quota_anomaly 审计告警。审计记 source=self。"""
         me = authenticate()
         require(me)
-        problems = _validate_quota_report(week_used_pct, week_reset_at,
-                                          extra_tokens_left)
-        if problems:
-            raise ValueError("invalid quota report: " + "; ".join(problems))
-        conn = db()
-        try:
-            with _lock:
-                row = conn.execute("SELECT * FROM members WHERE id=?",
-                                   (me["id"],)).fetchone()
-                now = _now()
-                blocked_drop = None
-                if week_used_pct is not None and row["quota_week_used_pct"] is not None \
-                        and float(week_used_pct) < row["quota_week_used_pct"]:
-                    stored_reset = row["quota_week_reset_at"]
-                    cycle_rolled = (stored_reset is not None and stored_reset <= now
-                                    and week_reset_at is not None
-                                    and float(week_reset_at) > stored_reset)
-                    if not cycle_rolled:
-                        blocked_drop = (row["quota_week_used_pct"], float(week_used_pct))
-                        week_used_pct = None  # 该字段忽略，其余字段照常
-                blocked_reset = None
-                if week_reset_at is not None and row["quota_week_reset_at"] is not None \
-                        and float(week_reset_at) < row["quota_week_reset_at"]:
-                    # 自报 reset_at 只许往后移：回挪能人为加速「周期到期」、
-                    # 配合下一报洗白用量，与降幅同罪拦下（真滚动要求新值更大，
-                    # 天然不受此限；调度员 member_quota_set 不受此限、可纠偏）。
-                    blocked_reset = (row["quota_week_reset_at"], float(week_reset_at))
-                    week_reset_at = None
-                anomaly = None
-                if week_used_pct is not None and row["quota_week_used_pct"] is not None:
-                    jump = float(week_used_pct) - row["quota_week_used_pct"]
-                    if jump > QUOTA_ANOMALY_JUMP:
-                        since = row["quota_updated_at"] or row["created_at"]
-                        done_n = conn.execute(
-                            "SELECT COUNT(*) AS n FROM audit WHERE actor=? AND action='task_complete' AND ts>=?",
-                            (me["name"], since)).fetchone()["n"]
-                        if not done_n:
-                            anomaly = (row["quota_week_used_pct"], float(week_used_pct))
-                fields = []
-                if week_used_pct is not None or week_reset_at is not None \
-                        or extra_tokens_left is not None:
-                    fields = _apply_quota(conn, me["id"], week_used_pct,
-                                          week_reset_at, extra_tokens_left, "self")
-                if blocked_drop is not None:
-                    audit(conn, me["name"], "member_quota_drop_blocked",
-                          f"{me['name']}: week_used_pct {blocked_drop[0]}->{blocked_drop[1]}"
-                          f" blocked source=self stored_source={row['quota_source']}")
-                if blocked_reset is not None:
-                    audit(conn, me["name"], "member_quota_reset_blocked",
-                          f"{me['name']}: week_reset_at {blocked_reset[0]}->{blocked_reset[1]}"
-                          " blocked (self-report may only move reset later) source=self")
-                if anomaly is not None:
-                    audit(conn, me["name"], "quota_anomaly",
-                          f"{me['name']}: week_used_pct jump {anomaly[0]}->{anomaly[1]}"
-                          f" (+{anomaly[1] - anomaly[0]:.0f}) with no task_complete since last quota write source=self")
-                if fields:
-                    audit(conn, me["name"], "member_quota_report",
-                          f"{me['name']}: " + ", ".join(fields) + " source=self")
-                conn.commit()
-            if (blocked_drop is not None or blocked_reset is not None) and not fields:
-                why = []
-                if blocked_drop is not None:
-                    why.append(f"week_used_pct drop {blocked_drop[0]}->{blocked_drop[1]}"
-                               " within the same cycle")
-                if blocked_reset is not None:
-                    why.append(f"week_reset_at move-back {blocked_reset[0]}->{blocked_reset[1]}")
-                raise ValueError("quota report blocked: " + "; ".join(why))
-            out = dict(conn.execute(
-                "SELECT name, quota_week_used_pct, quota_week_reset_at,"
-                " quota_extra_left, quota_updated_at, quota_source"
-                " FROM members WHERE id=?",
-                (me["id"],)).fetchone())
-            blocked_fields = []
-            if blocked_drop is not None:
-                blocked_fields.append("week_used_pct")
-            if blocked_reset is not None:
-                blocked_fields.append("week_reset_at")
-            if blocked_fields:
-                out["blocked_fields"] = blocked_fields
-            return out
-        finally:
-            conn.close()
+        return _report_member_quota(
+            context, me, week_used_pct, week_reset_at, extra_tokens_left,
+            validate_report=_validate_quota_report, apply_quota=_apply_quota,
+            quota_anomaly_jump=QUOTA_ANOMALY_JUMP,
+        )
 
     @mcp.tool
     def member_login_state_set(name: str, state: str) -> dict:
