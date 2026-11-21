@@ -245,6 +245,10 @@ actor AgentManager {
         try await store.recordRun(run)
     }
 
+    func reconcileInterruptedRuns() async throws {
+        try await store.reconcileInterruptedRuns()
+    }
+
     func runs(conversationID: UUID) async throws -> [AgentRunRecord] {
         try await store.runs(conversationID: conversationID)
     }
