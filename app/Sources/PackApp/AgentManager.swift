@@ -130,6 +130,13 @@ actor AgentManager {
         )
     }
 
+    func updateSessionID(agentID: UUID, sessionID: String) async throws {
+        guard var profile = try await store.profile(id: agentID) else { return }
+        profile.lastSessionID = sessionID
+        profile.updatedAt = Date()
+        try await store.save(profile)
+    }
+
     func streamEvents(for run: AgentRun) async throws -> AsyncThrowingStream<AgentEvent, Error> {
         guard let adapter = await registry.adapter(for: run.agentID) else {
             throw AgentAdapterError.invalidConfiguration("Agent adapter is not registered")
