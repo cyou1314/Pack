@@ -5,6 +5,7 @@ import {listActiveTasks, approvalDecision, validHost, isHubNetworkFailure} from 
 import {parseQuotaSnapshot, quotaDue} from './quota-policy.mjs';
 import {createHubRpcClient} from './hub-rpc-client.mjs';
 import {createDriverRunner} from './driver-runner.mjs';
+import {createRuntimeStateStore} from './runtime-state-store.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
  *
@@ -139,15 +140,9 @@ async function collectQuota() {
     console.log('quota self report succeeded');
   } catch { console.error('quota self report unavailable'); }
 }
-const chatPath = path.join(DIR, "chat-state.json");
-let chatState;
-try { chatState = JSON.parse(readFileSync(chatPath, "utf8")); }
-catch (e) { if (e.code !== "ENOENT") throw e; chatState = null; }
-function saveChatState() {
-  const tmp = chatPath + ".tmp";
-  writeFileSync(tmp, JSON.stringify(chatState, null, 2) + "\n", {mode:0o600});
-  renameSync(tmp, chatPath);
-}
+const stateStore = createRuntimeStateStore({dir: DIR});
+let chatState = stateStore.loadChatState();
+function saveChatState() { stateStore.saveChatState(chatState); }
 const chatSeed = `你是 ${cfg.memberName}，这是 ♾️ 群聊房间 pack-main。群主的话会原样转进来；请以 ${cfg.memberName} 身份简短自然地回话，不接任务语义，单条回复控制在 200 字内。`;
 let chatFailures = 0, chatRetryAt = 0, chatLoginRequired = false;
 async function processChat(message, members) {
@@ -189,10 +184,8 @@ async function checkChat(busy) {
     chatState.last_chat_id = message.id; saveChatState();
   }
 }
-const receiptPath = path.join(DIR, "delivery-receipts.json");
-let deliveryReceipts;
-try { deliveryReceipts = JSON.parse(readFileSync(receiptPath, "utf8")); }
-catch (e) { if (e.code === "ENOENT") deliveryReceipts = {}; else throw e; }
+let deliveryReceipts = stateStore.loadDeliveryReceipts();
+function saveReceipts() { stateStore.saveDeliveryReceipts(deliveryReceipts); }
 function storeReceipt(task, reply, chatUrl) {
   deliveryReceipts[task.id] = { taskId: task.id, title: task.title, body: task.body, reply, chatUrl, state: "pending" };
   saveReceipts();
