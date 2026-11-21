@@ -67,7 +67,7 @@ if __package__:
 
         action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
         egress_host as _egress_host, egress_pattern as _egress_pattern,
-        host_covers as _host_covers, task_hosts as _task_hosts,
+        host_covers as _host_covers, select_egress_rule, task_hosts as _task_hosts,
         is_executor_pinned as _is_executor_pinned,
         member_access_mode as _member_access_mode,
     )
@@ -77,7 +77,7 @@ else:
 
         action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
         egress_host as _egress_host, egress_pattern as _egress_pattern,
-        host_covers as _host_covers, task_hosts as _task_hosts,
+        host_covers as _host_covers, select_egress_rule, task_hosts as _task_hosts,
         is_executor_pinned as _is_executor_pinned,
         member_access_mode as _member_access_mode,
     )

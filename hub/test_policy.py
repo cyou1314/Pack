@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Direct unit tests for pure Hub policy primitives."""
+import sqlite3
 import unittest
+
+import hub
 
 from core import policy
 
@@ -77,6 +80,20 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(policy.select_egress_rule(rows, "api.example.com")["id"], 2)
         self.assertEqual(policy.select_egress_rule(rows, "v2.api.example.com")["id"], 2)
         self.assertIsNone(policy.select_egress_rule(rows, "other.test"))
+
+    def test_hub_egress_rule_wrapper_uses_policy_selector(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE egress_rules(id INTEGER PRIMARY KEY, pattern TEXT, enabled INTEGER)"
+        )
+        conn.executemany(
+            "INSERT INTO egress_rules(id, pattern, enabled) VALUES(?,?,1)",
+            [(1, "example.com"), (2, "api.example.com")],
+        )
+        selected = hub._egress_rule_eval(conn, "api.example.com")
+        self.assertEqual(selected["id"], 2)
+        conn.close()
 
 
 if __name__ == "__main__":
