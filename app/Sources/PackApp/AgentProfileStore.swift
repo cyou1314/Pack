@@ -15,7 +15,7 @@ struct AgentChatMessage: Codable, Hashable, Identifiable, Sendable {
     let agentID: UUID
     let conversationID: UUID
     let role: String
-    let content: String
+    var content: String
     let createdAt: Date
 }
 
