@@ -73,7 +73,7 @@ Gemini 独立读码后给的分析与本复盘三处完全撞上：连接脆性�
 ## 附记三：2026-11-20 全日（调度员记）
 
 - **联合审计与分诊**：Gemini 读码审计 11 条经调度员逐条核实全部成立，分诊落地：staging49（连接泄漏修复 + authenticate 补 removed_at 校验）、staging50（task_list 多状态过滤 + room_read_new tail 参数）。深查总账 33 项至此全处置；未查面仍余三处（App 本体全量审计、执行体静态审、生产真人链路其余项），已列给群主未答复。
-- **两张 Mac 施工单收官**（MAC-WORK / MAC-WORK2，正本 MAC-WORK-RESULT.md / MAC-WORK2-RESULT.md）：额度自报真打通（absent quota_source=self）；运行时与桥部署新版；引擎 launchd 守护落地（kill 后自拉起验过）；闲聊回路活体验收通过（房间消息 #182）；7897 定案为 Clash Verge mixed-port，未动代理配置。
+- **两张 Mac 施工单收官**（MAC-WORK / MAC-WORK2，正本 docs/history/MAC-WORK-RESULT.md / docs/history/MAC-WORK2-RESULT.md）：额度自报真打通（absent quota_source=self）；运行时与桥部署新版；引擎 launchd 守护落地（kill 后自拉起验过）；闲聊回路活体验收通过（房间消息 #182）；7897 定案为 Clash Verge mixed-port，未动代理配置。
 - **Gemini 逆向 Muse4AI**（正本 MUSE4AI-INTERNALS.md）：paused 根因在 accountMachine（15 分钟 3 次通用失败熔断、无自动恢复）；47821 无 resume/checkSession 接口，无头恢复唯一路线是给 L2 助手加直调入口；本地额度入口只是缓存快照（>6h 标 stale）；vm_state=UNKNOWN 是服务端直返。调度员补记：其推断的「UNKNOWN→熔断」连锁已被 2026-11-18 的分类修复断开（PRE_SUBMIT_TRANSIENT 不计通用失败），报告未读到 coordinator.ts。
 - **EXTERNAL-AGENT 全线关账**：施工单冻结（1fdbda4）→ Phase A（工具 65→71）被 Gemini 红队拦下六处（转交白名单单向、claim TOCTOU、token_rotate 可轮换调度员等），六修后复核过关，验收项 5 由 Codex 在隔离靶场实打 29/29 → Phase B（71→74，pack-agent.mjs + 收件箱三工具）经 Gemini 裁定 4 处必改后复跑 261 项全绿 → 两阶段依次部署生产（备份链 pre51/pre52）→ 真接入验收：codex-ext 配对入群（id=13），调度员 #184 提问、其 #185 回复、游标推进。件六（App 对 external 隐藏登录按钮）同日落地。遗留：MCP 4MiB 传输上限单独立项未排期。
 - **L2 交接**：半关闭根因由 Codex 隔离复现定案（App 侧 nc 关写端、Node 默认 allowHalfOpen=false），新构建已装；2026-11-20 四次点击失败的定位结论为撞上账号自动检查的 busy 租约，真实交接复验待群主方便时再点一次。

@@ -1,6 +1,6 @@
 # REVIEW56 — staging56 对抗复检：成员级访问模式预设 access_mode
 
-施工单：`PORT-ACCESSMODE-BRIEF.md`（搬运四，OpenBot 对照表最后一项）。
+施工单：`docs/history/PORT-ACCESSMODE-BRIEF.md`（搬运四，OpenBot 对照表最后一项）。
 施工区：`tests/hub-staging56/`（隔离副本 + 全新 DB + 端口 18798，迁移套件
 自带 18795/18796）。生产本体与生产 DB 未动；未 commit、未部署。
 
