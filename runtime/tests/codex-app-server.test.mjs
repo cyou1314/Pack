@@ -76,6 +76,10 @@ class FakeCodexProcess extends EventEmitter {
           params: {threadId, turnId: "turn-1", itemId: "item-1", delta: "Hello"},
         });
         this.#send({
+          method: "item/completed",
+          params: {threadId, turnId: "turn-1", item: {id: "item-1", type: "agentMessage", text: "Hello", phase: "final_answer"}},
+        });
+        this.#send({
           method: "turn/completed",
           params: {threadId, turn: {id: "turn-1", status: "completed"}},
         });
@@ -145,6 +149,7 @@ test("Codex App Server initializes, creates/resumes sessions and streams turns",
   assert.ok(child.received.some((item) => item.method === "thread/resume"));
   assert.ok(child.received.some((item) => item.method === "turn/start"));
   assert.ok(events.some((event) => event.eventType === "message.delta" && event.payload.delta === "Hello"));
+  assert.ok(events.some((event) => event.eventType === "message.completed" && event.payload.text === "Hello"));
 
   await adapter.disconnect();
   assert.equal(child.killed, true);

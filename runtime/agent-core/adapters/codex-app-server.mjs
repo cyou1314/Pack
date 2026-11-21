@@ -295,6 +295,11 @@ export class CodexAppServerAdapter {
     }
     if (!message || typeof message !== "object") return;
 
+    if (message.id !== undefined && typeof message.method === "string") {
+      this.#handleServerRequest(message);
+      return;
+    }
+
     if (message.id !== undefined && this.#pendingRequests.has(message.id)) {
       const pending = this.#pendingRequests.get(message.id);
       this.#pendingRequests.delete(message.id);
@@ -304,11 +309,6 @@ export class CodexAppServerAdapter {
       } else {
         pending.resolve(message.result ?? {});
       }
-      return;
-    }
-
-    if (message.id !== undefined && typeof message.method === "string") {
-      this.#handleServerRequest(message);
       return;
     }
 
@@ -386,8 +386,22 @@ export class CodexAppServerAdapter {
           delta: cleanString(params.delta, 12000),
         }, {sessionId, runId});
         break;
-      case "item/started":
       case "item/completed":
+        if (params.item?.type === "agentMessage") {
+          this.#publish("message.completed", {
+            itemId: cleanString(params.item.id, 160),
+            text: cleanString(params.item.text, 12000),
+            phase: cleanString(params.item.phase, 64),
+          }, {sessionId, runId});
+        } else {
+          this.#publish("run.progress", {
+            itemId: cleanString(params.item?.id, 160),
+            itemType: cleanString(params.item?.type, 80),
+            itemStatus: cleanString(params.item?.status, 80),
+          }, {sessionId, runId});
+        }
+        break;
+      case "item/started":
         this.#publish("run.progress", {
           itemId: cleanString(params.item?.id, 160),
           itemType: cleanString(params.item?.type, 80),
