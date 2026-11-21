@@ -307,6 +307,11 @@ class MemberWriteTests(unittest.TestCase):
         ).fetchone()[0], 1)
 
     def test_remove_rejects_self_dispatcher_owner_and_repeated_removal(self):
+        self.db.execute(
+            "INSERT INTO members(name,role,token_hash,created_at) "
+            "VALUES('owner','owner','owner-test-hash',9000)"
+        )
+        self.db.commit()
         for name, actor, error in [
             ("dispatcher", {"name": "dispatcher"}, "cannot remove yourself"),
             ("dispatcher", {"name": "owner"}, "cannot remove the dispatcher"),
