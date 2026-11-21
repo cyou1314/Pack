@@ -184,6 +184,22 @@ class TaskHistoryTests(unittest.TestCase):
         )["tasks"]
         self.assertEqual(unbound, [])
 
+    def test_task_list_caps_page_at_100_with_stable_global_queue_index(self):
+        self.conn.executemany(
+            "INSERT INTO tasks(id,room_id,title,body,created_by,assignee,status,"
+            "created_at,updated_at) VALUES(?,1,?,'',?,?,'open',8000,8000)",
+            [(task_id, f"item-{task_id}", self.dispatcher, self.dispatcher)
+             for task_id in range(100, 205)],
+        )
+        self.conn.commit()
+        first = list_tasks(self.context, {"kind": "internal"})["tasks"]
+        second = list_tasks(self.context, {"kind": "internal"}, offset=100)["tasks"]
+        self.assertEqual(len(first), 100)
+        self.assertEqual(len(second), 7)
+        self.assertEqual([r["id"] for r in first[:3]], [1, 12, 100])
+        self.assertEqual([r["id"] for r in second], list(range(198, 205)))
+        self.assertEqual([r["queue_ahead"] for r in second], list(range(100, 107)))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

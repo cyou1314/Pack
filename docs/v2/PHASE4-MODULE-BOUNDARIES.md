@@ -170,3 +170,6 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 新建 hub/services/tasks.py，初步提取任务转交历史与任务完整审计的只读查询。MCP task_transfers_list 与 task_audit 的工具名、参数、说明和认证保持不变，写入及状态转换暂不迁移。
 - hub/test_tasks_service.py 覆盖按 id 排序、任务不存在拒绝、精确任务前缀归属、run/transfer 台账与事件 200 条截断；Hub 安装包 smoke test 同时检查新 tasks service 文件。
 - 继续遵守每批次通过 Hub 单测、MCP/SQLite 契约快照、staging 与 macOS CI 后才扩展到任务认领、完成和审批领域的要求。
+
+- 任务列表 MCP task_list 已迁至 hub/services/tasks.py；保持原有排序、状态多选、队列序号、退避展示、外部成员房间/指派约束及分页语义，并通过 try/finally 关闭数据库连接。
+- hub/test_tasks_service.py 增补优先级与多状态组合、JSON envelope、退避时间、外部成员越权过滤及跨越 100 条分页的全队列序号测试；安装包 smoke test 检查 task_list 工具仍可注册。
