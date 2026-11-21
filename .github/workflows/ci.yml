@@ -45,6 +45,7 @@ jobs:
           python hub/test_systemd_units.py
           python installer/test_launch_agent_safety.py
           python installer/test_dmg_manifest.py
+          python hub/test_policy.py
           python hub/test_policy_helpers.py
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh

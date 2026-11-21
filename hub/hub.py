@@ -62,6 +62,21 @@ import threading
 import time
 import urllib.parse
 
+if __package__:
+    from .core.policy import (
+        ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
+        action_tag, backoff_seconds as _backoff_seconds,
+        is_executor_pinned as _is_executor_pinned,
+        member_access_mode as _member_access_mode,
+    )
+else:
+    from core.policy import (
+        ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
+        action_tag, backoff_seconds as _backoff_seconds,
+        is_executor_pinned as _is_executor_pinned,
+        member_access_mode as _member_access_mode,
+    )
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE, "pack.db")
 PORT = int(os.environ.get("PACK_HUB_PORT", "8794"))
@@ -88,7 +103,6 @@ DELETED_PLACEHOLDER = "\uff08\u5df2\u5220\u9664\uff09"
 # 尝试上限仍是 MAX_ATTEMPTS=3，不因退避改变；参数写死代码常量（与记忆限额
 # 同例：改参数 = 改中枢代码 + 群主批准，不给工具面）。
 FAIL_CLASSES = ("quota", "transient", "task", "unknown")
-BACKOFF_BASE_SECONDS = {"quota": 1800, "transient": 60, "task": 300, "unknown": 300}
 # 隔离测试可注入时钟偏移（秒），把本进程的「现在」整体平移以验退避到期，
 # 免真睡；线上不设此变量、恒为 0。只影响本增量的时间源 _now()。
 TIME_OFFSET = float(os.environ.get("PACK_HUB_TIME_OFFSET", "0"))
@@ -97,10 +111,6 @@ TIME_OFFSET = float(os.environ.get("PACK_HUB_TIME_OFFSET", "0"))
 def _now():
     return time.time() + TIME_OFFSET
 
-
-def _backoff_seconds(fail_class, attempts):
-    base = BACKOFF_BASE_SECONDS.get(fail_class, BACKOFF_BASE_SECONDS["unknown"])
-    return base * (2 ** max(0, attempts - 1))
 
 _lock = threading.Lock()
 
@@ -275,14 +285,6 @@ def _close_run(conn, task_id, outcome, actor, detail=""):
 #   目标     = 任务的被指派成员名，未指派为 ''。键里 '' 表示通配。
 
 TASK_REF_RE = re.compile(r"任务#(\d+)")
-ACTION_TAG_RE = re.compile(r"\[([A-Za-z0-9_-]+)\]")
-
-
-def action_tag(title):
-    m = ACTION_TAG_RE.search(title or "")
-    return f"[{m.group(1)}]" if m else ""
-
-
 def rule_eval(conn, action, target):
     """按具体度查规则库：(action,target) > (action,'') > ('',target) > ('','')，命中返回 row。"""
     for a, t in ((action, target), (action, ""), ("", target), ("", "")):
@@ -992,7 +994,6 @@ def require(me, role=None):
 RELAY_HEARTBEAT_FRESH = 180   # 候选须在线：心跳 3 分钟内
 RELAY_QUOTA_FRESH = 900       # 候选额度数据须 15 分钟内（与 App 额度过期口径一致）
 RELAY_QUOTA_HEADROOM = 90     # 候选周额度已用须 <90%
-EXECUTOR_MARKERS = ("[M4A]", "[ENG]", "[ENG-image]")
 
 # ---------------- 未认领指派卡巡检（staging48「让卡别躺死」） ----------------
 # open 且已指派的卡若没人认领，旧 sweeper 完全不看（它只管 claimed/working
@@ -1493,17 +1494,6 @@ def _is_external(me):
     return bool(me) and (me.get("kind") or "") == "external"
 
 
-def _is_executor_pinned(title, body):
-    """引擎标记判定（件二抽公用 helper，四处统一）：标题 lstrip 后以
-    执行体标记开头，或正文包含标记。带标记的卡是 GUI/引擎类任务，
-    执行体钉死——不接力、不许 external 认领/被指派。"""
-    t = (title or "").lstrip()
-    if any(t.startswith(mk) for mk in EXECUTOR_MARKERS):
-        return True
-    b = body or ""
-    return any(mk in b for mk in EXECUTOR_MARKERS)
-
-
 def _external_enabled(conn):
     """总开关 hub_settings.external_enabled（默认开）。表缺失（极早期
     DB）按开处理，不让开关本身成为单点故障。"""
@@ -1536,7 +1526,6 @@ def _ext_check(me, tool_name):
 # 只许只读工具。闸门在 _gated_tool 包装器内、external 白名单闸之后
 # （_mode_check），两闸独立、任一拒即拒。模式每次调用现查（me 来自
 # authenticate 的当次 DB 查询），set 后下一次调用即生效、不缓存。
-ACCESS_MODES = ("full", "workspace", "readonly")
 # readonly 放行名单：纯读工具 + heartbeat 一个明示例外（心跳是存在性
 # 信号、非内容写，禁掉会让只读成员看起来掉线；明确备案）。名单外一律
 # 拒（含日后新增工具，默认拒，与 external 白名单同哲学）。
@@ -1557,13 +1546,6 @@ WORKSPACE_DENIED_TOOLS = frozenset({
     "egress_check", "skill_publish", "skill_assign", "skill_unassign",
     "skill_rollback",
 })
-
-
-def _member_access_mode(me):
-    """成员当前访问模式归一：列缺失/NULL/脏值一律按 full（老 DB、
-    老成员零行为变化）。"""
-    mode = (me or {}).get("access_mode") or "full"
-    return mode if mode in ACCESS_MODES else "full"
 
 
 def _mode_check(me, tool_name):
