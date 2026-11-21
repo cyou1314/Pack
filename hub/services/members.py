@@ -281,3 +281,81 @@ def report_member_quota(context, me, week_used_pct=None, week_reset_at=None,
         return out
     finally:
         conn.close()
+
+
+def remove_member(context, me, name: str, *, close_run, desktop_release_for_task,
+                  desktop_snapshot, hash_token, token_factory) -> dict:
+    """Soft-remove a member and atomically reclaim their tasks and resources."""
+    if name == me["name"]:
+        raise ValueError("cannot remove yourself")
+    recalled = unassigned = expired = skills_cleared = 0
+    lock_released = False
+    with context.lock:
+        conn = context.connect()
+        try:
+            row = conn.execute("SELECT * FROM members WHERE name=?",
+                               (name,)).fetchone()
+            if not row:
+                raise ValueError(f"no such member: {name}")
+            if row["role"] == "dispatcher":
+                raise ValueError("cannot remove the dispatcher")
+            if name == "owner":
+                raise ValueError("cannot remove the owner")
+            if row["removed_at"] is not None:
+                raise ValueError(f"member already removed: {name}")
+            now = context.clock()
+            mid = row["id"]
+            for t in conn.execute(
+                    "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','working')",
+                    (mid,)).fetchall():
+                cur = conn.execute(
+                    "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND status IN ('claimed','working')",
+                    (now, t["id"]))
+                if cur.rowcount == 1:
+                    close_run(conn, t["id"], "member_removed", me["name"])
+                    desktop_release_for_task(conn, t["id"], me["name"],
+                                              "member_removed")
+                    recalled += 1
+            unassigned = conn.execute(
+                "UPDATE tasks SET assignee=NULL, updated_at=? WHERE assignee=? AND status='open'",
+                (now, mid)).rowcount
+            for x in conn.execute(
+                    "SELECT * FROM task_transfers WHERE status='pending' AND (from_member=? OR to_member=?)",
+                    (name, name)).fetchall():
+                cur = conn.execute(
+                    "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
+                    (x["id"],))
+                if cur.rowcount != 1:
+                    continue
+                expired += 1
+                t = conn.execute("SELECT * FROM tasks WHERE id=?",
+                                 (x["task_id"],)).fetchone()
+                if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
+                    recv = conn.execute("SELECT id FROM members WHERE name=?",
+                                        (x["to_member"],)).fetchone()
+                    if recv and t["assignee"] == recv["id"]:
+                        conn.execute(
+                            "UPDATE tasks SET status='open', assignee=NULL, updated_at=? WHERE id=?",
+                            (now, t["id"]))
+            snap = desktop_snapshot(conn)
+            if snap["held"] and snap["holder"] == name:
+                conn.execute(
+                    "UPDATE desktop_lock SET holder=NULL, task_id=NULL, acquired_at=NULL WHERE id=1")
+                context.audit(conn, me["name"], "desktop_auto_release",
+                      f"member_remove holder={name}")
+                lock_released = True
+            skills_cleared = conn.execute(
+                "DELETE FROM member_skills WHERE member_id=?", (mid,)).rowcount
+            conn.execute(
+                "UPDATE members SET removed_at=?, token_hash=? WHERE id=?",
+                (now, hash_token("revoked-" + token_factory()), mid))
+            context.audit(conn, me["name"], "member_remove",
+                  f"{name} recalled={recalled} unassigned={unassigned} "
+                  f"transfers_expired={expired} skills_cleared={skills_cleared} "
+                  f"lock_released={lock_released}")
+            conn.commit()
+        finally:
+            conn.close()
+    return {"removed": name, "tasks_recalled": recalled,
+            "tasks_unassigned": unassigned, "transfers_expired": expired,
+            "skills_cleared": skills_cleared, "lock_released": lock_released}

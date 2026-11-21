@@ -7,7 +7,7 @@ from pathlib import Path
 
 import hub
 from core.context import HubContext
-from services.members import rename_member, rotate_member_token, set_access_mode, set_login_state, set_member_quota, report_member_quota
+from services.members import rename_member, rotate_member_token, set_access_mode, set_login_state, set_member_quota, report_member_quota, remove_member
 
 
 class MemberWriteTests(unittest.TestCase):
@@ -255,6 +255,69 @@ class MemberWriteTests(unittest.TestCase):
         self.assertEqual(self.db.execute(
             "SELECT quota_week_used_pct FROM members WHERE name='worker'"
         ).fetchone()[0],55)
+
+
+    def _remove(self, name, actor=None):
+        return remove_member(
+            self.context, actor or self.actor, name,
+            close_run=lambda conn, tid, outcome, who:
+                hub._close_run(conn, tid, outcome, who, context=self.context),
+            desktop_release_for_task=lambda conn, tid, who, reason:
+                hub._desktop_release_for_task(conn, tid, who, reason, self.context),
+            desktop_snapshot=hub._desktop_snapshot,
+            hash_token=hub.hash_token,
+            token_factory=lambda: "removal-test-token",
+        )
+
+    def test_remove_member_reclaims_claimed_and_open_work_and_revokes_token(self):
+        worker = self.db.execute(
+            "SELECT id, token_hash FROM members WHERE name='worker'"
+        ).fetchone()
+        before_hash = worker["token_hash"]
+        self.db.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,"
+            "claim_token,lease_expires,created_at,updated_at) "
+            "VALUES(1,'claim-test','',?,?, 'claimed','claim-token',9100,8900,8900)",
+            (worker["id"], worker["id"]),
+        )
+        self.db.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,"
+            "created_at,updated_at) VALUES(1,'open-test','',?,?, 'open',8900,8900)",
+            (worker["id"], worker["id"]),
+        )
+        self.db.commit()
+        result = self._remove("worker")
+        self.assertEqual(result["removed"], "worker")
+        self.assertEqual(result["tasks_recalled"], 1)
+        self.assertEqual(result["tasks_unassigned"], 1)
+        rows = self.db.execute(
+            "SELECT status,assignee,claim_token FROM tasks ORDER BY id"
+        ).fetchall()
+        self.assertEqual(
+            [tuple(r) for r in rows],
+            [("open", None, None), ("open", None, None)],
+        )
+        after = self.db.execute(
+            "SELECT removed_at,token_hash FROM members WHERE name='worker'"
+        ).fetchone()
+        self.assertEqual(after["removed_at"], 9000.0)
+        self.assertNotEqual(after["token_hash"], before_hash)
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM audit WHERE action='member_remove'"
+        ).fetchone()[0], 1)
+
+    def test_remove_rejects_self_dispatcher_owner_and_repeated_removal(self):
+        for name, actor, error in [
+            ("dispatcher", {"name": "dispatcher"}, "cannot remove yourself"),
+            ("dispatcher", {"name": "owner"}, "cannot remove the dispatcher"),
+            ("owner", {"name": "dispatcher"}, "cannot remove the owner"),
+            ("unknown", self.actor, "no such member"),
+        ]:
+            with self.assertRaisesRegex(ValueError, error):
+                self._remove(name, actor=actor)
+        self._remove("worker")
+        with self.assertRaisesRegex(ValueError, "already removed"):
+            self._remove("worker")
 
 
 if __name__ == "__main__":
