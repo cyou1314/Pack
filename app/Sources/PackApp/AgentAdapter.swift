@@ -243,27 +243,100 @@ actor AgentProfileCatalog {
     }
 }
 
-/// In-memory registry only. Persistence and UI ownership stay in later layers.
-actor AgentAdapterRegistry {
-    private var adapters: [String: any AgentAdapter] = [:]
-
-    func register(_ adapter: any AgentAdapter) throws {
-        guard adapters[adapter.providerID] == nil else {
-            throw AgentAdapterError.invalidConfiguration("adapter already registered: \(adapter.providerID)")
+/// Keychain-backed secret storage. Only references are serialized in AgentProfile.
+enum AgentCredentialVault {
+    static func store(
+        secret: String,
+        service: String,
+        account: String
+    ) throws -> AgentCredentialReference {
+        guard !secret.isEmpty, !service.isEmpty, !account.isEmpty else {
+            throw AgentAdapterError.invalidConfiguration("credential, service and account are required")
         }
-        adapters[adapter.providerID] = adapter
+        let key: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        let data = Data(secret.utf8)
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let status = SecItemUpdate(key as CFDictionary, update as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = key
+            add.merge(update) { _, new in new }
+            let added = SecItemAdd(add as CFDictionary, nil)
+            guard added == errSecSuccess else {
+                throw AgentAdapterError.invalidConfiguration("Keychain write failed: \(added)")
+            }
+        } else if status != errSecSuccess {
+            throw AgentAdapterError.invalidConfiguration("Keychain update failed: \(status)")
+        }
+
+        let reference = AgentCredentialReference(keychainService: service, account: account)
+        let verified = try read(reference)
+        guard verified == secret else {
+            throw AgentAdapterError.invalidConfiguration("Keychain read-back verification failed")
+        }
+        return reference
     }
 
-    func adapter(for providerID: String) -> (any AgentAdapter)? {
-        adapters[providerID]
+    static func read(_ reference: AgentCredentialReference) throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: reference.keychainService,
+            kSecAttrAccount as String: reference.account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8),
+              !value.isEmpty else {
+            throw AgentAdapterError.authenticationRequired
+        }
+        return value
     }
 
-    func registeredProviderIDs() -> [String] {
-        adapters.keys.sorted()
+    static func delete(_ reference: AgentCredentialReference) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: reference.keychainService,
+            kSecAttrAccount as String: reference.account
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw AgentAdapterError.invalidConfiguration("Keychain delete failed: \(status)")
+        }
+    }
+}
+
+/// One adapter instance belongs to one Agent profile, not one Provider.
+/// This permits multiple accounts from the same provider to coexist.
+actor AgentAdapterRegistry {
+    private var adapters: [UUID: any AgentAdapter] = [:]
+
+    func register(_ adapter: any AgentAdapter, for agentID: UUID) throws {
+        guard adapters[agentID] == nil else {
+            throw AgentAdapterError.invalidConfiguration("adapter already registered for Agent profile")
+        }
+        adapters[agentID] = adapter
     }
 
-    func remove(providerID: String) async {
-        guard let adapter = adapters.removeValue(forKey: providerID) else { return }
+    func adapter(for agentID: UUID) -> (any AgentAdapter)? {
+        adapters[agentID]
+    }
+
+    func registeredAgentIDs() -> [UUID] {
+        adapters.keys.sorted { $0.uuidString < $1.uuidString }
+    }
+
+    func remove(agentID: UUID) async {
+        guard let adapter = adapters.removeValue(forKey: agentID) else { return }
         await adapter.disconnect()
     }
 }
