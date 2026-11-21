@@ -43,7 +43,7 @@ class StorageTests(unittest.TestCase):
                 )
                 row = connection.execute("SELECT * FROM audit").fetchone()
                 self.assertEqual(tuple(row), (123.5, "member-a", "task_update", "task=9"))
-                self.assertFalse(connection.in_transaction is False)
+                self.assertTrue(connection.in_transaction)
                 connection.rollback()
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit").fetchone()[0], 0)
             finally:
