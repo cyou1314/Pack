@@ -1634,6 +1634,12 @@ def build_server(context: HubContext | None = None):
         from services.members import set_member_quota as _set_member_quota
         from services.members import report_member_quota as _report_member_quota
         from services.members import remove_member as _remove_member
+    if __package__:
+        from .services.tasks import list_task_transfers as _list_task_transfers
+        from .services.tasks import get_task_audit as _get_task_audit
+    else:
+        from services.tasks import list_task_transfers as _list_task_transfers
+        from services.tasks import get_task_audit as _get_task_audit
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3786,18 +3792,7 @@ def build_server(context: HubContext | None = None):
         task_transfer 记录互相印证。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute("SELECT id FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        rows = conn.execute(
-            """SELECT id, task_id, from_member, to_member, reason, actor, created_at,
-                      status, accepted_at, expires_at
-               FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
-            (task_id,)).fetchall()
-        conn.close()
-        return {"task_id": task_id, "transfers": [dict(x) for x in rows]}
+        return _list_task_transfers(context, task_id)
 
     @mcp.tool
     def task_audit(task_id: int) -> dict:
@@ -3808,38 +3803,7 @@ def build_server(context: HubContext | None = None):
         超出时 truncated=true。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute(
-            """SELECT t.id, t.title, t.status, t.attempts, t.created_at, t.updated_at,
-                      cb.name AS created_by, ab.name AS assignee, t.review_note
-               FROM tasks t JOIN members cb ON cb.id=t.created_by
-               LEFT JOIN members ab ON ab.id=t.assignee WHERE t.id=?""",
-            (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        pre = f"task {task_id}"
-        arows = conn.execute(
-            """SELECT ts, actor, action, detail FROM audit
-               WHERE detail=? OR detail LIKE ? OR detail LIKE ?
-               ORDER BY id ASC LIMIT 201""",
-            (pre, pre + ":%", pre + " %")).fetchall()
-        rrows = conn.execute(
-            """SELECT r.fence, mb.name AS member, r.status, r.outcome, r.detail,
-                      r.started_at, r.ended_at
-               FROM runs r JOIN members mb ON mb.id=r.member_id
-               WHERE r.task_id=? ORDER BY r.fence ASC""", (task_id,)).fetchall()
-        xrows = conn.execute(
-            """SELECT from_member, to_member, reason, actor, created_at, status,
-                      accepted_at, expires_at
-               FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
-            (task_id,)).fetchall()
-        conn.close()
-        events = [dict(r) for r in arows[:200]]
-        return {"task": dict(t), "events": events,
-                "events_truncated": len(arows) > 200,
-                "runs": [dict(r) for r in rrows],
-                "transfers": [dict(r) for r in xrows]}
+        return _get_task_audit(context, task_id)
 
     @mcp.tool
     def run_start(task_id: int, claim_token: str) -> dict:
