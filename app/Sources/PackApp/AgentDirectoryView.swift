@@ -526,9 +526,13 @@ struct AgentDirectoryView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(state.conversations) { conversation in
-                                Button(conversation.title) { state.selectConversation(conversation.id) }
-                                    .buttonStyle(.bordered)
-                                    .tint(state.selectedConversationID == conversation.id ? .accentColor : .secondary)
+                                Button(action: {
+                                    state.selectConversation(conversation.id)
+                                }) {
+                                    Text(conversation.title)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(state.selectedConversationID == conversation.id ? Color.accentColor : Color.secondary)
                             }
                         }
                     }
