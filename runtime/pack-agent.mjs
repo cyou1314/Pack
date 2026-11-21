@@ -17,7 +17,43 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import {validateHubURL} from "./hub-url-policy.mjs";
+// Kept self-contained because the documented external-agent install distributes
+// this file alone. Keep this validation contract aligned with hub-url-policy.mjs.
+function validateHubURL(value) {
+  if (typeof value !== "string" || !value || value !== value.trim()) {
+    throw new TypeError("invalid_hub_url");
+  }
+
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new TypeError("invalid_hub_url");
+  }
+
+  if (!["https:", "http:"].includes(url.protocol)
+      || !url.hostname
+      || url.username
+      || url.password
+      || url.search
+      || url.hash
+      || url.href.includes("?")
+      || url.href.includes("#")) {
+    throw new TypeError("invalid_hub_url");
+  }
+
+  if (url.protocol === "http:") {
+    let host = url.hostname.toLowerCase();
+    if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+    if (host.endsWith(".")) host = host.slice(0, -1);
+    if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
+      throw new TypeError("invalid_hub_url");
+    }
+  }
+
+  return url.href;
+}
+
 
 const AGENT_VERSION = "1.0.0";
 const UA = `pack-agent/${AGENT_VERSION}`;
