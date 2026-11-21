@@ -1,5 +1,6 @@
 import SwiftUI
 import Security
+import PackCore
 
 struct RoomItem: Identifiable {
     let id: Int
@@ -467,10 +468,10 @@ final class AppState: ObservableObject {
             if manual { settingsMessage = message }
             return false
         }
-        guard let parts = URLComponents(string: text), ["http", "https"].contains(parts.scheme?.lowercased() ?? ""),
-              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else {
-            return fail("地址格式无效，请使用不带凭证或查询参数的 HTTP(S) 地址。")
+        guard let endpoint = HubEndpoint.validatedURL(text) else {
+            return fail("地址无效：远程 Hub 必须使用 HTTPS；HTTP 仅允许本机回环地址，且不能包含凭证、查询参数或片段。")
         }
+        let normalizedURL = endpoint.absoluteString
         let path = PackConfig.configurationURL
         do {
             let loaded = PackConfig.load()
@@ -478,17 +479,17 @@ final class AppState: ObservableObject {
             guard var cfg = loaded.config else { return fail("无法读取本机凭证") }
             let data = try Data(contentsOf: path)
             guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return fail("配置格式无效") }
-            object["hubUrl"] = text
+            object["hubUrl"] = normalizedURL
             let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
             let temporary = path.deletingLastPathComponent().appendingPathComponent(".config-\(UUID().uuidString).tmp")
             guard FileManager.default.createFile(atPath: temporary.path, contents: updated, attributes: [.posixPermissions: 0o600]) else { return fail("无法创建安全的配置临时文件") }
             defer { try? FileManager.default.removeItem(at: temporary) }
             _ = try FileManager.default.replaceItemAt(path, withItemAt: temporary)
             if manual { manualHubURLSaved = true }
-            storedHubURL = text
-            cfg.hubUrl = text
+            storedHubURL = normalizedURL
+            cfg.hubUrl = normalizedURL
             installHubClients(cfg)
-            settingsHubURL = text
+            settingsHubURL = normalizedURL
             if manual { settingsMessage = "地址已保存，正在连接" }
             return true
         } catch { return fail("保存失败，请检查本机配置后重试") }
@@ -1220,12 +1221,27 @@ final class AppState: ObservableObject {
     }
 
     func approveTask(_ tid: Int) { decideTask(tid, approve: true) }
-    func approveAlways(_ task: PackTask, requestID: Int) {
-        decideTask(task.id, approve: true, always: (requestID, task.title, task.assignee))
+
+    func approvalRuleScope(for task: PackTask) -> ApprovalRuleScope? {
+        ApprovalRuleScope(taskTitle: task.title, assignee: task.assignee)
     }
+
+    func canCreateScopedApprovalRule(for task: PackTask) -> Bool {
+        approvalRuleScope(for: task) != nil
+    }
+
+    func approveAlways(_ task: PackTask, requestID: Int) {
+        guard let scope = approvalRuleScope(for: task) else {
+            alwaysRuleErrors[requestID] = "总是允许需要明确的动作标记（如 [ENG]）和已指派成员；为避免创建通配规则，当前任务未被批准。"
+            return
+        }
+        alwaysRuleErrors[requestID] = nil
+        decideTask(task.id, approve: true, always: (requestID, scope))
+    }
+
     func rejectTask(_ tid: Int) { decideTask(tid, approve: false) }
 
-    private func decideTask(_ tid: Int, approve: Bool, always: (requestID: Int, title: String, assignee: String?)? = nil) {
+    private func decideTask(_ tid: Int, approve: Bool, always: (requestID: Int, scope: ApprovalRuleScope)? = nil) {
         guard !decisionsPending.contains(tid), let client else { return }
         decisionsPending.insert(tid)
         decisionErrors[tid] = nil
@@ -1245,19 +1261,19 @@ final class AppState: ObservableObject {
                 _ = try await client.call(name: "room_post", args: ["room": room, "body": body, "kind": "decision"])
                 posted = true
                 if let always {
-                    if let target = always.assignee?.trimmingCharacters(in: .whitespacesAndNewlines), !target.isEmpty {
-                        let pattern = try? NSRegularExpression(pattern: #"\[[A-Za-z0-9_-]+\]"#)
-                        let range = NSRange(always.title.startIndex..., in: always.title)
-                        let match = pattern?.firstMatch(in: always.title, range: range)
-                        let action = match.flatMap { Range($0.range, in: always.title) }.map { String(always.title[$0]) } ?? ""
-                        do {
-                            _ = try await client.call(name: "rule_upsert", args: ["action": action, "target": target, "effect": "allow", "source": "app-always"])
-                            alwaysRuleSucceeded.insert(always.requestID)
-                        } catch {
-                            alwaysRuleErrors[always.requestID] = "本次已批准，但总是允许规则保存未确认，请检查规则后重试。"
-                        }
-                    } else {
-                        alwaysRuleErrors[always.requestID] = "本次已批准，但任务没有指派成员，未保存总是允许规则。"
+                    do {
+                        _ = try await client.call(
+                            name: "rule_upsert",
+                            args: [
+                                "action": always.scope.action,
+                                "target": always.scope.target,
+                                "effect": "allow",
+                                "source": "app-always"
+                            ]
+                        )
+                        alwaysRuleSucceeded.insert(always.requestID)
+                    } catch {
+                        alwaysRuleErrors[always.requestID] = "本次已批准，但总是允许规则保存未确认，请检查规则后重试。"
                     }
                 }
                 if !approve { _ = try await client.call(name: "task_cancel", args: ["task_id": tid]) }

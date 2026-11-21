@@ -1,3 +1,4 @@
+import {findSensitiveField} from "./sensitive-fields.mjs";
 const MODES = new Set([
   "native_account",
   "local_runtime",
@@ -57,26 +58,11 @@ const CAPABILITIES = new Set(AGENT_CAPABILITIES);
 const EVENT_TYPES = new Set(AGENT_EVENT_TYPES);
 
 
-const SENSITIVE_KEYS = new Set([
-  "apikey", "accesstoken", "refreshtoken", "token",
-  "authorization", "authheader", "password", "cookie", "cookies",
-  "nativememory", "privatememory", "privatecontext", "credentials",
-  "clientsecret", "privatekey", "secret",
-]);
+
 
 function assertNoSensitiveFields(value, path = "payload") {
-  if (value === null || typeof value !== "object") return;
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertNoSensitiveFields(item, path + "[" + index + "]"));
-    return;
-  }
-  for (const [key, nested] of Object.entries(value)) {
-    const normalized = key.replace(/[-_]/g, "").toLowerCase();
-    if (SENSITIVE_KEYS.has(normalized)) {
-      throw new Error("sensitive_field_forbidden:" + path + "." + key);
-    }
-    assertNoSensitiveFields(nested, path + "." + key);
-  }
+  const found = findSensitiveField(value, path);
+  if (found) throw new Error("sensitive_field_forbidden:" + found.path + "." + found.key);
 }
 
 function isPlainObject(value) {

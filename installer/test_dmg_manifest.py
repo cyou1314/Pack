@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Static packaging-contract tests; the actual DMG build remains a macOS gate."""
+import plistlib
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class DmgManifestTests(unittest.TestCase):
+    def test_app_info_plist_has_version_and_platform_metadata(self):
+        info = plistlib.loads((ROOT / "app" / "Info.plist").read_bytes())
+        self.assertEqual(info.get("CFBundleIdentifier"), "com.cyou.pack")
+        self.assertTrue(info.get("CFBundleShortVersionString"))
+        self.assertRegex(info.get("CFBundleVersion", ""), r"^[0-9]+$")
+        self.assertEqual(info.get("LSMinimumSystemVersion"), "14.0")
+
+    def test_bundle_builder_uses_explicit_non_destructive_output(self):
+        source = (ROOT / "app" / "make-bundle.sh").read_text(encoding="utf-8")
+        self.assertIn('APP="${1:-$ROOT/Pack.app}"', source)
+        self.assertIn('[[ ! -e "$APP" && ! -L "$APP" ]]', source)
+        self.assertNotIn('rm -rf "$APP"', source)
+        self.assertIn("codesign --verify --deep --strict", source)
+
+    def test_dmg_builder_creates_bundle_from_source_and_records_manifest(self):
+        source = (ROOT / "installer" / "build-dmg.sh").read_text(encoding="utf-8")
+        self.assertIn('bash "$ROOT/app/make-bundle.sh" "$STAGE/Pack.app"', source)
+        self.assertNotIn('ditto "$ROOT/app/Pack.app"', source)
+        for key in (
+            "BUILD-MANIFEST.txt",
+            "PackVersion=",
+            "PackBuild=",
+            "MinimumMacOS=",
+            "PythonVersion=",
+            "FastMCPVersion=",
+            "EngineVersion=",
+            "SourceRevision=",
+        ):
+            self.assertIn(key, source)
+        self.assertIn('hdiutil verify "$OUT"', source)
+        self.assertIn('shasum -a 256 "$OUT"', source)
+
+    def test_dmg_payload_guard_rejects_known_user_data_and_secrets(self):
+        source = (ROOT / "installer" / "build-dmg.sh").read_text(encoding="utf-8")
+        for pattern in (
+            "pack.db*",
+            "muse.sqlite*",
+            ".dispatcher_token",
+            ".owner_token",
+            "tokens.json",
+            "*.token",
+            "Cookies",
+            "vault.json",
+            "Partitions",
+        ):
+            self.assertIn(pattern, source)
+
+    def test_readme_documents_the_build_manifest(self):
+        source = (ROOT / "installer" / "README.txt").read_text(encoding="utf-8")
+        self.assertIn("BUILD-MANIFEST.txt", source)
+        self.assertIn("SHA-256", source)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

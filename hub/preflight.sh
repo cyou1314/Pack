@@ -3,8 +3,6 @@
 # 检查：静态资产（命令/文件/令牌权限）/ systemd 五件 / DB 完整性 /
 # 中枢 MCP 应答与工具数 / 仓库同步与干净 / 备份新鲜度与可验证性。
 # Mac 半边（App 基线构建、Codex 额度）不在此列，见 UI-IMPL-BRIEF。
-# 静态段吸收自 PR #4 的静态检查版（2026-11-19 合并）：生产版为正本，
-# GPT 版的 systemd 可选段与仓库版部署口径不合，未吸收。
 set -u
 FAIL=0
 ok()   { printf '  ok  %s\n' "$1"; }
@@ -16,7 +14,27 @@ echo "[static]"
 for cmd in python3 sqlite3; do
   command -v "$cmd" >/dev/null 2>&1 && ok "command: $cmd" || bad "missing command: $cmd"
 done
+id hatch >/dev/null 2>&1 && ok "service account hatch present" || bad "service account hatch missing"
+getent group systemd-journal >/dev/null 2>&1 && ok "systemd-journal group present" || bad "systemd-journal group missing"
+SSH_DIR=/home/hatch/.ssh
+if [ -d "$SSH_DIR" ]; then
+  SSH_OWNER=$(stat -c '%U' "$SSH_DIR")
+  SSH_MODE=$(stat -c '%a' "$SSH_DIR")
+  [ "$SSH_OWNER" = "hatch" ] && [ "$SSH_MODE" = "700" ] && ok "SSH directory owner/mode" || bad "SSH directory owner=$SSH_OWNER mode=$SSH_MODE (expected hatch/700)"
+else
+  bad "SSH directory missing"
+fi
+if [ -f "$SSH_DIR/pack_addr_ed25519" ]; then
+  KEY_OWNER=$(stat -c '%U' "$SSH_DIR/pack_addr_ed25519")
+  KEY_MODE=$(stat -c '%a' "$SSH_DIR/pack_addr_ed25519")
+  [ "$KEY_OWNER" = "hatch" ] && [ "$KEY_MODE" = "600" ] && ok "URL publisher key owner/mode" || bad "URL publisher key owner=$KEY_OWNER mode=$KEY_MODE (expected hatch/600)"
+else
+  bad "URL publisher SSH key missing"
+fi
 [ -f "$HUB/hub.py" ] && ok "hub.py present" || bad "hub.py missing"
+for module in core/context.py core/policy.py core/schema.py core/storage.py services/rooms.py; do
+  [ -f "$HUB/$module" ] && ok "$module present" || bad "$module missing"
+done
 [ -f "$HUB/room_watch.py" ] && ok "room_watch.py present" || bad "room_watch.py missing"
 [ -x "$HUB/.venv/bin/python" ] && ok "hub venv present" || bad "hub/.venv/bin/python missing"
 [ -x "$HUB/backup-db.sh" ] && ok "backup-db.sh executable" || bad "backup-db.sh missing/not executable"
@@ -34,6 +52,30 @@ echo "[services]"
 for u in pack-hub.service pack-tunnel.service pack-room-watch.service \
          pack-url-publisher.timer pack-db-backup.timer; do
   if systemctl is-active --quiet "$u"; then ok "$u active"; else bad "$u NOT active"; fi
+done
+for u in pack-hub.service pack-room-watch.service pack-tunnel.service \
+         pack-url-publisher.service pack-db-backup.service; do
+  SERVICE_USER=$(systemctl show -p User --value "$u" 2>/dev/null || true)
+  SERVICE_GROUP=$(systemctl show -p Group --value "$u" 2>/dev/null || true)
+  SERVICE_UMASK=$(systemctl show -p UMask --value "$u" 2>/dev/null || true)
+  if [ "$SERVICE_USER" = "hatch" ] && [ "$SERVICE_GROUP" = "hatch" ] && [ "$SERVICE_UMASK" = "0077" ]; then
+    ok "$u runs as hatch:hatch with UMask=0077"
+  else
+    bad "$u identity/umask mismatch (User=$SERVICE_USER Group=$SERVICE_GROUP UMask=$SERVICE_UMASK)"
+  fi
+done
+PUBLISHER_GROUPS=$(systemctl show -p SupplementaryGroups --value pack-url-publisher.service 2>/dev/null || true)
+case " $PUBLISHER_GROUPS " in
+  *" systemd-journal "*) ok "URL publisher has journal read group" ;;
+  *) bad "URL publisher missing systemd-journal supplementary group" ;;
+esac
+
+for path in "$HUB" "$HUB"/pack.db* "$HUB"/.dispatcher_token "$HUB"/.room_watch_state.json \
+            "$HUB"/attachments "$HUB"/backups "$HUB"/backup.log "$HUB"/.published_url_addr \
+            "$HUB"/../addr-mirror /home/hatch/.ssh; do
+  [ -e "$path" ] || continue
+  OWNER=$(stat -c '%U' "$path")
+  [ "$OWNER" = "hatch" ] && ok "owner hatch: $path" || bad "owner=$OWNER (expected hatch): $path"
 done
 
 echo "[db]"
@@ -87,4 +129,4 @@ fi
 
 echo "----"
 [ "$FAIL" = "0" ] && echo "PREFLIGHT ALL GREEN" || echo "PREFLIGHT HAS FAILURES"
-exit $FAIL
+exit "$FAIL"

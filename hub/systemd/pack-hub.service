@@ -4,6 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
+User=hatch
+Group=hatch
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
 WorkingDirectory=/home/hatch/workspace/pack/hub
 ExecStart=/home/hatch/workspace/pack/hub/.venv/bin/python /home/hatch/workspace/pack/hub/hub.py serve
 Restart=on-failure

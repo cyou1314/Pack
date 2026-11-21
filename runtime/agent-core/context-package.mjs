@@ -1,24 +1,10 @@
+import {findSensitiveField} from "./sensitive-fields.mjs";
 
-const SENSITIVE_KEYS = new Set([
-  "apikey", "accesstoken", "refreshtoken", "token",
-  "authorization", "authheader", "password", "cookie", "cookies",
-  "nativememory", "privatememory", "privatecontext", "credentials",
-  "clientsecret", "privatekey", "secret",
-]);
+
 
 function assertNoPrivateFields(value, path = "input") {
-  if (value === null || typeof value !== "object") return;
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertNoPrivateFields(item, path + "[" + index + "]"));
-    return;
-  }
-  for (const [key, nested] of Object.entries(value)) {
-    const normalized = key.replace(/[-_]/g, "").toLowerCase();
-    if (SENSITIVE_KEYS.has(normalized)) {
-      throw new Error("private_context_forbidden:" + path + "." + key);
-    }
-    assertNoPrivateFields(nested, path + "." + key);
-  }
+  const found = findSensitiveField(value, path);
+  if (found) throw new Error("private_context_forbidden:" + found.path + "." + found.key);
 }
 
 

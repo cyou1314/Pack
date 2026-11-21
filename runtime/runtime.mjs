@@ -24,6 +24,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { format } from "node:util";
 import { fileURLToPath } from "node:url";
+import {validateHubURL} from "./hub-url-policy.mjs";
 
 // Prefix every emitted log line, including multi-line errors, with an ISO timestamp.
 for (const level of ["log", "error"]) {
@@ -35,6 +36,7 @@ for (const level of ["log", "error"]) {
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const cfg = JSON.parse(readFileSync(path.join(DIR, "config.json"), "utf8"));
+cfg.hubUrl = validateHubURL(cfg.hubUrl);
 const POLL_MS = (cfg.pollSeconds || 20) * 1000;
 // approval marker tag, built from char codes to survive any encoding path
 const NEED_TAG = String.fromCharCode(0x3010, 0x9700, 0x6279, 0x51c6, 0x3011);
@@ -52,6 +54,7 @@ async function rpc(method, params) {
   let res;
   try {
     res = await fetch(cfg.hubUrl, {
+      redirect: "error",
       signal: AbortSignal.timeout(15000),
       method: "POST",
       headers,
@@ -133,6 +136,7 @@ async function mcpInit() {
     clientInfo: { name: "pack-runtime", version: "1.0.4" },
   });
   await fetch(cfg.hubUrl, {
+    redirect: "error",
     signal: AbortSignal.timeout(15000),
     method: "POST",
     headers: {
@@ -177,7 +181,7 @@ let failStreak = 0;
 // The free tunnel URL rotates; the hub publishes its current URL to the
 // repo file runtime/hub-url.txt. On repeated failures, fetch it and move.
 async function discoverHubUrl() {
-  try { const url=await discoverPublishedHub({addrToken:cfg.addrToken, onSource:(domain,status)=>console.log(`hub source ${domain} HTTP ${status}`)}); if(url!==cfg.hubUrl){
+  try { const url=validateHubURL(await discoverPublishedHub({addrToken:cfg.addrToken, onSource:(domain,status)=>console.log(`hub source ${domain} HTTP ${status}`)})); if(url!==cfg.hubUrl){
     const configPath = path.join(DIR, "config.json"), disk = JSON.parse(readFileSync(configPath, "utf8"));
     disk.hubUrl = url;
     const tmp = configPath + ".tmp";

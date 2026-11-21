@@ -142,7 +142,12 @@ async function startHandoff(deps) {
       const end = request.indexOf(10); if (end < 0) return;
       handled = true;
       let parsed; try { parsed = JSON.parse(request.subarray(0, end).toString('utf8')); } catch { socket.end('{"ok":false,"error":"invalid request"}\n'); return; }
-      (parsed.op ? memberOperation(parsed, deps) : handoff(parsed, deps)).then(result => socket.end(JSON.stringify(result) + '\n')).catch(error => {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        socket.end('{"ok":false,"error":"invalid request"}\n');
+        return;
+      }
+      Promise.resolve().then(() => parsed.op ? memberOperation(parsed, deps) : handoff(parsed, deps))
+        .then(result => socket.end(JSON.stringify(result) + '\n')).catch(error => {
         const safe = /^(invalid request|invalid member|invalid operation|account busy|account is busy|account changed|account removal incomplete|partition removal incomplete|no healthy proxy|cookie encryption is not enabled|cookie verification failed|cookie encryption verification failed|temporary keychain cleanup failed)$/.test(error?.message || '') ? error.message : 'internal or keychain error';
         console.error(`[l2-handoff] request failed: ${safe}`);
         socket.end('{"ok":false,"error":"会话交接或检查失败，请检查引擎及钥匙串授权"}\n');

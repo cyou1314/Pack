@@ -60,7 +60,30 @@ import sqlite3
 import sys
 import threading
 import time
-import urllib.parse
+
+if __package__:
+    from .core.schema import SCHEMA
+    from .core.context import HubContext
+    from .core.policy import (
+        ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
+        action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
+        egress_host as _egress_host, egress_pattern as _egress_pattern,
+        host_covers as _host_covers, select_egress_rule, task_hosts as _task_hosts,
+        is_executor_pinned as _is_executor_pinned,
+        member_access_mode as _member_access_mode,
+    )
+else:
+    from core.schema import SCHEMA
+    from core.context import HubContext
+    from core.policy import (
+        ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
+
+        action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
+        egress_host as _egress_host, egress_pattern as _egress_pattern,
+        host_covers as _host_covers, select_egress_rule, task_hosts as _task_hosts,
+        is_executor_pinned as _is_executor_pinned,
+        member_access_mode as _member_access_mode,
+    )
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE, "pack.db")
@@ -88,138 +111,30 @@ DELETED_PLACEHOLDER = "\uff08\u5df2\u5220\u9664\uff09"
 # 尝试上限仍是 MAX_ATTEMPTS=3，不因退避改变；参数写死代码常量（与记忆限额
 # 同例：改参数 = 改中枢代码 + 群主批准，不给工具面）。
 FAIL_CLASSES = ("quota", "transient", "task", "unknown")
-BACKOFF_BASE_SECONDS = {"quota": 1800, "transient": 60, "task": 300, "unknown": 300}
 # 隔离测试可注入时钟偏移（秒），把本进程的「现在」整体平移以验退避到期，
 # 免真睡；线上不设此变量、恒为 0。只影响本增量的时间源 _now()。
 TIME_OFFSET = float(os.environ.get("PACK_HUB_TIME_OFFSET", "0"))
 
 
 def _now():
-    return time.time() + TIME_OFFSET
-
-
-def _backoff_seconds(fail_class, attempts):
-    base = BACKOFF_BASE_SECONDS.get(fail_class, BACKOFF_BASE_SECONDS["unknown"])
-    return base * (2 ** max(0, attempts - 1))
-
-_lock = threading.Lock()
+    return _DEFAULT_CONTEXT.now()
+_DEFAULT_CONTEXT = HubContext(
+    base_dir=BASE,
+    db_path=DB_PATH,
+    attachment_dir=ATTACH_DIR,
+    lock=threading.Lock(),
+    clock=time.time,
+    business_clock=lambda: time.time() + TIME_OFFSET,
+)
+_lock = _DEFAULT_CONTEXT.lock
 
 
 def db():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
-
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS members(
-  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, role TEXT NOT NULL,
-  token_hash TEXT NOT NULL, profile TEXT, last_heartbeat REAL, created_at REAL NOT NULL,
-  avatar TEXT);
-CREATE TABLE IF NOT EXISTS rooms(
-  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS messages(
-  id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, author_id INTEGER NOT NULL,
-  kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER, created_at REAL NOT NULL,
-  deleted_at REAL, edited_at REAL);
-CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id, id);
-CREATE TABLE IF NOT EXISTS tasks(
-  id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
-  created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
-  claim_token TEXT, lease_expires REAL, attempts INTEGER NOT NULL DEFAULT 0,
-  result TEXT, envelope TEXT, review_note TEXT, fail_class TEXT, next_claim_at REAL,
-  created_at REAL NOT NULL, updated_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS audit(
-  id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);
-CREATE TABLE IF NOT EXISTS room_summaries(
-  room_id INTEGER PRIMARY KEY, data TEXT NOT NULL,
-  updated_at REAL NOT NULL, updated_by TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS desktop_lock(
-  id INTEGER PRIMARY KEY CHECK(id=1),
-  holder TEXT, task_id INTEGER, acquired_at REAL);
-CREATE TABLE IF NOT EXISTS task_templates(
-  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, title_tpl TEXT NOT NULL,
-  body_tpl TEXT NOT NULL, assignee TEXT NOT NULL DEFAULT '',
-  updated_at REAL NOT NULL, updated_by TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS approval_rules(
-  id INTEGER PRIMARY KEY, action TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
-  effect TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
-  created_by TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(action, target));
-CREATE TABLE IF NOT EXISTS egress_rules(
-  id INTEGER PRIMARY KEY, pattern TEXT NOT NULL UNIQUE, effect TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
-  created_by TEXT NOT NULL, created_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS review_log(
-  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, target_url TEXT NOT NULL,
-  owner_quote TEXT NOT NULL, member_desc TEXT NOT NULL, verdict TEXT NOT NULL,
-  reviewer TEXT NOT NULL, created_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS runs(
-  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, member_id INTEGER NOT NULL,
-  fence INTEGER NOT NULL, claim_token TEXT, status TEXT NOT NULL DEFAULT 'running',
-  outcome TEXT, detail TEXT, started_at REAL NOT NULL, ended_at REAL,
-  UNIQUE(task_id, fence));
-CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_one_running ON runs(task_id) WHERE status='running';
-CREATE TABLE IF NOT EXISTS member_memory(
-  member TEXT NOT NULL, scope TEXT NOT NULL, key TEXT NOT NULL DEFAULT '',
-  text TEXT NOT NULL, version_id INTEGER NOT NULL, updated_at REAL NOT NULL,
-  PRIMARY KEY (member, scope, key));
-CREATE TABLE IF NOT EXISTS member_memory_versions(
-  id INTEGER PRIMARY KEY, member TEXT NOT NULL, scope TEXT NOT NULL,
-  key TEXT NOT NULL DEFAULT '', text TEXT NOT NULL, author TEXT NOT NULL,
-  origin TEXT NOT NULL, source_refs TEXT NOT NULL DEFAULT '[]',
-  size INTEGER NOT NULL, created_at REAL NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_memver ON member_memory_versions(member, scope, key, id DESC);
-CREATE TABLE IF NOT EXISTS task_transfers(
-  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, from_member TEXT NOT NULL,
-  to_member TEXT NOT NULL, reason TEXT, actor TEXT NOT NULL, created_at REAL NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending', accepted_at REAL, expires_at REAL);
-CREATE INDEX IF NOT EXISTS idx_transfers_task ON task_transfers(task_id, id);
-CREATE TABLE IF NOT EXISTS skills(
-  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, description TEXT NOT NULL DEFAULT '',
-  current_version INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS skill_versions(
-  id INTEGER PRIMARY KEY, skill_id INTEGER NOT NULL, version INTEGER NOT NULL,
-  body TEXT NOT NULL, created_by TEXT NOT NULL, created_at REAL NOT NULL,
-  UNIQUE(skill_id, version));
-CREATE INDEX IF NOT EXISTS idx_skillver ON skill_versions(skill_id, version DESC);
-CREATE TABLE IF NOT EXISTS member_skills(
-  member_id INTEGER NOT NULL, skill_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-  PRIMARY KEY (member_id, skill_id));
-CREATE TABLE IF NOT EXISTS attachments(
-  id INTEGER PRIMARY KEY, sha256 TEXT NOT NULL, mime TEXT NOT NULL,
-  size INTEGER NOT NULL, original_name TEXT NOT NULL DEFAULT '',
-  uploader_id INTEGER NOT NULL, room_id INTEGER NOT NULL,
-  message_id INTEGER, created_at REAL NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_attach_msg ON attachments(message_id);
-CREATE INDEX IF NOT EXISTS idx_attach_room ON attachments(room_id, id);
-CREATE TABLE IF NOT EXISTS pair_codes(
-  id INTEGER PRIMARY KEY, code_hash TEXT UNIQUE NOT NULL,
-  member_name TEXT NOT NULL, provider TEXT NOT NULL DEFAULT '',
-  bound_room_id INTEGER NOT NULL, display_name TEXT,
-  reclaim INTEGER NOT NULL DEFAULT 0,
-  created_by TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
-  redeemed_member_id INTEGER, redeemed_at REAL, revoked_at REAL,
-  fail_count INTEGER NOT NULL DEFAULT 0, locked_at REAL);
-CREATE TABLE IF NOT EXISTS member_read_cursors(
-  member_id INTEGER NOT NULL, room_id INTEGER NOT NULL,
-  cursor_id INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (member_id, room_id));
-CREATE TABLE IF NOT EXISTS hub_settings(
-  key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS message_op_keys(
-  member_id INTEGER NOT NULL, op_key TEXT NOT NULL, message_id INTEGER,
-  created_at REAL NOT NULL, PRIMARY KEY (member_id, op_key));
-CREATE TABLE IF NOT EXISTS pair_attempts(
-  id INTEGER PRIMARY KEY, ts REAL NOT NULL, success INTEGER NOT NULL DEFAULT 0);
-CREATE INDEX IF NOT EXISTS idx_pair_attempts_ts ON pair_attempts(ts);
-"""
+    return _DEFAULT_CONTEXT.connect()
 
 
 def audit(conn, actor, action, detail=""):
-    conn.execute("INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
-                 (time.time(), actor, action, detail))
+    _DEFAULT_CONTEXT.audit(conn, actor, action, detail)
 
 
 # ---------------- 附件通道（staging39 / D18） ----------------
@@ -239,10 +154,13 @@ def _sniff_image_mime(data: bytes):
     return None
 
 
-def _attach_path(sha256: str, mime: str) -> str:
-    return os.path.join(ATTACH_DIR, sha256[:2], sha256 + "." + ATTACH_MIME_EXT[mime])
-
-
+def _attach_path(sha256: str, mime: str, context: HubContext | None = None) -> str:
+    context = context or _DEFAULT_CONTEXT
+    return os.path.join(
+        context.attachment_dir,
+        sha256[:2],
+        sha256 + "." + ATTACH_MIME_EXT[mime],
+    )
 # ---------------- Run 层防重跑（SPEC 附录 G.1 第 4 条） ----------------
 # 任务层已有原子认领+租约；本层补的是「同一次执行只能跑一份」：
 # 执行体认领后、动手前 run_start 登记，拿到按任务单调递增的 fence 号；
@@ -251,21 +169,19 @@ def _attach_path(sha256: str, mime: str) -> str:
 # outcome 分别为 completed/failed/aborted、completed、blocked、cancelled、reaped。
 # Attempt 台账 = runs 表本体，run_list 按 fence 逐次可查。与认领/租约互补，不替代。
 
-def _close_run(conn, task_id, outcome, actor, detail=""):
-    """关闭某任务当前 running 的 run 记录并写 run_close 审计。
-    没有 running 记录时返回 None（不报错，供任务生命周期钩子静默调用）。"""
+def _close_run(conn, task_id, outcome, actor, detail="", context: HubContext | None = None):
+    """Close the current running record and audit it in the same transaction."""
+    context = context or _DEFAULT_CONTEXT
     row = conn.execute(
         "SELECT * FROM runs WHERE task_id=? AND status='running'", (task_id,)).fetchone()
     if not row:
         return None
     conn.execute("UPDATE runs SET status='closed', ended_at=?, outcome=? WHERE id=?",
-                 (time.time(), outcome, row["id"]))
-    audit(conn, actor, "run_close",
-          f"task {task_id} run {row['id']} fence={row['fence']} outcome={outcome}"
-          + (f" {detail}" if detail else ""))
+                 (context.clock(), outcome, row["id"]))
+    context.audit(conn, actor, "run_close",
+                  f"task {task_id} run {row['id']} fence={row['fence']} outcome={outcome}"
+                  + (f" {detail}" if detail else ""))
     return row
-
-
 # ---------------- 批准规则库（SPEC 附录 G.1 第 1 条） ----------------
 # 待批动作在现状里的标识：任务。运行时认领带【需批准】标记的任务后，
 # 经 room_post(kind='approval_request', body='任务#N「标题」需要群主批准…') 发起，
@@ -275,69 +191,53 @@ def _close_run(conn, task_id, outcome, actor, detail=""):
 #   目标     = 任务的被指派成员名，未指派为 ''。键里 '' 表示通配。
 
 TASK_REF_RE = re.compile(r"任务#(\d+)")
-ACTION_TAG_RE = re.compile(r"\[([A-Za-z0-9_-]+)\]")
-
-
-def action_tag(title):
-    m = ACTION_TAG_RE.search(title or "")
-    return f"[{m.group(1)}]" if m else ""
-
-
 def rule_eval(conn, action, target):
-    """按具体度查规则库：(action,target) > (action,'') > ('',target) > ('','')，命中返回 row。"""
-    for a, t in ((action, target), (action, ""), ("", target), ("", "")):
+    """按具体度查规则库；命中返回 row。"""
+    for candidate_action, candidate_target in approval_rule_candidates(action, target):
         row = conn.execute(
             "SELECT * FROM approval_rules WHERE action=? AND target=? AND enabled=1",
-            (a, t)).fetchone()
+            (candidate_action, candidate_target)).fetchone()
         if row:
             return row
     return None
 
 
-def _approval_gate(conn, room_id, msg_id, body, poster=None):
-    """approval_request 落库后的规则求值（room_post 调用，同一事务内）。
-    命中 allow/block：以调度员身份按既有决议格式留决议消息（运行时/App 立刻认），
-    另以 actor='rule-engine' 写审计区分真人决议；未命中：不做任何事，走原有弹问流程。
-    顺带把消息的 task_id 补上（原 room_post 不写，App 批准中心按 task_id 过滤待批项）。"""
-    m = TASK_REF_RE.search(body or "")
-    if not m:
+def _approval_gate(conn, room_id, msg_id, body, poster=None,
+                   context: HubContext | None = None):
+    """Evaluate approval rules and write the automatic decision in the caller's transaction."""
+    context = context or _DEFAULT_CONTEXT
+    match = TASK_REF_RE.search(body or "")
+    if not match:
         return {}
-    tid = int(m.group(1))
-    t = conn.execute(
+    task_id = int(match.group(1))
+    task = conn.execute(
         """SELECT t.title, t.assignee, mb.name AS assignee_name FROM tasks t
-           LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (tid,)).fetchone()
-    if not t:
+           LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (task_id,)).fetchone()
+    if not task:
         return {}
-    conn.execute("UPDATE messages SET task_id=? WHERE id=?", (tid, msg_id))
-    # 批准门只认持有人本人（或调度员代发）的请求：非持有人冒发
-    # approval_request 不得触发规则自动决议（staging14 复检 C7 实证）。
-    # 消息本身照常落库，只是不求值——决议权不能被房间里的第三方行使。
+    conn.execute("UPDATE messages SET task_id=? WHERE id=?", (task_id, msg_id))
     if poster is not None and poster["role"] != "dispatcher" \
-            and poster["id"] != t["assignee"]:
+            and poster["id"] != task["assignee"]:
         return {}
-    action = action_tag(t["title"])
-    target = t["assignee_name"] or ""
+    action = action_tag(task["title"])
+    target = task["assignee_name"] or ""
     rule = rule_eval(conn, action, target)
     if not rule:
         return {}
-    disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
-    if not disp:
+    dispatcher = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+    if not dispatcher:
         return {}
     tag = f"{action or '无标记'}→{target or '任意成员'} {rule['effect']}，规则#{rule['id']}"
     if rule["effect"] == "allow":
-        text, act = f"批准 任务#{tid}（规则库自动通过：{tag}）", "approval_auto_allow"
+        message, action_name = f"批准 任务#{task_id}（规则库自动通过：{tag}）", "approval_auto_allow"
     else:
-        text, act = f"拒绝 任务#{tid}（规则库自动拒绝：{tag}）", "approval_auto_block"
-    # 决议消息以 kind='decision' 落库（不是 chat）：message_delete/edit 只认
-    # kind='chat'，决议因此不可被作者软删/编辑抹除——否则 _approval_state 会
-    # 误判未决议、可重新 filing（staging15 批准链完整性修复）。
+        message, action_name = f"拒绝 任务#{task_id}（规则库自动拒绝：{tag}）", "approval_auto_block"
     conn.execute(
         "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'decision',?,?,?)",
-        (room_id, disp["id"], text, tid, time.time()))
-    audit(conn, "rule-engine", act, f"task {tid} rule#{rule['id']} {action}->{target}")
-    return {"auto_decision": rule["effect"], "rule_id": rule["id"], "task_id": tid}
-
-
+        (room_id, dispatcher["id"], message, task_id, context.clock()))
+    context.audit(conn, "rule-engine", action_name,
+                  f"task {task_id} rule#{rule['id']} {action}->{target}")
+    return {"auto_decision": rule["effect"], "rule_id": rule["id"], "task_id": task_id}
 # ---------------- 数据出口管制·中枢判定（SPEC 附录 G.1 第 3 条） ----------------
 # 防线不放在识别注入文本，放在管出口：成员抓任何 http(s) 前先经 egress_check
 # 判定。本轮中枢只落策略与判定，执行体按结论行事（ask 就走 approval_request
@@ -352,74 +252,10 @@ def _approval_gate(conn, room_id, msg_id, body, poster=None):
 # （非群主发起的 run 写记忆先问）属执行体/记忆层，列入 DEPLOY 后续项。
 # 每次判定（含畸形 URL 拒绝）都写审计：actor='egress'，与真人/规则/审查区分。
 
-_HOST_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
-_HOSTISH_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
-
-
-def _egress_host(raw):
-    """把 URL 规范化成可比对的 host：scheme 必须是 http/https（缺失/其他
-    直接拒绝）；urllib 的 hostname 自动剥 userinfo 与端口并转小写；
-    再剥尾点、非 ASCII 走 IDNA。畸形一律 ValueError 并说明原因。"""
-    u = (raw or "").strip()
-    if not u:
-        raise ValueError("malformed url: empty")
-    try:
-        parts = urllib.parse.urlsplit(u)
-    except ValueError as e:
-        raise ValueError(f"malformed url: {e}")
-    if parts.scheme.lower() not in ("http", "https"):
-        raise ValueError("malformed url: scheme must be http or https")
-    host = parts.hostname
-    if not host:
-        raise ValueError("malformed url: no host")
-    host = host.rstrip(".")
-    if not host or ".." in host or any(c in host for c in " \t/\\"):
-        raise ValueError(f"malformed host: {host!r}")
-    if not host.isascii():
-        try:
-            host = host.encode("idna").decode("ascii")
-        except (UnicodeError, ValueError):
-            raise ValueError(f"malformed host (idna): {host!r}")
-    return host
-
-
-def _egress_pattern(raw):
-    """规则 pattern 规范化：去空白/小写/剥 *. 前缀与尾点；必须是至少含一个点
-    的合法域名（单标签 pattern 太宽，不收；IP 字面量本轮不支持）。"""
-    p = (raw or "").strip().lower()
-    if p.startswith("*."):
-        p = p[2:]
-    p = p.rstrip(".")
-    labels = p.split(".") if p else []
-    if len(labels) < 2 or any(not _HOST_LABEL_RE.fullmatch(x) for x in labels):
-        raise ValueError(f"malformed egress pattern: {raw!r} (want a domain like example.com)")
-    return p
-
-
-def _host_covers(host, pattern):
-    """pattern 覆盖 host：相等，或 host 是 pattern 的子域（点边界后缀）。"""
-    return host == pattern or host.endswith("." + pattern)
-
-
 def _egress_rule_eval(conn, host):
-    """在启用的 egress_rules 里找覆盖 host 的最具体一条：
-    精确相等优先，其次 pattern 最长（最深的子域规则优先）。"""
+    """在启用的 egress_rules 里找覆盖 host 的最具体一条。"""
     rows = conn.execute("SELECT * FROM egress_rules WHERE enabled=1").fetchall()
-    hits = [r for r in rows if _host_covers(host, r["pattern"])]
-    if not hits:
-        return None
-    hits.sort(key=lambda r: (r["pattern"] != host, -len(r["pattern"])))
-    return hits[0]
-
-
-def _task_hosts(text):
-    """从任务 title/body 里抽出出现过的 host 候选（小写、剥尾点）。
-    正文由群主在建任务时写死、成员改不了，抽取宽松些无妨：
-    宁可多抽（文件名之类），判定还要与目标 host 同站才算命中。"""
-    out = set()
-    for m in _HOSTISH_RE.finditer((text or "").lower()):
-        out.add(m.group(0).rstrip("."))
-    return out
+    return select_egress_rule(rows, host)
 
 
 def _task_mention(conn, task_id, host):
@@ -644,32 +480,33 @@ def _mem_validate_scope_key(scope, key):
         _mem_err("invalid_key", f"{scope} 的 key 恒为 \"\"（单行全文）", key=key)
 
 
-def _mem_denied(conn, me, target, scope, what=""):
-    """权限拒绝统一口：先写 memory_access_denied 审计（只记元数据）再抛 forbidden。"""
-    audit(conn, me["name"], "memory_access_denied",
-          json.dumps({"caller": me["name"], "target": target, "scope": scope,
-                      "what": what}, ensure_ascii=False))
+def _mem_denied(conn, me, target, scope, what="", context: HubContext | None = None):
+    """Audit memory access denial before raising the established forbidden error."""
+    context = context or _DEFAULT_CONTEXT
+    context.audit(
+        conn,
+        me["name"],
+        "memory_access_denied",
+        json.dumps(
+            {"caller": me["name"], "target": target, "scope": scope, "what": what},
+            ensure_ascii=False,
+        ),
+    )
     conn.commit()
     _mem_err("forbidden", "无权进行此记忆操作（跨成员仅限调度员、room-shared 仅调度员可写、"
-                          "回滚与 include_text 仅限调度员）")
-
-
-def _mem_target(conn, me, scope, member):
-    """解析目标成员名：默认 = 调用者本人；member 指定他人仅限调度员。
-    room-shared 恒返回保留名（member 入参对该层无意义、忽略）。
-    跨成员尝试 → 审计 + forbidden；调度员指定的成员不存在 → not_found。"""
+                         "回滚与 include_text 仅限调度员）")
+def _mem_target(conn, me, scope, member, context: HubContext | None = None):
+    """Resolve a memory target and audit unauthorized cross-member attempts."""
     if scope == "room-shared":
         return MEM_ROOM_MEMBER
     target = member or me["name"]
     if target != me["name"] and me["role"] != "dispatcher":
-        _mem_denied(conn, me, target, scope, "cross-member")
+        _mem_denied(conn, me, target, scope, "cross-member", context=context)
     if member and me["role"] == "dispatcher":
         row = conn.execute("SELECT id FROM members WHERE name=?", (member,)).fetchone()
         if not row:
             _mem_err("not_found", f"没有这个成员：{member}", member=member)
     return target
-
-
 def _mem_origin(me, origin):
     """origin 定死规则：调度员调用一律服务端强制 dispatcher（代写/自写同口径，
     忽略入参）；成员只能 self / external，自报 dispatcher → invalid_argument。"""
@@ -705,11 +542,13 @@ def _mem_validate_refs(source_refs):
     return out
 
 
-def _mem_append_version(conn, target, scope, key, text, author, origin, refs):
+def _mem_append_version(conn, target, scope, key, text, author, origin, refs,
+                        context: HubContext | None = None):
     """同事务落版 + 更新当前值：先 INSERT 版本行，再 UPSERT 当前值指向新行。
     返回 (version_id, size, now)。调用方负责限额检查、审计与 commit。"""
+    context = context or _DEFAULT_CONTEXT
     size = _mem_measure(scope, text)
-    now = time.time()
+    now = context.clock()
     cur = conn.execute(
         """INSERT INTO member_memory_versions(member,scope,key,text,author,origin,
            source_refs,size,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -830,10 +669,14 @@ def _used_combos(conn) -> set:
             used.add(a["combo"])
     return used
 
-def init():
-    conn = db()
+def init(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    conn = context.connect()
     conn.executescript(SCHEMA)
-    conn.execute("INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)", (time.time(),))
+    conn.execute(
+        "INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)",
+        (context.clock(),),
+    )
     # 存量 DB 的 members 可能没有 avatar 列：迁移必须先于下面带 avatar 的
     # dispatcher INSERT，否则全新/未迁移 DB 在建调度员时就炸（顺序坑）。
     cols = [r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()]
@@ -846,9 +689,9 @@ def init():
     if not row:
         tok = "pk-disp-" + secrets.token_urlsafe(32)
         conn.execute("INSERT INTO members(name,role,token_hash,created_at,avatar) VALUES('dispatcher','dispatcher',?,?,?)",
-                     (hash_token(tok), time.time(), json.dumps(avatar_for("dispatcher"))))
-        audit(conn, "system", "init", "dispatcher created")
-        _tok_path = os.path.join(BASE, ".dispatcher_token")
+                     (hash_token(tok), context.clock(), json.dumps(avatar_for("dispatcher"))))
+        context.audit(conn, "system", "init", "dispatcher created")
+        _tok_path = os.path.join(context.base_dir, ".dispatcher_token")
         _tmp_path = _tok_path + f".tmp-{os.getpid()}"
         _fd = os.open(_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(_fd, "w") as f:
@@ -952,8 +795,9 @@ def init():
 
 # ---------------- auth ----------------
 
-def authenticate():
-    """从 HTTP Authorization 头解析身份，返回 member 行 dict 或 None。"""
+def authenticate(context: HubContext | None = None):
+    """Resolve the current Bearer identity using the supplied Hub context."""
+    context = context or _DEFAULT_CONTEXT
     try:
         from fastmcp.server.dependencies import get_http_headers
         headers = get_http_headers(include={"authorization"})
@@ -963,10 +807,8 @@ def authenticate():
     if not auth.lower().startswith("bearer "):
         return None
     tok = auth[7:].strip()
-    conn = db()
+    conn = context.connect()
     row = conn.execute("SELECT * FROM members WHERE token_hash=?", (hash_token(tok),)).fetchone()
-    # staging51 总开关：external_enabled 关时 external 成员 token 一律
-    # 不认（与已移除同等对待），Muse 成员不受影响（件二总开关口径）。
     ext_blocked = False
     if row and row["removed_at"] is None \
             and "kind" in row.keys() and (row["kind"] or "") == "external":
@@ -977,8 +819,6 @@ def authenticate():
     if ext_blocked:
         return None
     return dict(row) if row else None
-
-
 def require(me, role=None):
     if me is None:
         raise ValueError("unauthorized: missing or bad token")
@@ -992,7 +832,6 @@ def require(me, role=None):
 RELAY_HEARTBEAT_FRESH = 180   # 候选须在线：心跳 3 分钟内
 RELAY_QUOTA_FRESH = 900       # 候选额度数据须 15 分钟内（与 App 额度过期口径一致）
 RELAY_QUOTA_HEADROOM = 90     # 候选周额度已用须 <90%
-EXECUTOR_MARKERS = ("[M4A]", "[ENG]", "[ENG-image]")
 
 # ---------------- 未认领指派卡巡检（staging48「让卡别躺死」） ----------------
 # open 且已指派的卡若没人认领，旧 sweeper 完全不看（它只管 claimed/working
@@ -1012,10 +851,12 @@ QUOTA_RESET_FUTURE_TOLERANCE = 40 * 86400
 QUOTA_ANOMALY_JUMP = 30
 
 
-def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
+def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left,
+                           context: HubContext | None = None):
     """member_quota_report 入参校验（自报通道比调度员通道严：自报值会
     直接驱动接力/巡检判断，荒谬值必须整笔拒绝、库不落任何字段）。
     返回问题列表，空 = 合法。"""
+    context = context or _DEFAULT_CONTEXT
     problems = []
     if week_used_pct is None and week_reset_at is None and extra_tokens_left is None:
         problems.append("nothing to report: give at least one quota field")
@@ -1029,7 +870,7 @@ def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
     if week_reset_at is not None:
         try:
             ts = float(week_reset_at)
-            now = _now()
+            now = context.now()
             if ts != ts or not (now - QUOTA_RESET_PAST_TOLERANCE <= ts
                                 <= now + QUOTA_RESET_FUTURE_TOLERANCE):
                 problems.append(f"week_reset_at outside sane range: {week_reset_at}")
@@ -1045,11 +886,12 @@ def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
 
 
 def _apply_quota(conn, member_id, week_used_pct, week_reset_at, extra_tokens_left,
-                 source):
+                 source, context: HubContext | None = None):
     """把额度字段写入 members 并刷新 quota_updated_at 与 quota_source
     （member_quota_set 与 member_quota_report 共用；校验由各自调用方先行
     完成）。source ∈ self/dispatcher/fact，记最近一次额度写入的来源。
     返回更新了的字段名列表（不含 quota_updated_at/quota_source 本身）。"""
+    context = context or _DEFAULT_CONTEXT
     sets, args, fields = [], [], []
     if week_used_pct is not None:
         sets.append("quota_week_used_pct=?"); args.append(float(week_used_pct))
@@ -1060,37 +902,30 @@ def _apply_quota(conn, member_id, week_used_pct, week_reset_at, extra_tokens_lef
     if extra_tokens_left is not None:
         sets.append("quota_extra_left=?"); args.append(int(extra_tokens_left))
         fields.append("quota_extra_left")
-    sets.append("quota_updated_at=?"); args.append(_now())
+    sets.append("quota_updated_at=?"); args.append(context.now())
     sets.append("quota_source=?"); args.append(source)
     args.append(member_id)
     conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE id=?", args)
     return fields
 
 
-def _auto_relay(conn, t, from_name, reason_label):
-    """尝试把任务自动接力给一名合格成员，走 §4.8 留痕转交的账（pending 转交行
-    + assignee 换人 + 令牌/租约置空，接收方 task_accept_transfer 才算接手）。
-    调用者负责事务与 _lock，并保证任务状态适合转交（blocked，或刚被 sweeper
-    回池的 open）。返回接手成员名；不适用/无合格候选返回 None、任务不变。
-    合格口径（保守）：role=member 且非 owner、非原持有人；心跳新鲜；额度数据
-    新鲜且周已用 <90%（数据缺失/过期 = 不合格，未知不当可用）；标题带执行体
-    标记的任务执行体钉死、不接力；转交链未达 TRANSFER_CAP；无既有 pending
-    转交。多名合格时取周已用最低者。staging51：候选排除 kind=external
-    （外部成员不参与自动接力，件二）；钉死判定改走公用 helper
-    _is_executor_pinned（标题开头或正文包含，四处统一口径）。"""
-    if _is_executor_pinned(t["title"], t["body"]):
+def _auto_relay(conn, task, from_name, reason_label,
+                context: HubContext | None = None):
+    """Try a conservative automatic relay while the caller owns the transaction/lock."""
+    context = context or _DEFAULT_CONTEXT
+    if _is_executor_pinned(task["title"], task["body"]):
         return None
     chain = conn.execute("SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=?",
-                         (t["id"],)).fetchone()["n"]
+                         (task["id"],)).fetchone()["n"]
     if chain >= TRANSFER_CAP:
         return None
-    pend = conn.execute(
+    pending = conn.execute(
         "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=? AND status='pending'",
-        (t["id"],)).fetchone()["n"]
-    if pend:
+        (task["id"],)).fetchone()["n"]
+    if pending:
         return None
-    now = _now()
-    cand = conn.execute(
+    now = context.now()
+    candidate = conn.execute(
         """SELECT * FROM members WHERE role='member' AND removed_at IS NULL AND (kind IS NULL OR kind<>'external') AND name<>? AND name<>'owner'
              AND last_heartbeat IS NOT NULL AND last_heartbeat>=?
              AND quota_updated_at IS NOT NULL AND quota_updated_at>=?
@@ -1098,29 +933,27 @@ def _auto_relay(conn, t, from_name, reason_label):
            ORDER BY quota_week_used_pct ASC LIMIT 1""",
         (from_name, now - RELAY_HEARTBEAT_FRESH, now - RELAY_QUOTA_FRESH,
          RELAY_QUOTA_HEADROOM)).fetchone()
-    if not cand:
+    if not candidate:
         return None
     conn.execute(
         "INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,expires_at)"
         " VALUES(?,?,?,?,?,?,?,?)",
-        (t["id"], from_name, cand["name"], f"auto-relay: {reason_label}", "auto-relay",
+        (task["id"], from_name, candidate["name"], f"auto-relay: {reason_label}", "auto-relay",
          now, "pending", now + TRANSFER_ACCEPT_TTL))
     conn.execute(
         "UPDATE tasks SET status='claimed', assignee=?, claim_token=NULL,"
         " lease_expires=NULL, next_claim_at=NULL, sched_at=NULL, updated_at=? WHERE id=?",
-        (cand["id"], now, t["id"]))
-    disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+        (candidate["id"], now, task["id"]))
+    dispatcher = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
     conn.execute(
         "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'chat',?,?,?)",
-        (t["room_id"], disp["id"] if disp else cand["id"],
-         f"任务#{t['id']} 已自动接力：{from_name} {reason_label} → {cand['name']} 接手"
+        (task["room_id"], dispatcher["id"] if dispatcher else candidate["id"],
+         f"任务#{task['id']} 已自动接力：{from_name} {reason_label} → {candidate['name']} 接手"
          f"（第 {chain + 1} 棒），等其接受",
-         t["id"], now))
-    audit(conn, "auto-relay", "task_auto_relay",
-          f"task {t['id']} {from_name}->{cand['name']} reason={reason_label} chain={chain + 1}")
-    return cand["name"]
-
-
+         task["id"], now))
+    context.audit(conn, "auto-relay", "task_auto_relay",
+                  f"task {task['id']} {from_name}->{candidate['name']} reason={reason_label} chain={chain + 1}")
+    return candidate["name"]
 # ---------------- 桌面锁（多成员同机互斥，2026-11-16 群主拍板） ----------------
 # 一台 Mac 只有一个屏幕、一个鼠标指针、一个键盘焦点：涉及 GUI 操控的
 # 任务动手前必须先 desktop_acquire 拿到桌面锁，同一时刻只许一个任务
@@ -1138,34 +971,33 @@ def _desktop_snapshot(conn):
     return {"held": False, "holder": None, "task_id": None, "since": None}
 
 
-def _desktop_release_for_task(conn, task_id, actor, reason):
-    """任务离开持有人时顺手放锁（在调用方的同一事务内）；只放本任务
-    正持有的锁，不是本任务的一律不动。放了返回 True 并留审计。"""
+def _desktop_release_for_task(conn, task_id, actor, reason,
+                              context: HubContext | None = None):
+    """Release the desktop lock for this task in the caller's transaction."""
+    context = context or _DEFAULT_CONTEXT
     row = conn.execute(
         "SELECT holder FROM desktop_lock WHERE id=1 AND task_id=?",
         (task_id,)).fetchone()
     if row and row["holder"]:
         conn.execute(
             "UPDATE desktop_lock SET holder=NULL, task_id=NULL, acquired_at=NULL WHERE id=1")
-        audit(conn, actor, "desktop_auto_release",
-              f"task {task_id} reason={reason} holder={row['holder']}")
+        context.audit(conn, actor, "desktop_auto_release",
+                      f"task {task_id} reason={reason} holder={row['holder']}")
         return True
     return False
-
-
-def _week_start_cst(now=None):
-    """本周一 00:00（UTC+8，无夏令时）的 epoch 秒。"""
+def _week_start_cst(now=None, context: HubContext | None = None):
+    """Return Monday 00:00 in UTC+8 for the supplied or context wall-clock time."""
     import datetime as _dt
+    context = context or _DEFAULT_CONTEXT
     tz = _dt.timezone(_dt.timedelta(hours=8))
-    cur = _dt.datetime.fromtimestamp(now if now is not None else time.time(), tz)
-    monday = (cur - _dt.timedelta(days=cur.weekday())).replace(
+    current = _dt.datetime.fromtimestamp(now if now is not None else context.clock(), tz)
+    monday = (current - _dt.timedelta(days=current.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0)
     return monday.timestamp()
-
-
-def sweep_once():
-    now = _now()
-    conn = db()
+def sweep_once(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    now = context.now()
+    conn = context.connect()
     # 待接受转交过期回收（与租约回收同节律、同在 sweep_once 内，不另起定时器）：
     # pending 转交超过 expires_at 仍未被接收方 task_accept_transfer 接受 →
     # 转交行标 expired；任务若仍挂在接收方名下（claimed/working 且令牌为空，
@@ -1197,7 +1029,7 @@ def sweep_once():
                     "UPDATE tasks SET status='open', assignee=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND claim_token IS NULL AND status IN ('claimed','working')",
                     (back_to, now, t["id"]))
                 requeued = cur.rowcount == 1
-        audit(conn, "sweeper", "transfer_expired",
+        context.audit(conn, "sweeper", "transfer_expired",
               f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
         n_expired += 1
     rows = conn.execute(
@@ -1214,9 +1046,9 @@ def sweep_once():
                                (now, t["id"], now))
             if cur.rowcount != 1:
                 continue
-            _close_run(conn, t["id"], "reaped", "sweeper")
-            _desktop_release_for_task(conn, t["id"], "sweeper", "max_attempts")
-            audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
+            _close_run(conn, t["id"], "reaped", "sweeper", context=context)
+            _desktop_release_for_task(conn, t["id"], "sweeper", "max_attempts", context=context)
+            context.audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
         else:
             nca = now + _backoff_seconds("transient", t["attempts"])
             # RT1（staging37）：回池保留原指派（成员已移除才解指派），
@@ -1225,9 +1057,9 @@ def sweep_once():
                                (nca, now, t["id"], now))
             if cur.rowcount != 1:
                 continue
-            _close_run(conn, t["id"], "reaped", "sweeper")
-            _desktop_release_for_task(conn, t["id"], "sweeper", "lease_expired")
-            audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
+            _close_run(conn, t["id"], "reaped", "sweeper", context=context)
+            _desktop_release_for_task(conn, t["id"], "sweeper", "lease_expired", context=context)
+            context.audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
             # 自动接力（§14.3）：原持有人掉线失联——回池后试着直接接力给合格
             # 成员。_auto_relay 的转交记账与 task_transfer 同账，为防与工具层
             # 的转交/接受竞态，记账段走 _lock 并复检任务仍是刚回池的状态。
@@ -1235,12 +1067,12 @@ def sweep_once():
                                       (t["assignee"],)).fetchone()
             holder_name = holder_row["name"] if holder_row else None
             if holder_name:
-                with _lock:
+                with context.lock:
                     t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
                     if (t2 and t2["status"] == "open" and (t2["assignee"] is None or t2["assignee"] == t["assignee"])
                             and t2["claim_token"] is None):
                         try:
-                            _auto_relay(conn, t2, holder_name, "掉线失联")
+                            _auto_relay(conn, t2, holder_name, "掉线失联", context=context)
                         except Exception:
                             pass  # 接力失败不连累本轮回收
     # staging48 未认领指派卡巡检（「让卡别躺死」，口径见 UNCLAIMED_* 常量）：
@@ -1284,14 +1116,14 @@ def sweep_once():
         cond_tag = ("A" if cond_a else "") + ("B" if cond_b else "")
         # 记账段走 _lock 并复检任务仍是扫描时的状态（与既有接力段同纪律），
         # 防与工具层的认领/转交竞态。
-        with _lock:
+        with context.lock:
             t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
             if (not t2 or t2["status"] != "open" or t2["assignee"] != t["assignee"]
                     or t2["claim_token"] is not None):
                 continue
             relayed = None
             try:
-                relayed = _auto_relay(conn, t2, t["a_name"], reason_label)
+                relayed = _auto_relay(conn, t2, t["a_name"], reason_label, context=context)
             except Exception:
                 relayed = None  # 接力失败不连累本轮巡检，落到升级判断
             if relayed:
@@ -1314,17 +1146,18 @@ def sweep_once():
                      f"任务#{t['id']} 指派给 {t['a_name']} 已超过宽限期未认领"
                      f"（{reason_label}），暂无可自动接力的成员，请调度员处理",
                      t["id"], now))
-            audit(conn, "sweeper", "task_unclaimed_escalate",
+            context.audit(conn, "sweeper", "task_unclaimed_escalate",
                   f"task {t['id']} assignee_id={t['assignee']} assignee={t['a_name']} cond={cond_tag} ")
     conn.commit()
     conn.close()
     return len(rows) + n_expired
 
 
-def sweeper():
+def sweeper(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
     while True:
         try:
-            sweep_once()
+            sweep_once(context)
         except Exception:
             pass
         time.sleep(60)
@@ -1493,17 +1326,6 @@ def _is_external(me):
     return bool(me) and (me.get("kind") or "") == "external"
 
 
-def _is_executor_pinned(title, body):
-    """引擎标记判定（件二抽公用 helper，四处统一）：标题 lstrip 后以
-    执行体标记开头，或正文包含标记。带标记的卡是 GUI/引擎类任务，
-    执行体钉死——不接力、不许 external 认领/被指派。"""
-    t = (title or "").lstrip()
-    if any(t.startswith(mk) for mk in EXECUTOR_MARKERS):
-        return True
-    b = body or ""
-    return any(mk in b for mk in EXECUTOR_MARKERS)
-
-
 def _external_enabled(conn):
     """总开关 hub_settings.external_enabled（默认开）。表缺失（极早期
     DB）按开处理，不让开关本身成为单点故障。"""
@@ -1515,28 +1337,24 @@ def _external_enabled(conn):
     return not (s and s["value"] == "0")
 
 
-def _ext_check(me, tool_name):
-    """工具面白名单闸门（require 层）：external 调用名单外工具一律
-    拒绝并写审计。由 build_server 的工具包装器在每个工具入口调用。"""
+def _ext_check(me, tool_name, context: HubContext | None = None):
+    """Reject external members outside the allowlist and audit the denial."""
     if tool_name in EXTERNAL_ALLOWED_TOOLS:
         return
-    conn = db()
+    context = context or _DEFAULT_CONTEXT
+    conn = context.connect()
     try:
-        audit(conn, me["name"], "external_tool_denied", f"tool={tool_name}")
+        context.audit(conn, me["name"], "external_tool_denied", f"tool={tool_name}")
         conn.commit()
     finally:
         conn.close()
-    raise ValueError(
-        f"forbidden: tool {tool_name} is not available to external members")
-
-
+    raise ValueError(f"forbidden: tool {tool_name} is not available to external members")
 # ---------------- 成员级访问模式预设（staging56 / 搬运四） ----------------
 # 每个成员一个模式（members.access_mode，调度员经 member_access_mode_set
 # 设置）：full = 现行行为；workspace = 只禁出圈/系统级写工具；readonly =
 # 只许只读工具。闸门在 _gated_tool 包装器内、external 白名单闸之后
 # （_mode_check），两闸独立、任一拒即拒。模式每次调用现查（me 来自
 # authenticate 的当次 DB 查询），set 后下一次调用即生效、不缓存。
-ACCESS_MODES = ("full", "workspace", "readonly")
 # readonly 放行名单：纯读工具 + heartbeat 一个明示例外（心跳是存在性
 # 信号、非内容写，禁掉会让只读成员看起来掉线；明确备案）。名单外一律
 # 拒（含日后新增工具，默认拒，与 external 白名单同哲学）。
@@ -1559,19 +1377,9 @@ WORKSPACE_DENIED_TOOLS = frozenset({
 })
 
 
-def _member_access_mode(me):
-    """成员当前访问模式归一：列缺失/NULL/脏值一律按 full（老 DB、
-    老成员零行为变化）。"""
-    mode = (me or {}).get("access_mode") or "full"
-    return mode if mode in ACCESS_MODES else "full"
-
-
-def _mode_check(me, tool_name):
-    """访问模式闸门（_gated_tool 包装器在 authenticate 与 _ext_check
-    之后调用）：readonly 只许 READONLY_ALLOWED_TOOLS；workspace 只禁
-    WORKSPACE_DENIED_TOOLS；full 不拦。拒绝写审计 access_mode_denied
-    （detail 含 tool 与 mode），沿用 _ext_check 的开连接写审计范式
-    （闸门判定本身只读，唯一的写是这条审计）。"""
+def _mode_check(me, tool_name, context: HubContext | None = None):
+    """Enforce the member access mode and audit denied tool calls."""
+    context = context or _DEFAULT_CONTEXT
     mode = _member_access_mode(me)
     if mode == "full":
         return
@@ -1579,17 +1387,14 @@ def _mode_check(me, tool_name):
         return
     if mode == "workspace" and tool_name not in WORKSPACE_DENIED_TOOLS:
         return
-    conn = db()
+    conn = context.connect()
     try:
-        audit(conn, me["name"], "access_mode_denied",
-              f"tool={tool_name} mode={mode}")
+        context.audit(conn, me["name"], "access_mode_denied",
+                      f"tool={tool_name} mode={mode}")
         conn.commit()
     finally:
         conn.close()
-    raise ValueError(
-        f"forbidden: tool {tool_name} is not available in {mode} access mode")
-
-
+    raise ValueError(f"forbidden: tool {tool_name} is not available in {mode} access mode")
 def _ext_msg_retry_after(conn, member_id, now):
     """external 普通发消息三窗口计数（kind<>'approval_request' 的消息，
     含 task_update 落的 report 行）：任一窗口已达上限返回该窗口的
@@ -1686,31 +1491,27 @@ def _mentions_member(body, my_name, all_names):
     return False
 
 
-def _inbox_resolve_room(me, room):
-    """收件箱三工具的房间解析：external 恒用绑定房（显式传了别的房
-    直接拒绝）；既有成员无绑定房，须显式给 room。返回 (room_id, name)。"""
-    conn = db()
+def _inbox_resolve_room(me, room, context: HubContext | None = None):
+    """Resolve an inbox room using the supplied Hub context."""
+    context = context or _DEFAULT_CONTEXT
+    conn = context.connect()
     try:
         if _is_external(me):
-            r = conn.execute("SELECT id, name FROM rooms WHERE id=?",
-                             (me["bound_room_id"],)).fetchone()
-            if not r:
+            resolved = conn.execute("SELECT id, name FROM rooms WHERE id=?",
+                                    (me["bound_room_id"],)).fetchone()
+            if not resolved:
                 raise ValueError("bound room not found")
-            if room and room != r["name"]:
-                raise ValueError(
-                    "forbidden: external members may only access their bound room")
-            return r["id"], r["name"]
+            if room and room != resolved["name"]:
+                raise ValueError("forbidden: external members may only access their bound room")
+            return resolved["id"], resolved["name"]
         if not room:
             raise ValueError("room is required for inbox tools")
-        r = conn.execute("SELECT id, name FROM rooms WHERE name=?",
-                         (room,)).fetchone()
-        if not r:
+        resolved = conn.execute("SELECT id, name FROM rooms WHERE name=?", (room,)).fetchone()
+        if not resolved:
             raise ValueError(f"no such room: {room}")
-        return r["id"], r["name"]
+        return resolved["id"], resolved["name"]
     finally:
         conn.close()
-
-
 def _read_cursor(conn, member_id, room_id, floor):
     """读服务端已读游标（member_read_cursors）；无行按 floor 起步，
     且永不低于 floor（external 的 floor = joined_msg_id 水位）。"""
@@ -1777,7 +1578,124 @@ _INBOX_MSG_SQL = (
 
 # ---------------- MCP tools ----------------
 
-def build_server():
+# Stable implementation aliases let build_server bind one HubContext without
+# shadowing the compatibility entry points used by init/CLI/background jobs.
+_AUTHENTICATE = authenticate
+_EXT_CHECK = _ext_check
+_MODE_CHECK = _mode_check
+_CLOSE_RUN = _close_run
+_APPROVAL_GATE = _approval_gate
+_MEM_TARGET = _mem_target
+_MEM_APPEND_VERSION = _mem_append_version
+_APPLY_QUOTA = _apply_quota
+_AUTO_RELAY = _auto_relay
+_DESKTOP_RELEASE_FOR_TASK = _desktop_release_for_task
+_WEEK_START_CST = _week_start_cst
+_VALIDATE_QUOTA_REPORT = _validate_quota_report
+_ATTACH_PATH = _attach_path
+_INBOX_RESOLVE_ROOM = _inbox_resolve_room
+
+
+def build_server(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    if __package__:
+        from .services.rooms import list_rooms as _list_rooms
+        from .services.rooms import get_room_summary as _get_room_summary
+        from .services.rooms import read_new_messages as _read_new_messages
+        from .services.rooms import create_room as _create_room
+        from .services.rooms import rename_room as _rename_room
+        from .services.rooms import archive_room as _archive_room
+        from .services.rooms import set_room_summary as _set_room_summary
+    else:
+        from services.rooms import list_rooms as _list_rooms
+        from services.rooms import get_room_summary as _get_room_summary
+        from services.rooms import read_new_messages as _read_new_messages
+        from services.rooms import create_room as _create_room
+        from services.rooms import rename_room as _rename_room
+        from services.rooms import archive_room as _archive_room
+        from services.rooms import set_room_summary as _set_room_summary
+    if __package__:
+        from .services.members import list_members as _list_members
+    else:
+        from services.members import list_members as _list_members
+    if __package__:
+        from .services.members import set_login_state as _set_login_state
+        from .services.members import set_access_mode as _set_access_mode
+        from .services.members import rename_member as _rename_member
+        from .services.members import rotate_member_token as _rotate_member_token
+        from .services.members import set_member_quota as _set_member_quota
+        from .services.members import report_member_quota as _report_member_quota
+        from .services.members import remove_member as _remove_member
+    else:
+        from services.members import set_login_state as _set_login_state
+        from services.members import set_access_mode as _set_access_mode
+        from services.members import rename_member as _rename_member
+        from services.members import rotate_member_token as _rotate_member_token
+        from services.members import set_member_quota as _set_member_quota
+        from services.members import report_member_quota as _report_member_quota
+        from services.members import remove_member as _remove_member
+    if __package__:
+        from .services.tasks import list_task_transfers as _list_task_transfers
+        from .services.tasks import get_task_audit as _get_task_audit
+        from .services.tasks import list_tasks as _list_tasks
+    else:
+        from services.tasks import list_task_transfers as _list_task_transfers
+        from services.tasks import get_task_audit as _get_task_audit
+        from services.tasks import list_tasks as _list_tasks
+    # Bind every tool closure to the same runtime dependencies. The default
+    # context preserves the current process behavior; isolated contexts are
+    # available to tests and future multi-instance service assembly.
+    db = context.connect
+    audit = context.audit
+    _lock = context.lock
+    _now = context.now
+
+    def authenticate():
+        return _AUTHENTICATE(context)
+
+    def _ext_check(me, tool_name):
+        return _EXT_CHECK(me, tool_name, context)
+
+    def _mode_check(me, tool_name):
+        return _MODE_CHECK(me, tool_name, context)
+
+    def _close_run(conn, task_id, outcome, actor, detail=""):
+        return _CLOSE_RUN(conn, task_id, outcome, actor, detail, context)
+
+    def _approval_gate(conn, room_id, msg_id, body, poster=None):
+        return _APPROVAL_GATE(conn, room_id, msg_id, body, poster, context)
+
+    def _mem_target(conn, me, scope, member):
+        return _MEM_TARGET(conn, me, scope, member, context)
+
+    def _mem_append_version(conn, target, scope, key, text, author, origin, refs):
+        return _MEM_APPEND_VERSION(conn, target, scope, key, text, author, origin, refs, context)
+
+    def _apply_quota(conn, member_id, week_used_pct, week_reset_at, extra_tokens_left, source):
+        return _APPLY_QUOTA(
+            conn, member_id, week_used_pct, week_reset_at, extra_tokens_left, source, context
+        )
+
+    def _auto_relay(conn, task, from_name, reason_label):
+        return _AUTO_RELAY(conn, task, from_name, reason_label, context)
+
+    def _desktop_release_for_task(conn, task_id, actor, reason):
+        return _DESKTOP_RELEASE_FOR_TASK(conn, task_id, actor, reason, context)
+
+    def _week_start_cst(now=None):
+        return _WEEK_START_CST(now, context)
+
+    def _validate_quota_report(week_used_pct, week_reset_at, extra_tokens_left):
+        return _VALIDATE_QUOTA_REPORT(
+            week_used_pct, week_reset_at, extra_tokens_left, context
+        )
+
+    def _attach_path(sha256, mime):
+        return _ATTACH_PATH(sha256, mime, context)
+
+    def _inbox_resolve_room(me, room):
+        return _INBOX_RESOLVE_ROOM(me, room, context)
+
     from fastmcp import FastMCP
     # FastMCP 4 内部已禁用 SDK 的 DNS 重绑定保护、Host 守卫默认关；
     # 中枢真正的门是每成员 Bearer token（见 authenticate）。
@@ -1873,7 +1791,7 @@ def build_server():
                 login_state = "pending" if provider else None
                 cur = conn.execute(
                     "INSERT INTO members(name,role,token_hash,profile,created_at,avatar,provider,login_state) VALUES(?,'member',?,?,?,?,?,?)",
-                    (name, hash_token(tok), profile or None, time.time(), json.dumps(av),
+                    (name, hash_token(tok), profile or None, context.clock(), json.dumps(av),
                      provider or None, login_state))
                 mid = cur.lastrowid
                 audit(conn, me["name"], "member_register", name)
@@ -1896,79 +1814,12 @@ def build_server():
         dispatcher 与 owner，也不可移除自己。"""
         me = authenticate()
         require(me, "dispatcher")
-        if name == me["name"]:
-            raise ValueError("cannot remove yourself")
-        recalled = unassigned = expired = skills_cleared = 0
-        lock_released = False
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute("SELECT * FROM members WHERE name=?",
-                                   (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["role"] == "dispatcher":
-                    raise ValueError("cannot remove the dispatcher")
-                if name == "owner":
-                    raise ValueError("cannot remove the owner")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member already removed: {name}")
-                now = time.time()
-                mid = row["id"]
-                for t in conn.execute(
-                        "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','working')",
-                        (mid,)).fetchall():
-                    cur = conn.execute(
-                        "UPDATE tasks SET status='open', assignee=NULL, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND status IN ('claimed','working')",
-                        (now, t["id"]))
-                    if cur.rowcount == 1:
-                        _close_run(conn, t["id"], "member_removed", me["name"])
-                        _desktop_release_for_task(conn, t["id"], me["name"],
-                                                  "member_removed")
-                        recalled += 1
-                unassigned = conn.execute(
-                    "UPDATE tasks SET assignee=NULL, updated_at=? WHERE assignee=? AND status='open'",
-                    (now, mid)).rowcount
-                for x in conn.execute(
-                        "SELECT * FROM task_transfers WHERE status='pending' AND (from_member=? OR to_member=?)",
-                        (name, name)).fetchall():
-                    cur = conn.execute(
-                        "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
-                        (x["id"],))
-                    if cur.rowcount != 1:
-                        continue
-                    expired += 1
-                    t = conn.execute("SELECT * FROM tasks WHERE id=?",
-                                     (x["task_id"],)).fetchone()
-                    if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
-                        recv = conn.execute("SELECT id FROM members WHERE name=?",
-                                            (x["to_member"],)).fetchone()
-                        if recv and t["assignee"] == recv["id"]:
-                            conn.execute(
-                                "UPDATE tasks SET status='open', assignee=NULL, updated_at=? WHERE id=?",
-                                (now, t["id"]))
-                snap = _desktop_snapshot(conn)
-                if snap["held"] and snap["holder"] == name:
-                    conn.execute(
-                        "UPDATE desktop_lock SET holder=NULL, task_id=NULL, acquired_at=NULL WHERE id=1")
-                    audit(conn, me["name"], "desktop_auto_release",
-                          f"member_remove holder={name}")
-                    lock_released = True
-                skills_cleared = conn.execute(
-                    "DELETE FROM member_skills WHERE member_id=?", (mid,)).rowcount
-                conn.execute(
-                    "UPDATE members SET removed_at=?, token_hash=? WHERE id=?",
-                    (now, hash_token("revoked-" + secrets.token_urlsafe(32)), mid))
-                audit(conn, me["name"], "member_remove",
-                      f"{name} recalled={recalled} unassigned={unassigned} "
-                      f"transfers_expired={expired} skills_cleared={skills_cleared} "
-                      f"lock_released={lock_released}")
-                conn.commit()
-            finally:
-                conn.close()
-        return {"removed": name, "tasks_recalled": recalled,
-                "tasks_unassigned": unassigned, "transfers_expired": expired,
-                "skills_cleared": skills_cleared, "lock_released": lock_released}
+        return _remove_member(
+            context, me, name, close_run=_close_run,
+            desktop_release_for_task=_desktop_release_for_task,
+            desktop_snapshot=_desktop_snapshot, hash_token=hash_token,
+            token_factory=lambda: secrets.token_urlsafe(32),
+        )
 
     @mcp.tool
     def member_avatar_set(name: str, avatar_combo: str) -> dict:
@@ -2033,36 +1884,9 @@ def build_server():
         extra_tokens_left 为剩余 token 数（>=0）。每次更新刷新 quota_updated_at 并写审计。"""
         me = authenticate()
         require(me, "dispatcher")
-        if week_used_pct is None and week_reset_at is None and extra_tokens_left is None:
-            raise ValueError("nothing to update: give at least one quota field")
-        if week_used_pct is not None and not (0 <= week_used_pct <= 100):
-            raise ValueError(f"week_used_pct out of range 0-100: {week_used_pct}")
-        if week_reset_at is not None and not (week_reset_at > 0):
-            raise ValueError(f"week_reset_at must be epoch seconds > 0: {week_reset_at}")
-        if extra_tokens_left is not None and extra_tokens_left < 0:
-            raise ValueError(f"extra_tokens_left must be >= 0: {extra_tokens_left}")
-        conn = db()
-        try:
-            row = conn.execute("SELECT id, removed_at FROM members WHERE name=?", (member_name,)).fetchone()
-            if not row:
-                raise ValueError(f"no such member: {member_name}")
-            if row["removed_at"] is not None:
-                # staging49：已移除成员不得再被设额度（写入即污染其历史行，
-                # 且 member_list 已隐藏、App 无从发现这笔写入）
-                raise ValueError(f"member is removed: {member_name}")
-            fields = _apply_quota(conn, row["id"], week_used_pct,
-                                  week_reset_at, extra_tokens_left, "dispatcher")
-            audit(conn, me["name"], "member_quota_set",
-                  f"{member_name}: " + ", ".join(fields) + " source=dispatcher")
-            conn.commit()
-            out = dict(conn.execute(
-                "SELECT name, quota_week_used_pct, quota_week_reset_at,"
-                " quota_extra_left, quota_updated_at, quota_source"
-                " FROM members WHERE id=?",
-                (row["id"],)).fetchone())
-        finally:
-            conn.close()
-        return out
+        return _set_member_quota(context, me, member_name, week_used_pct,
+                                 week_reset_at, extra_tokens_left,
+                                 apply_quota=_apply_quota)
 
     @mcp.tool
     def member_quota_report(week_used_pct: float = None,
@@ -2086,88 +1910,11 @@ def build_server():
         另写 quota_anomaly 审计告警。审计记 source=self。"""
         me = authenticate()
         require(me)
-        problems = _validate_quota_report(week_used_pct, week_reset_at,
-                                          extra_tokens_left)
-        if problems:
-            raise ValueError("invalid quota report: " + "; ".join(problems))
-        conn = db()
-        try:
-            with _lock:
-                row = conn.execute("SELECT * FROM members WHERE id=?",
-                                   (me["id"],)).fetchone()
-                now = _now()
-                blocked_drop = None
-                if week_used_pct is not None and row["quota_week_used_pct"] is not None \
-                        and float(week_used_pct) < row["quota_week_used_pct"]:
-                    stored_reset = row["quota_week_reset_at"]
-                    cycle_rolled = (stored_reset is not None and stored_reset <= now
-                                    and week_reset_at is not None
-                                    and float(week_reset_at) > stored_reset)
-                    if not cycle_rolled:
-                        blocked_drop = (row["quota_week_used_pct"], float(week_used_pct))
-                        week_used_pct = None  # 该字段忽略，其余字段照常
-                blocked_reset = None
-                if week_reset_at is not None and row["quota_week_reset_at"] is not None \
-                        and float(week_reset_at) < row["quota_week_reset_at"]:
-                    # 自报 reset_at 只许往后移：回挪能人为加速「周期到期」、
-                    # 配合下一报洗白用量，与降幅同罪拦下（真滚动要求新值更大，
-                    # 天然不受此限；调度员 member_quota_set 不受此限、可纠偏）。
-                    blocked_reset = (row["quota_week_reset_at"], float(week_reset_at))
-                    week_reset_at = None
-                anomaly = None
-                if week_used_pct is not None and row["quota_week_used_pct"] is not None:
-                    jump = float(week_used_pct) - row["quota_week_used_pct"]
-                    if jump > QUOTA_ANOMALY_JUMP:
-                        since = row["quota_updated_at"] or row["created_at"]
-                        done_n = conn.execute(
-                            "SELECT COUNT(*) AS n FROM audit WHERE actor=? AND action='task_complete' AND ts>=?",
-                            (me["name"], since)).fetchone()["n"]
-                        if not done_n:
-                            anomaly = (row["quota_week_used_pct"], float(week_used_pct))
-                fields = []
-                if week_used_pct is not None or week_reset_at is not None \
-                        or extra_tokens_left is not None:
-                    fields = _apply_quota(conn, me["id"], week_used_pct,
-                                          week_reset_at, extra_tokens_left, "self")
-                if blocked_drop is not None:
-                    audit(conn, me["name"], "member_quota_drop_blocked",
-                          f"{me['name']}: week_used_pct {blocked_drop[0]}->{blocked_drop[1]}"
-                          f" blocked source=self stored_source={row['quota_source']}")
-                if blocked_reset is not None:
-                    audit(conn, me["name"], "member_quota_reset_blocked",
-                          f"{me['name']}: week_reset_at {blocked_reset[0]}->{blocked_reset[1]}"
-                          " blocked (self-report may only move reset later) source=self")
-                if anomaly is not None:
-                    audit(conn, me["name"], "quota_anomaly",
-                          f"{me['name']}: week_used_pct jump {anomaly[0]}->{anomaly[1]}"
-                          f" (+{anomaly[1] - anomaly[0]:.0f}) with no task_complete since last quota write source=self")
-                if fields:
-                    audit(conn, me["name"], "member_quota_report",
-                          f"{me['name']}: " + ", ".join(fields) + " source=self")
-                conn.commit()
-            if (blocked_drop is not None or blocked_reset is not None) and not fields:
-                why = []
-                if blocked_drop is not None:
-                    why.append(f"week_used_pct drop {blocked_drop[0]}->{blocked_drop[1]}"
-                               " within the same cycle")
-                if blocked_reset is not None:
-                    why.append(f"week_reset_at move-back {blocked_reset[0]}->{blocked_reset[1]}")
-                raise ValueError("quota report blocked: " + "; ".join(why))
-            out = dict(conn.execute(
-                "SELECT name, quota_week_used_pct, quota_week_reset_at,"
-                " quota_extra_left, quota_updated_at, quota_source"
-                " FROM members WHERE id=?",
-                (me["id"],)).fetchone())
-            blocked_fields = []
-            if blocked_drop is not None:
-                blocked_fields.append("week_used_pct")
-            if blocked_reset is not None:
-                blocked_fields.append("week_reset_at")
-            if blocked_fields:
-                out["blocked_fields"] = blocked_fields
-            return out
-        finally:
-            conn.close()
+        return _report_member_quota(
+            context, me, week_used_pct, week_reset_at, extra_tokens_left,
+            validate_report=_validate_quota_report, apply_quota=_apply_quota,
+            quota_anomaly_jump=QUOTA_ANOMALY_JUMP,
+        )
 
     @mcp.tool
     def member_login_state_set(name: str, state: str) -> dict:
@@ -2178,27 +1925,7 @@ def build_server():
         未移除。每次回写写审计，返回该成员的 provider 与新状态。"""
         me = authenticate()
         require(me, "dispatcher")
-        if state not in LOGIN_STATES:
-            raise ValueError(
-                f"bad login_state: {state!r} (allowed: {', '.join(LOGIN_STATES)})")
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute(
-                    "SELECT id, removed_at, provider FROM members WHERE name=?",
-                    (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                conn.execute("UPDATE members SET login_state=? WHERE id=?",
-                             (state, row["id"]))
-                audit(conn, me["name"], "member_login_state_set", f"{name}: {state}")
-                conn.commit()
-                out = {"name": name, "provider": row["provider"], "login_state": state}
-            finally:
-                conn.close()
-        return out
+        return _set_login_state(context, me, name, state, LOGIN_STATES)
 
     @mcp.tool
     def pair_code_create(member_name: str, provider: str, room: str,
@@ -2222,7 +1949,7 @@ def build_server():
         if len(display_name or "") > 80:
             raise ValueError("display_name too long: > 80 chars")
         code = "pk-pair-" + secrets.token_urlsafe(32)
-        now = time.time()
+        now = context.clock()
         exp = now + PAIR_CODE_TTL
         with _lock:
             conn = db()
@@ -2302,7 +2029,7 @@ def build_server():
                 " ORDER BY c.id DESC LIMIT 200").fetchall()
         finally:
             conn.close()
-        now = time.time()
+        now = context.clock()
         out = []
         for x in rows:
             if x["revoked_at"]:
@@ -2348,7 +2075,7 @@ def build_server():
                 cur = conn.execute(
                     "UPDATE pair_codes SET revoked_at=? WHERE id=?"
                     " AND revoked_at IS NULL AND redeemed_at IS NULL",
-                    (time.time(), code_id))
+                    (context.clock(), code_id))
                 if cur.rowcount != 1:
                     raise ValueError(
                         f"pair code {code_id} cannot be revoked now")
@@ -2368,31 +2095,9 @@ def build_server():
         打断线上调度链路，换它走运维流程。写审计。"""
         me = authenticate()
         require(me, "dispatcher")
-        tok = "pk-mem-" + secrets.token_urlsafe(32)
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute(
-                    "SELECT id, removed_at, role FROM members WHERE name=?",
-                    (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                if row["role"] == "dispatcher":
-                    # staging51 红队修复：调度员自身 token 与本地
-                    # .dispatcher_token 文件绑定（watcher 与全部调度员
-                    # 客户端同源），误轮换会直接打断线上调度链路——
-                    # 本工具不许碰，调度员换 token 走运维流程。
-                    raise ValueError(
-                        "cannot rotate the dispatcher's token with this tool")
-                conn.execute("UPDATE members SET token_hash=? WHERE id=?",
-                             (hash_token(tok), row["id"]))
-                audit(conn, me["name"], "member_token_rotate", name)
-                conn.commit()
-            finally:
-                conn.close()
-        return {"name": name, "token": tok}
+        return _rotate_member_token(context, me, name,
+                                    token_factory=lambda: "pk-mem-" + secrets.token_urlsafe(32),
+                                    hash_token=hash_token)
 
     @mcp.tool
     def member_access_mode_set(name: str, mode: str) -> dict:
@@ -2406,35 +2111,7 @@ def build_server():
         轮换 dispatcher 的教训）。成员须存在且未移除。写审计。"""
         me = authenticate()
         require(me, "dispatcher")
-        if mode not in ACCESS_MODES:
-            raise ValueError(
-                f"bad access mode: {mode} (want full/workspace/readonly)")
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute(
-                    "SELECT id, removed_at, role, access_mode FROM members"
-                    " WHERE name=?", (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                if row["role"] == "dispatcher":
-                    raise ValueError(
-                        "cannot set access mode for the dispatcher")
-                if row["role"] == "owner":
-                    raise ValueError("cannot set access mode for the owner")
-                old = (row["access_mode"]
-                       if row["access_mode"] in ACCESS_MODES else "full")
-                conn.execute(
-                    "UPDATE members SET access_mode=? WHERE id=?",
-                    (mode, row["id"]))
-                audit(conn, me["name"], "member_access_mode_set",
-                      f"{name}: {old} -> {mode}")
-                conn.commit()
-            finally:
-                conn.close()
-        return {"name": name, "access_mode": mode}
+        return _set_access_mode(context, me, name, mode, ACCESS_MODES)
 
     @mcp.tool
     def external_gate(enabled: bool = None, reason: str = "") -> dict:
@@ -2470,26 +2147,7 @@ def build_server():
         均按 name 字符串关联，改 name 会断链）。成员须存在且未移除。"""
         me = authenticate()
         require(me, "dispatcher")
-        dn = (display_name or "").strip()
-        if not dn or len(dn) > 80:
-            raise ValueError("display_name must be 1-80 chars")
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute(
-                    "SELECT id, removed_at FROM members WHERE name=?",
-                    (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                conn.execute("UPDATE members SET display_name=? WHERE id=?",
-                             (dn, row["id"]))
-                audit(conn, me["name"], "member_rename", f"{name} -> {dn}")
-                conn.commit()
-            finally:
-                conn.close()
-        return {"name": name, "display_name": dn}
+        return _rename_member(context, me, name, display_name)
 
     def _room_post_impl(me, room: str, body: str, kind: str = "chat",
                         attachment_ids: str = "", reply_to_id: int = 0,
@@ -2614,7 +2272,7 @@ def build_server():
         if ext:
             # 频控在落库前判定：普通消息走三窗口（approval_request 不
             # 计入），approval_request 走独立硬顶（单任务 + 单成员每小时）。
-            nowx = time.time()
+            nowx = context.clock()
             if kind == "approval_request":
                 m2 = TASK_REF_RE.search(body or "")
                 tid2 = int(m2.group(1)) if m2 else None
@@ -2651,7 +2309,7 @@ def build_server():
         cur = conn.execute(
             "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at,reply_to_id,payload)"
             " VALUES(?,?,?,?,?,?,?,?)",
-            (r["id"], me["id"], kind, body, msg_task_id, time.time(),
+            (r["id"], me["id"], kind, body, msg_task_id, context.clock(),
              int(reply_to_id) or None, msg_payload))
         mid = cur.lastrowid
         if attachment_ids:
@@ -2719,54 +2377,14 @@ def build_server():
         令牌全房通用。"""
         me = authenticate()
         require(me, "dispatcher")
-        if not name:
-            raise ValueError("room name must not be empty")
-        if len(name) > 40:
-            raise ValueError(f"room name too long: {len(name)} > 40")
-        if any(ch.isspace() for ch in name) or "/" in name or "\\" in name:
-            raise ValueError(f"room name must not contain whitespace or slashes: {name!r}")
-        conn = db()
-        try:
-            cur = conn.execute("INSERT INTO rooms(name,created_at) VALUES(?,?)",
-                               (name, time.time()))
-            rid = cur.lastrowid
-            audit(conn, me["name"], "room_create", f"room {rid}: {name}")
-            conn.commit()
-        except sqlite3.IntegrityError:
-            conn.close()
-            raise ValueError(f"room already exists: {name}")
-        conn.close()
-        return {"room_id": rid, "name": name}
-
+        return _create_room(context, me, name)
     @mcp.tool
     def room_rename(room: str, new_name: str) -> dict:
         """调度员给房间改名。new_name 校验与 room_create 同口径（非空、≤40、
         不含空白与斜杠、不重名）。主房间 pack-main 不可改名（App 与转换器以此为锚）。"""
         me = authenticate()
         require(me, "dispatcher")
-        if room == "pack-main":
-            raise ValueError("the main room cannot be renamed")
-        if not new_name:
-            raise ValueError("room name must not be empty")
-        if len(new_name) > 40:
-            raise ValueError(f"room name too long: {len(new_name)} > 40")
-        if any(ch.isspace() for ch in new_name) or "/" in new_name or "\\" in new_name:
-            raise ValueError(f"room name must not contain whitespace or slashes: {new_name!r}")
-        conn = db()
-        try:
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            try:
-                conn.execute("UPDATE rooms SET name=? WHERE id=?", (new_name, r["id"]))
-            except sqlite3.IntegrityError:
-                raise ValueError(f"room already exists: {new_name}")
-            audit(conn, me["name"], "room_rename", f"room {r['id']}: {room} -> {new_name}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"room_id": r["id"], "name": new_name}
-
+        return _rename_room(context, me, room, new_name)
     @mcp.tool
     def room_archive(room: str, archived: bool = True) -> dict:
         """调度员归档/恢复房间。归档只是列表可见性状态：room_list 默认不返回
@@ -2774,22 +2392,7 @@ def build_server():
         主房间 pack-main 不可归档。"""
         me = authenticate()
         require(me, "dispatcher")
-        if room == "pack-main":
-            raise ValueError("the main room cannot be archived")
-        conn = db()
-        try:
-            r = conn.execute("SELECT id, archived_at FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            conn.execute("UPDATE rooms SET archived_at=? WHERE id=?",
-                         (_now() if archived else None, r["id"]))
-            audit(conn, me["name"], "room_archive" if archived else "room_unarchive",
-                  f"room {r['id']}: {room}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"room_id": r["id"], "name": room, "archived": bool(archived)}
-
+        return _archive_room(context, me, room, archived)
     @mcp.tool
     def room_list(include_archived: bool = False) -> dict:
         """列出房间（id、name、created_at、archived）及每房最新消息 id
@@ -2797,24 +2400,7 @@ def build_server():
         include_archived=True 才全列。任意成员可调。"""
         me = authenticate()
         require(me)
-        conn = db()
-        rows = conn.execute(
-            """SELECT r.id, r.name, r.created_at, r.archived_at,
-                      COALESCE((SELECT MAX(m.id) FROM messages m
-                                WHERE m.room_id=r.id), 0) AS last_message_id
-               FROM rooms r
-               WHERE (? OR r.archived_at IS NULL)
-               ORDER BY r.id ASC""", (1 if include_archived else 0,)).fetchall()
-        conn.close()
-        out = []
-        for x in rows:
-            d = dict(x)
-            d["archived"] = bool(d.pop("archived_at"))
-            out.append(d)
-        if _is_external(me):
-            # 件二房间隔离：external 的房间列表只含绑定房间。
-            out = [d for d in out if d["id"] == me["bound_room_id"]]
-        return {"rooms": out}
+        return _list_rooms(context, me, include_archived)
 
     @mcp.tool
     def room_summary_get(room: str) -> dict:
@@ -2822,24 +2408,7 @@ def build_server():
         updated_at 为 null。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            if _is_external(me) and r["id"] != me["bound_room_id"]:
-                raise ValueError(
-                    "forbidden: external members may only access their bound room")
-            row = conn.execute(
-                "SELECT data, updated_at, updated_by FROM room_summaries WHERE room_id=?",
-                (r["id"],)).fetchone()
-        finally:
-            conn.close()
-        if not row:
-            return {"room": room, "summary": {k: [] for k in SUMMARY_SECTIONS},
-                    "updated_at": None, "updated_by": None}
-        return {"room": room, "summary": json.loads(row["data"]),
-                "updated_at": row["updated_at"], "updated_by": row["updated_by"]}
+        return _get_room_summary(context, me, room, SUMMARY_SECTIONS)
 
     @mcp.tool
     def room_summary_set(room: str, summary: str) -> dict:
@@ -2849,26 +2418,7 @@ def build_server():
         不合法整笔拒绝、原摘要不变。"""
         me = authenticate()
         require(me, "dispatcher")
-        data = _validate_summary(summary)
-        conn = db()
-        try:
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                raise ValueError(f"no such room: {room}")
-            now = _now()
-            conn.execute(
-                "INSERT INTO room_summaries(room_id,data,updated_at,updated_by) VALUES(?,?,?,?)"
-                " ON CONFLICT(room_id) DO UPDATE SET data=excluded.data,"
-                " updated_at=excluded.updated_at, updated_by=excluded.updated_by",
-                (r["id"], json.dumps(data, ensure_ascii=False), now, me["name"]))
-            audit(conn, me["name"], "room_summary_set",
-                  f"room {r['id']}: {room} decided={len(data['decided'])}"
-                  f" in_progress={len(data['in_progress'])} pending={len(data['pending'])}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"room": room, "summary": data, "updated_at": now, "updated_by": me["name"]}
-
+        return _set_room_summary(context, me, room, summary, _validate_summary)
     @mcp.tool
     def room_read_new(room: str, since_id: int = 0, limit: int = 50,
                       tail: bool = False) -> dict:
@@ -2879,63 +2429,7 @@ def build_server():
         id 升序；默认 False 时行为与旧版逐字一致。"""
         me = authenticate()
         require(me)
-        limit = max(1, min(int(limit), 200))
-        conn = db()
-        r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-        if not r:
-            conn.close()
-            raise ValueError(f"no such room: {room}")
-        if _is_external(me):
-            if r["id"] != me["bound_room_id"]:
-                conn.close()
-                raise ValueError(
-                    "forbidden: external members may only read their bound room")
-            # 入群水位硬截断（件二）：external 的读路径强制
-            # effective_since = max(since_id, joined_msg_id)，传 0 也
-            # 翻不到入群前的历史。
-            since_id = max(int(since_id), me["joined_msg_id"] or 0)
-        if tail:
-            rows = conn.execute(
-                """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
-                          m.deleted_at, m.edited_at, m.payload, m.reply_to_id
-                   FROM messages m JOIN members mb ON mb.id=m.author_id
-                   WHERE m.room_id=? AND m.id>? ORDER BY m.id DESC LIMIT ?""",
-                (r["id"], since_id, limit)).fetchall()
-            rows = list(reversed(rows))
-        else:
-            rows = conn.execute(
-                """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
-                          m.deleted_at, m.edited_at, m.payload, m.reply_to_id
-                   FROM messages m JOIN members mb ON mb.id=m.author_id
-                   WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?""",
-                (r["id"], since_id, limit)).fetchall()
-        amap = {}
-        if rows:
-            mids = [x["id"] for x in rows]
-            q = ("SELECT id, message_id, mime, size, original_name FROM attachments "
-                 "WHERE message_id IN (%s) ORDER BY id" % ",".join("?" * len(mids)))
-            for a in conn.execute(q, mids).fetchall():
-                amap.setdefault(a["message_id"], []).append(
-                    {"id": a["id"], "mime": a["mime"], "size": a["size"],
-                     "filename": a["original_name"]})
-        conn.close()
-        out = []
-        for x in rows:
-            deleted = bool(x["deleted_at"])
-            out.append({
-                "id": x["id"], "author": x["author"], "kind": x["kind"],
-                # 已删消息只回占位文本（删除时 body 已替换，这里再兜底一层，
-                # 保证任何路径读到的都是占位、绝不漏原正文）
-                "body": DELETED_PLACEHOLDER if deleted else x["body"],
-                "task_id": x["task_id"], "created_at": x["created_at"],
-                "deleted": deleted, "edited": bool(x["edited_at"]),
-                "payload": None if deleted else x["payload"],
-                # staging55: reply_to_id readback (staging53 missed it here;
-                # inbox_pull had it). Deleted rows report None like payload.
-                "reply_to_id": None if deleted else x["reply_to_id"],
-                "attachments": amap.get(x["id"], []),
-            })
-        return {"messages": out}
+        return _read_new_messages(context, me, room, since_id, limit, tail)
 
     @mcp.tool
     def inbox_pull(since_id: int = -1, room: str = "") -> dict:
@@ -2951,7 +2445,7 @@ def build_server():
         require(me)
         ua = _agent_version_gate()
         room_id, room_name = _inbox_resolve_room(me, room)
-        now = time.time()
+        now = context.clock()
         conn = db()
         try:
             conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?",
@@ -3089,7 +2583,7 @@ def build_server():
                 conn.execute(
                     "INSERT OR IGNORE INTO message_op_keys"
                     "(member_id,op_key,message_id,created_at) VALUES(?,?,?,?)",
-                    (me["id"], op_key, out["message_id"], time.time()))
+                    (me["id"], op_key, out["message_id"], context.clock()))
                 audit(conn, me["name"], "inbox_send",
                       f"room={room_name} msg={out['message_id']} op_key=1")
                 conn.commit()
@@ -3155,7 +2649,7 @@ def build_server():
                 day_n = conn.execute(
                     "SELECT COUNT(*) AS n FROM attachments"
                     " WHERE uploader_id=? AND created_at>=?",
-                    (me["id"], time.time() - 86400)).fetchone()["n"]
+                    (me["id"], context.clock() - 86400)).fetchone()["n"]
                 mine = conn.execute(
                     "SELECT COALESCE(SUM(size),0) AS s FROM attachments"
                     " WHERE uploader_id=?", (me["id"],)).fetchone()["s"]
@@ -3185,7 +2679,7 @@ def build_server():
                 os.replace(tmp, path)
             cur = conn.execute(
                 "INSERT INTO attachments(sha256,mime,size,original_name,uploader_id,room_id,message_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)",
-                (sha, mime, len(data), name, me["id"], r["id"], time.time()))
+                (sha, mime, len(data), name, me["id"], r["id"], context.clock()))
             aid = cur.lastrowid
             audit(conn, me["name"], "attachment_put",
                   f"attachment {aid} room {room} size {len(data)}")
@@ -3293,7 +2787,7 @@ def build_server():
         # 并发删同一条会一路成功（staging14 复检 C3：4 路并发 4 成功 4 审计）。
         cur = conn.execute(
             "UPDATE messages SET body=?, deleted_at=? WHERE id=? AND deleted_at IS NULL",
-            (DELETED_PLACEHOLDER, time.time(), message_id))
+            (DELETED_PLACEHOLDER, context.clock(), message_id))
         if cur.rowcount != 1:
             conn.close()
             raise ValueError(f"message {message_id} already deleted")
@@ -3332,7 +2826,7 @@ def build_server():
             raise ValueError(f"message {message_id} already deleted")
         cur = conn.execute(
             "UPDATE messages SET body=?, edited_at=? WHERE id=? AND deleted_at IS NULL",
-            (new_body, time.time(), message_id))
+            (new_body, context.clock(), message_id))
         if cur.rowcount != 1:
             conn.close()
             raise ValueError(f"message {message_id} already deleted")
@@ -3378,7 +2872,7 @@ def build_server():
                         f"permanent: executor-pinned tasks cannot be assigned"
                         f" to external member {assignee_name}")
             assignee = a["id"]
-        now = time.time()
+        now = context.clock()
         cur = conn.execute(
             "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,urgent,created_at,updated_at) VALUES(?,?,?,?,?,'open',?,?,?)",
             (r["id"], title, body, me["id"], assignee, 1 if urgent else 0, now, now))
@@ -3671,13 +3165,13 @@ def build_server():
                         raise ValueError(
                             f"note too long for external members:"
                             f" > {EXT_NOTE_MAX_CHARS} chars")
-                    ra = _ext_msg_retry_after(conn, me["id"], time.time())
+                    ra = _ext_msg_retry_after(conn, me["id"], context.clock())
                     if ra is not None:
                         audit(conn, me["name"], "external_rate_limited",
                               f"kind=task_update_note retry_after={ra}")
                         conn.commit()
                         raise _ext_rate_error(ra)
-            now = time.time()
+            now = context.clock()
             # UPDATE 带持有人守卫 + rowcount 复核：_holder 是先检后写，两步之间
             # 租约可能被 sweeper 回收并被他人重认领，无守卫 UPDATE 会覆盖新认领
             # （staging14 复检 C6 语句级实证）。complete/block 同此修。
@@ -3742,7 +3236,7 @@ def build_server():
                         {"error": "invalid_envelope", "task_id": task_id,
                          "problems": problems}, ensure_ascii=False))
                 stored = env["summary"]
-            now = time.time()
+            now = context.clock()
             cur = conn.execute(
                 "UPDATE tasks SET status='review', result=?, envelope=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND assignee=? AND claim_token=?",
                 (stored, json.dumps(env, ensure_ascii=False) if env else None, now, task_id,
@@ -3908,7 +3402,7 @@ def build_server():
             return {"task_id": task_id, "status": t["status"]}
         conn.execute(
             "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
-            (time.time(), task_id))
+            (context.clock(), task_id))
         _close_run(conn, task_id, "cancelled", me["name"])
         _desktop_release_for_task(conn, task_id, me["name"], "cancel")
         audit(conn, me["name"], "task_cancel", f"task {task_id}")
@@ -3930,47 +3424,8 @@ def build_server():
         每次调用泄漏一个连接（查询异常时同样漏），本轮只补关闭、不动返回结构。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            rows = conn.execute(
-                "SELECT id, name, role, profile, created_at, last_heartbeat, avatar,"
-                " quota_week_used_pct, quota_week_reset_at, quota_extra_left, quota_updated_at,"
-                " quota_source, provider, login_state, kind, display_name, bound_room_id,"
-                " access_mode"
-                " FROM members WHERE removed_at IS NULL ORDER BY id"
-            ).fetchall()
-            wk = _week_start_cst()
-            counts = {r["assignee"]: r["n"] for r in conn.execute(
-                "SELECT assignee, COUNT(*) AS n FROM tasks"
-                " WHERE status='done' AND assignee IS NOT NULL AND updated_at>=?"
-                " GROUP BY assignee", (wk,)).fetchall()}
-        finally:
-            conn.close()
-        out = []
-        for r in rows:
-            d = dict(r)
-            try:
-                d["avatar"] = json.loads(d["avatar"]) if d.get("avatar") else avatar_for(d["name"])
-            except Exception:
-                d["avatar"] = avatar_for(d["name"])
-            d["week_done"] = counts.get(d["id"], 0)
-            # staging51：新字段纯追加（老成员 kind 回 "internal"、
-            # display_name 回 name、bound_room 回 None，向后兼容）。
-            d["kind"] = d.get("kind") or "internal"
-            if not d.get("display_name"):
-                d["display_name"] = d["name"]
-            # staging56：access_mode 归一回读（NULL/脏值一律 full）。
-            d["access_mode"] = (d.get("access_mode")
-                                if d.get("access_mode") in ACCESS_MODES
-                                else "full")
-            out.append(d)
-        if _is_external(me):
-            # 件二脱敏视图：external 只看得到身份类字段，额度、
-            # login_state、week_done 一律剥离。
-            keys = ("name", "display_name", "role", "kind", "provider",
-                    "avatar", "last_heartbeat")
-            out = [{k: d.get(k) for k in keys} for d in out]
-        return {"members": out}
+        return _list_members(context, me, avatar_for=avatar_for,
+                             week_start=_WEEK_START_CST, access_modes=ACCESS_MODES)
 
     @mcp.tool
     def task_list(status: str = "", assignee_name: str = "", offset: int = 0,
@@ -3994,78 +3449,7 @@ def build_server():
         本页的过滤/分页不影响位次口径（第二页仍按全队列算）。"""
         me = authenticate()
         require(me)
-        conn = db()
-        if _is_external(me):
-            # 件二：external 的 task_list 强制本房且只回 assignee == 本人
-            # 的卡（覆盖调用方传入的过滤参数）——未指派卡与他人的卡
-            # 一律不回，防把准备派给 Muse 成员的任务正文泄给外部成员。
-            assignee_name = me["name"]
-            brow = conn.execute("SELECT name FROM rooms WHERE id=?",
-                                (me["bound_room_id"],)).fetchone()
-            room = brow["name"] if brow else "\x00no-bound-room"
-        q = """SELECT t.id, t.title, t.body, t.status, mb.name AS assignee, t.attempts,
-                      t.result, t.envelope, t.lease_expires, t.updated_at,
-                      t.fail_class, t.next_claim_at, t.sched_at, t.urgent,
-                      cr.name AS created_by, t.review_note, rm.name AS room
-               FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee
-               LEFT JOIN members cr ON cr.id=t.created_by
-               JOIN rooms rm ON rm.id=t.room_id WHERE 1=1"""
-        args = []
-        if status:
-            # staging50：status 可传逗号分隔多状态（Gemini 审计建议），一次
-            # 取全活跃态供运行时/桥接免翻页；单状态与旧行为逐字一致。
-            parts = [s.strip() for s in status.split(",") if s.strip()]
-            if len(parts) > 1:
-                q += " AND t.status IN (%s)" % ",".join("?" * len(parts))
-                args.extend(parts)
-            elif parts:
-                q += " AND t.status=?"
-                args.append(parts[0])
-        if assignee_name:
-            q += " AND mb.name=?"
-            args.append(assignee_name)
-        if room:
-            q += " AND rm.name=?"
-            args.append(room)
-        # staging42 / P2：排序口径不变（urgent 置顶 + id 升序，定稿 §15.3），
-        # 只加 offset 分页参数，调用方（如 App 任务板）可翻页拉全量
-        offset = max(0, int(offset))
-        q += " ORDER BY t.urgent DESC, t.id ASC LIMIT 100 OFFSET ?"
-        args.append(offset)
-        rows = conn.execute(q, args).fetchall()
-        # staging54：队列名次一次查询取全量活跃任务在内存里算（防 N+1）：
-        # 按 assignee 原值分组（NULL = 未指派池），组内顺序与上方排序
-        # 口径逐字一致（urgent DESC, id ASC），逐个计数即 queue_ahead。
-        act = conn.execute(
-            "SELECT id, assignee FROM tasks"
-            " WHERE status IN ('open','claimed','working')"
-            " ORDER BY urgent DESC, id ASC").fetchall()
-        ahead = {}
-        seen = {}
-        for a in act:
-            g = a["assignee"]
-            ahead[a["id"]] = seen.get(g, 0)
-            seen[g] = seen.get(g, 0) + 1
-        conn.close()
-        out = []
-        for x in rows:
-            d = dict(x)
-            if d["status"] in ("open", "claimed", "working"):
-                d["queue_ahead"] = ahead.get(d["id"])
-            else:
-                d["queue_ahead"] = None
-            raw_env = d.get("envelope")
-            if raw_env:
-                try:
-                    d["envelope"] = json.loads(raw_env)
-                except Exception:
-                    d["envelope"] = None
-            else:
-                d["envelope"] = None
-            nca = d.get("next_claim_at")
-            d["backoff_remaining_sec"] = int(nca - _now()) if nca and nca > _now() else 0
-            out.append(d)
-        return {"tasks": out}
+        return _list_tasks(context, me, status, assignee_name, offset, room)
 
     @mcp.tool
     def task_clear_backoff(task_id: int) -> dict:
@@ -4184,7 +3568,7 @@ def build_server():
                     holder_name = holder_row["name"] if holder_row else str(t["assignee"])
                     disp0 = conn.execute(
                         "SELECT id FROM members WHERE role='dispatcher'").fetchone()
-                    now0 = time.time()
+                    now0 = context.clock()
                     conn.execute(
                         """INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)
                            VALUES(?,?,'chat',?,?,?)""",
@@ -4237,7 +3621,7 @@ def build_server():
                     "SELECT name FROM members WHERE id=?", (t["assignee"],)).fetchone()
                 from_name = from_row["name"] if from_row else str(t["assignee"])
                 _close_run(conn, task_id, "transferred", me["name"])
-                now = time.time()
+                now = context.clock()
                 expires_at = now + TRANSFER_ACCEPT_TTL
                 conn.execute(
                     """UPDATE tasks SET assignee=?, claim_token=NULL, lease_expires=NULL,
@@ -4304,7 +3688,7 @@ def build_server():
                 if x["status"] == "expired":
                     raise ValueError(
                         f"transfer {x['id']} for task {task_id} already expired")
-                now = time.time()
+                now = context.clock()
                 if x["expires_at"] is not None and x["expires_at"] <= now:
                     raise ValueError(
                         f"transfer {x['id']} for task {task_id} expired at "
@@ -4339,18 +3723,7 @@ def build_server():
         task_transfer 记录互相印证。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute("SELECT id FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        rows = conn.execute(
-            """SELECT id, task_id, from_member, to_member, reason, actor, created_at,
-                      status, accepted_at, expires_at
-               FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
-            (task_id,)).fetchall()
-        conn.close()
-        return {"task_id": task_id, "transfers": [dict(x) for x in rows]}
+        return _list_task_transfers(context, task_id)
 
     @mcp.tool
     def task_audit(task_id: int) -> dict:
@@ -4361,38 +3734,7 @@ def build_server():
         超出时 truncated=true。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute(
-            """SELECT t.id, t.title, t.status, t.attempts, t.created_at, t.updated_at,
-                      cb.name AS created_by, ab.name AS assignee, t.review_note
-               FROM tasks t JOIN members cb ON cb.id=t.created_by
-               LEFT JOIN members ab ON ab.id=t.assignee WHERE t.id=?""",
-            (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        pre = f"task {task_id}"
-        arows = conn.execute(
-            """SELECT ts, actor, action, detail FROM audit
-               WHERE detail=? OR detail LIKE ? OR detail LIKE ?
-               ORDER BY id ASC LIMIT 201""",
-            (pre, pre + ":%", pre + " %")).fetchall()
-        rrows = conn.execute(
-            """SELECT r.fence, mb.name AS member, r.status, r.outcome, r.detail,
-                      r.started_at, r.ended_at
-               FROM runs r JOIN members mb ON mb.id=r.member_id
-               WHERE r.task_id=? ORDER BY r.fence ASC""", (task_id,)).fetchall()
-        xrows = conn.execute(
-            """SELECT from_member, to_member, reason, actor, created_at, status,
-                      accepted_at, expires_at
-               FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
-            (task_id,)).fetchall()
-        conn.close()
-        events = [dict(r) for r in arows[:200]]
-        return {"task": dict(t), "events": events,
-                "events_truncated": len(arows) > 200,
-                "runs": [dict(r) for r in rrows],
-                "transfers": [dict(r) for r in xrows]}
+        return _get_task_audit(context, task_id)
 
     @mcp.tool
     def run_start(task_id: int, claim_token: str) -> dict:
@@ -4424,7 +3766,7 @@ def build_server():
                 fence = conn.execute(
                     "SELECT COALESCE(MAX(fence),0)+1 AS f FROM runs WHERE task_id=?",
                     (task_id,)).fetchone()["f"]
-                now = time.time()
+                now = context.clock()
                 cur = conn.execute(
                     """INSERT INTO runs(task_id,member_id,fence,claim_token,status,started_at)
                        VALUES(?,?,?,?,'running',?)""",
@@ -4511,7 +3853,7 @@ def build_server():
                VALUES(?,?,?,?,1,?,?)
                ON CONFLICT(action,target) DO UPDATE SET
                  effect=excluded.effect, source=excluded.source, enabled=1""",
-            (action, target, effect, source, me["name"], time.time()))
+            (action, target, effect, source, me["name"], context.clock()))
         row = conn.execute("SELECT id FROM approval_rules WHERE action=? AND target=?",
                            (action, target)).fetchone()
         audit(conn, me["name"], "rule_upsert", f"{action}->{target} = {effect}")
@@ -4563,7 +3905,7 @@ def build_server():
                VALUES(?,?,?,1,?,?)
                ON CONFLICT(pattern) DO UPDATE SET
                  effect=excluded.effect, source=excluded.source, enabled=1""",
-            (pattern, effect, source, me["name"], time.time()))
+            (pattern, effect, source, me["name"], context.clock()))
         row = conn.execute("SELECT id FROM egress_rules WHERE pattern=?",
                            (pattern,)).fetchone()
         audit(conn, me["name"], "egress_rule_upsert", f"{pattern} = {effect}")
@@ -4605,7 +3947,7 @@ def build_server():
                     "SELECT COUNT(*) AS n FROM audit WHERE actor='egress'"
                     " AND action='egress_check' AND ts>=?"
                     " AND substr(detail,1,?)=?",
-                    (time.time() - 60, len(prefix), prefix)).fetchone()["n"]
+                    (context.clock() - 60, len(prefix), prefix)).fetchone()["n"]
                 if n >= EXT_EGRESS_PER_MIN:
                     audit(conn, me["name"], "external_egress_throttled",
                           f"count={n} window=60s")
@@ -4670,7 +4012,7 @@ def build_server():
                     raise ValueError(
                         f"task {task_id} already decided (via {decided_by}); "
                         "review_file only handles undecided approvals")
-                now = time.time()
+                now = context.clock()
                 cur = conn.execute(
                     """INSERT INTO review_log(task_id,target_url,owner_quote,member_desc,
                        verdict,reviewer,created_at) VALUES(?,?,?,?,?,?,?)""",
@@ -4933,7 +4275,7 @@ def build_server():
             # 全局 _lock 串行化，否则并发 publish 撞 UNIQUE(skill_id,version)
             # 只有一条成功、其余抛原始 sqlite 错（复检 B1/B2 实证）。
             with _lock:
-                now = time.time()
+                now = context.clock()
                 s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
                 if not s:
                     cur = conn.execute(
@@ -5096,7 +4438,7 @@ def build_server():
                         f"no such version: skill '{s['name']}' version {version} "
                         f"(current_version={s['current_version']})")
                 nv = s["current_version"] + 1
-                now = time.time()
+                now = context.clock()
                 conn.execute(
                     "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
                     "VALUES(?,?,?,?,?)", (s["id"], nv, v["body"], me["name"], now))
@@ -5204,7 +4546,7 @@ def build_server():
         me = authenticate()
         require(me)
         conn = db()
-        conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?", (time.time(), me["id"]))
+        conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?", (context.clock(), me["id"]))
         conn.commit()
         conn.close()
         return {"ok": True, "member": me["name"]}
@@ -5226,7 +4568,7 @@ def build_server():
         code = payload.get("code") if isinstance(payload, dict) else None
         if isinstance(code, str):
             code = code.strip()
-        now = time.time()
+        now = context.clock()
         with _lock:
             conn = db()
             try:
@@ -5378,10 +4720,11 @@ def build_server():
     return mcp
 
 
-def serve():
-    init()
-    threading.Thread(target=sweeper, daemon=True).start()
-    mcp = build_server()
+def serve(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    init(context)
+    threading.Thread(target=sweeper, args=(context,), daemon=True).start()
+    mcp = build_server(context)
     mcp.run(transport="http", host=os.environ.get("PACK_HUB_HOST", "127.0.0.1"), port=PORT, path="/mcp")
 
 

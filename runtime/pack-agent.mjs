@@ -17,6 +17,43 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+// Kept self-contained because the documented external-agent install distributes
+// this file alone. Keep this validation contract aligned with hub-url-policy.mjs.
+function validateHubURL(value) {
+  if (typeof value !== "string" || !value || value !== value.trim()) {
+    throw new TypeError("invalid_hub_url");
+  }
+
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new TypeError("invalid_hub_url");
+  }
+
+  if (!["https:", "http:"].includes(url.protocol)
+      || !url.hostname
+      || url.username
+      || url.password
+      || url.search
+      || url.hash
+      || url.href.includes("?")
+      || url.href.includes("#")) {
+    throw new TypeError("invalid_hub_url");
+  }
+
+  if (url.protocol === "http:") {
+    let host = url.hostname.toLowerCase();
+    if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+    if (host.endsWith(".")) host = host.slice(0, -1);
+    if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
+      throw new TypeError("invalid_hub_url");
+    }
+  }
+
+  return url.href;
+}
+
 
 const AGENT_VERSION = "1.0.0";
 const UA = `pack-agent/${AGENT_VERSION}`;
@@ -68,7 +105,7 @@ function parseRpcBody(text) {
 
 class Mcp {
   constructor(hub, token) {
-    this.url = hub.replace(/\/+$/, "") + "/mcp";
+    this.url = validateHubURL(hub).replace(/\/+$/, "") + "/mcp";
     this.token = token;
     this.sid = null;
     this.seq = 0;
@@ -83,7 +120,7 @@ class Mcp {
     if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
     if (this.sid) headers["Mcp-Session-Id"] = this.sid;
     const res = await fetch(this.url, {
-      method: "POST", headers, body: JSON.stringify(payload),
+      method: "POST", headers, body: JSON.stringify(payload), redirect: "error",
     });
     const sid = res.headers.get("mcp-session-id");
     if (sid) this.sid = sid;
@@ -129,7 +166,7 @@ class Mcp {
 async function cmdPair(code, hub, profile, force) {
   if (!code) throw new Error("usage: pair <code> --hub <url>");
   if (!hub) throw new Error("pair requires --hub <url>");
-  hub = hub.replace(/\/+$/, "");
+  hub = validateHubURL(hub).replace(/\/+$/, "");
   // 防串号：覆盖前先用已有 config 的 token 查一次身份（heartbeat 回
   // 本人 name）。已有的是另一个成员且未 --force → 拒绝覆盖落盘。
   const existing = loadConfig(profile);
@@ -141,7 +178,7 @@ async function cmdPair(code, hub, profile, force) {
     } catch { oldName = null; } // 旧 token 已失效/旧中枢不可达 → 不拦
   }
   const res = await fetch(hub + "/pair", {
-    method: "POST",
+    method: "POST", redirect: "error",
     headers: { "Content-Type": "application/json", "User-Agent": UA },
     body: JSON.stringify({ code }),
   });
