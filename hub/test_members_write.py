@@ -383,5 +383,129 @@ class MemberWriteTests(unittest.TestCase):
         )
 
 
+    def test_remove_rolls_back_all_related_tables_when_token_revocation_fails(self):
+        """A late failure must roll back tasks, transfers, skills, locks and audit."""
+        worker = self.db.execute(
+            "SELECT id, token_hash FROM members WHERE name='worker'"
+        ).fetchone()
+        self.db.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,"
+            "claim_token,lease_expires,created_at,updated_at) "
+            "VALUES(1,'rollback-claim','',?,?,'claimed','lease',9999,8900,8900)",
+            (worker["id"], worker["id"]),
+        )
+        claim_id = self.db.execute(
+            "SELECT id FROM tasks WHERE title='rollback-claim'"
+        ).fetchone()[0]
+        self.db.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,"
+            "created_at,updated_at) "
+            "VALUES(1,'rollback-open','',?,?,'open',8900,8900)",
+            (worker["id"], worker["id"]),
+        )
+        self.db.execute(
+            "INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,"
+            "created_at,status) VALUES(?,'worker','dispatcher','test','worker',8900,'pending')",
+            (claim_id,),
+        )
+        self.db.execute(
+            "INSERT INTO skills(name,description,current_version,updated_at)"
+            " VALUES('rollback-skill','',0,8900)"
+        )
+        skill_id = self.db.execute(
+            "SELECT id FROM skills WHERE name='rollback-skill'"
+        ).fetchone()[0]
+        self.db.execute(
+            "INSERT INTO member_skills(member_id,skill_id) VALUES(?,?)",
+            (worker["id"], skill_id),
+        )
+        self.db.execute(
+            "INSERT INTO desktop_lock(id,holder,task_id,acquired_at)"
+            " VALUES(1,'worker',NULL,8900)"
+            " ON CONFLICT(id) DO UPDATE SET holder=excluded.holder,"
+            " task_id=excluded.task_id,acquired_at=excluded.acquired_at"
+        )
+        self.db.commit()
+
+        def refuse_hash(_):
+            raise RuntimeError("injected token revocation failure")
+
+        with self.assertRaisesRegex(RuntimeError, "injected token revocation"):
+            remove_member(
+                self.context, self.actor, "worker",
+                close_run=lambda conn, tid, outcome, who:
+                    hub._close_run(conn, tid, outcome, who, context=self.context),
+                desktop_release_for_task=lambda conn, tid, who, reason:
+                    hub._desktop_release_for_task(conn, tid, who, reason, self.context),
+                desktop_snapshot=hub._desktop_snapshot,
+                hash_token=refuse_hash,
+                token_factory=lambda: "no-real-secret",
+            )
+
+        self.assertEqual(
+            [tuple(row) for row in self.db.execute(
+                "SELECT status,assignee,claim_token FROM tasks ORDER BY id"
+            )],
+            [("claimed", worker["id"], "lease"), ("open", worker["id"], None)],
+        )
+        self.assertEqual(
+            self.db.execute("SELECT status FROM task_transfers").fetchone()[0],
+            "pending",
+        )
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM member_skills").fetchone()[0], 1
+        )
+        self.assertEqual(
+            self.db.execute("SELECT holder FROM desktop_lock WHERE id=1").fetchone()[0],
+            "worker",
+        )
+        member = self.db.execute(
+            "SELECT removed_at,token_hash FROM members WHERE name='worker'"
+        ).fetchone()
+        self.assertIsNone(member["removed_at"])
+        self.assertEqual(member["token_hash"], worker["token_hash"])
+        self.assertEqual(
+            self.db.execute(
+                "SELECT COUNT(*) FROM audit WHERE action IN "
+                "('member_remove','desktop_auto_release','run_close')"
+            ).fetchone()[0], 0,
+        )
+
+    def test_concurrent_remove_serializes_and_revokes_only_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        start = Barrier(3, timeout=10)
+
+        def attempt():
+            start.wait()
+            try:
+                return ("success", self._remove("worker"))
+            except ValueError as error:
+                return ("rejected", str(error))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a = pool.submit(attempt)
+            b = pool.submit(attempt)
+            start.wait()
+            results = [a.result(timeout=20), b.result(timeout=20)]
+
+        self.assertEqual(
+            sorted(kind for kind, _ in results), ["rejected", "success"]
+        )
+        rejected = next(detail for kind, detail in results if kind == "rejected")
+        self.assertIn("already removed", rejected)
+        self.assertEqual(
+            self.db.execute(
+                "SELECT COUNT(*) FROM audit WHERE action='member_remove'"
+            ).fetchone()[0], 1,
+        )
+        self.assertEqual(
+            self.db.execute(
+                "SELECT COUNT(*) FROM members WHERE name='worker' AND removed_at IS NOT NULL"
+            ).fetchone()[0], 1,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
