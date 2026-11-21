@@ -325,5 +325,61 @@ class MemberWriteTests(unittest.TestCase):
             self._remove("worker")
 
 
+    def test_remove_member_expires_transfers_clears_skills_and_releases_desktop(self):
+        worker_id = self.db.execute(
+            "SELECT id FROM members WHERE name='worker'"
+        ).fetchone()[0]
+        self.db.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,"
+            "created_at,updated_at) VALUES(1,'transfer-test','',?,?, 'open',8900,8900)",
+            (worker_id, worker_id),
+        )
+        task_id = self.db.execute(
+            "SELECT id FROM tasks WHERE title='transfer-test'"
+        ).fetchone()[0]
+        self.db.execute(
+            "INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,"
+            "created_at,status) VALUES(?,'worker','dispatcher','handoff','worker',8900,'pending')",
+            (task_id,),
+        )
+        self.db.execute(
+            "INSERT INTO skills(name,description,current_version,updated_at)"
+            " VALUES('fixture-skill','',0,8900)"
+        )
+        skill_id = self.db.execute(
+            "SELECT id FROM skills WHERE name='fixture-skill'"
+        ).fetchone()[0]
+        self.db.execute(
+            "INSERT INTO member_skills(member_id,skill_id) VALUES(?,?)",
+            (worker_id, skill_id),
+        )
+        self.db.execute(
+            "UPDATE desktop_lock SET holder='worker',task_id=NULL,acquired_at=8900"
+            " WHERE id=1"
+        )
+        self.db.commit()
+        result = self._remove("worker")
+        self.assertEqual(result["transfers_expired"], 1)
+        self.assertEqual(result["skills_cleared"], 1)
+        self.assertTrue(result["lock_released"])
+        self.assertEqual(
+            self.db.execute("SELECT status FROM task_transfers").fetchone()[0],
+            "expired",
+        )
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM member_skills").fetchone()[0], 0
+        )
+        self.assertIsNone(
+            self.db.execute(
+                "SELECT holder FROM desktop_lock WHERE id=1"
+            ).fetchone()[0]
+        )
+        self.assertEqual(
+            self.db.execute(
+                "SELECT COUNT(*) FROM audit WHERE action='desktop_auto_release'"
+            ).fetchone()[0], 1
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
