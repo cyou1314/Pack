@@ -49,7 +49,7 @@ actor OpenAIResponsesAdapter: AgentAdapter {
         self.baseURL = url
         self.model = model
         self.agentID = configuration.agentID
-        return AgentConnectionState(status: .connected, checkedAt: Date(), message: "OpenAI Responses API configured")
+        return AgentConnectionState(status: .configured, checkedAt: Date(), message: "Keychain credential loaded; live API request not yet verified")
     }
 
     func probeCapabilities() async throws -> Set<AgentCapability> {
