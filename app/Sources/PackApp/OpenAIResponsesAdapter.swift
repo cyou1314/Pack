@@ -40,10 +40,11 @@ actor OpenAIResponsesAdapter: AgentAdapter {
         let key = try Self.readKeychain(service: credential.keychainService, account: credential.account)
         let endpoint = configuration.endpoint ?? "https://api.openai.com/v1"
         guard let url = URL(string: endpoint),
-              url.host != nil,
+              let host = url.host?.lowercased(),
               url.user == nil, url.password == nil,
-              url.scheme?.lowercased() == "https" else {
-            throw AgentAdapterError.invalidConfiguration("OpenAI endpoint must be HTTPS and contain no credentials")
+              url.scheme?.lowercased() == "https"
+                || (url.scheme?.lowercased() == "http" && ["localhost", "127.0.0.1", "::1"].contains(host)) else {
+            throw AgentAdapterError.invalidConfiguration("OpenAI endpoint must use HTTPS or loopback HTTP and contain no credentials")
         }
         self.apiKey = key
         self.baseURL = url
