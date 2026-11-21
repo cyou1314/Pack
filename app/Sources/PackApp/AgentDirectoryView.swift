@@ -42,6 +42,13 @@ final class AgentWorkspaceState: ObservableObject {
             sessionIDs = Dictionary(uniqueKeysWithValues: profiles.compactMap { profile in
                 profile.lastSessionID.map { (profile.id, $0) }
             })
+            for profile in profiles {
+                let messages = try await manager.chatMessages(agentID: profile.id)
+                chatOutputs[profile.id] = messages.map { message in
+                    let prefix = message.role == "user" ? "你：" : (message.role == "assistant" ? "\(profile.displayName)：" : "系统：")
+                    return "\(prefix)\n\(message.content)"
+                }.joined(separator: "\n\n")
+            }
             if selectedAgentID == nil { selectedAgentID = profiles.first?.id }
             note = "Agent 配置已从本机数据库加载"
         } catch {
@@ -118,12 +125,16 @@ final class AgentWorkspaceState: ObservableObject {
         Task {
             defer { isSending = false }
             do {
+                try await manager.appendChatMessage(agentID: profile.id, role: "user", content: text)
                 let run = try await manager.sendMessage(agentID: profile.id, text: text, sessionID: sessionIDs[profile.id] ?? profile.lastSessionID)
                 let stream = try await manager.streamEvents(for: run)
                 var responseID: String?
+                var assistantText = ""
                 for try await event in stream {
                     if event.kind == .messageDelta {
-                        chatOutputs[profile.id, default: ""] += event.text ?? ""
+                        let delta = event.text ?? ""
+                        assistantText += delta
+                        chatOutputs[profile.id, default: ""] += delta
                     }
                     if let detail = event.detail, detail.hasPrefix("session_id=") {
                         let sessionID = String(detail.dropFirst("session_id=".count))
@@ -131,6 +142,10 @@ final class AgentWorkspaceState: ObservableObject {
                         sessionIDs[profile.id] = sessionID
                         try await manager.updateSessionID(agentID: profile.id, sessionID: sessionID)
                     }
+                }
+                if !assistantText.isEmpty {
+                    try await manager.appendChatMessage(agentID: profile.id, role: "assistant", content: assistantText)
+                    chatOutputs[profile.id, default: ""] += "\n"
                 }
                 if let responseID {
                     note = "回复完成；会话续接 ID 已就绪"
@@ -151,6 +166,7 @@ final class AgentWorkspaceState: ObservableObject {
                 profiles = try await manager.profiles()
                 self.selectedAgentID = profiles.first?.id
                 chatOutputs.removeValue(forKey: selectedAgentID)
+                sessionIDs.removeValue(forKey: selectedAgentID)
                 note = "Agent 配置已移除"
             } catch {
                 self.error = error.localizedDescription
