@@ -1010,6 +1010,7 @@ private struct ApprovalCard: View {
     var pending: Bool { state.pendingApprovals.contains { $0.id == message.id } }
     var reason: Binding<String> { Binding(get: { state.rejectReasons[task.id] ?? "" }, set: { state.rejectReasons[task.id] = $0 }) }
     private var decision: RoomMessage? { state.approvalDecision(for: message) }
+    private var canCreateScopedRule: Bool { state.canCreateScopedApprovalRule(for: task) }
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
             if pending {
@@ -1019,9 +1020,16 @@ private struct ApprovalCard: View {
                 TextField("拒绝原因（可选）", text: reason).textFieldStyle(.roundedBorder).font(DesignTokens.fontSmall)
                 HStack(spacing: DesignTokens.detailSpacing) {
                     Button("仅这一次") { state.approveTask(task.id) }.buttonStyle(.borderedProminent).tint(DesignTokens.blue)
-                    Button("总是允许") { state.approveAlways(task, requestID: message.id) }.buttonStyle(.bordered)
+                    Button("总是允许") { state.approveAlways(task, requestID: message.id) }
+                        .buttonStyle(.bordered)
+                        .disabled(!canCreateScopedRule)
+                        .help("需要任务包含动作标记（如 [ENG]）并指派成员")
                     Button("拒绝") { state.rejectTask(task.id) }.buttonStyle(.bordered).foregroundStyle(DesignTokens.danger)
                 }.font(DesignTokens.fontSmall).disabled(state.decisionsPending.contains(task.id))
+                if !canCreateScopedRule {
+                    Text("总是允许需要明确的动作标记（如 [ENG]）和已指派成员；当前可选择仅批准这一次。")
+                        .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                }
             } else if let decision {
                 Text(decision.body.hasPrefix("批准") ? (decision.body.contains("规则库") ? "✓ 已批准 · 规则自动通过" : (state.alwaysRuleSucceeded.contains(message.id) ? "✓ 已批准 · 总是允许" : "✓ 已批准 · 仅这一次")) : "已拒绝").font(DesignTokens.fontSmall)
             } else {

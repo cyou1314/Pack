@@ -1220,9 +1220,28 @@ final class AppState: ObservableObject {
     }
 
     func approveTask(_ tid: Int) { decideTask(tid, approve: true) }
+
+    /// A persistent allow rule must be scoped to both a concrete action tag
+    /// and an assigned member. Empty keys are wildcards in the Hub rule engine.
+    func canCreateScopedApprovalRule(for task: PackTask) -> Bool {
+        guard let target = task.assignee?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !target.isEmpty else { return false }
+        guard let pattern = try? NSRegularExpression(pattern: #"\[[A-Za-z0-9_-]+\]"#) else {
+            return false
+        }
+        let range = NSRange(task.title.startIndex..., in: task.title)
+        return pattern.firstMatch(in: task.title, range: range) != nil
+    }
+
     func approveAlways(_ task: PackTask, requestID: Int) {
+        guard canCreateScopedApprovalRule(for: task) else {
+            alwaysRuleErrors[requestID] = "总是允许需要明确的动作标记（如 [ENG]）和已指派成员；为避免创建通配规则，当前任务未被批准。"
+            return
+        }
+        alwaysRuleErrors[requestID] = nil
         decideTask(task.id, approve: true, always: (requestID, task.title, task.assignee))
     }
+
     func rejectTask(_ tid: Int) { decideTask(tid, approve: false) }
 
     private func decideTask(_ tid: Int, approve: Bool, always: (requestID: Int, title: String, assignee: String?)? = nil) {

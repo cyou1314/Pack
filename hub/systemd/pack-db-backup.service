@@ -2,4 +2,10 @@
 Description=Pack hub DB daily backup + integrity check
 [Service]
 Type=oneshot
+User=hatch
+Group=hatch
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
 ExecStart=/home/hatch/workspace/pack/hub/backup-db.sh

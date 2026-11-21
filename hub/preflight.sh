@@ -3,8 +3,6 @@
 # 检查：静态资产（命令/文件/令牌权限）/ systemd 五件 / DB 完整性 /
 # 中枢 MCP 应答与工具数 / 仓库同步与干净 / 备份新鲜度与可验证性。
 # Mac 半边（App 基线构建、Codex 额度）不在此列，见 UI-IMPL-BRIEF。
-# 静态段吸收自 PR #4 的静态检查版（2026-11-19 合并）：生产版为正本，
-# GPT 版的 systemd 可选段与仓库版部署口径不合，未吸收。
 set -u
 FAIL=0
 ok()   { printf '  ok  %s\n' "$1"; }
@@ -16,6 +14,7 @@ echo "[static]"
 for cmd in python3 sqlite3; do
   command -v "$cmd" >/dev/null 2>&1 && ok "command: $cmd" || bad "missing command: $cmd"
 done
+id hatch >/dev/null 2>&1 && ok "service account hatch present" || bad "service account hatch missing"
 [ -f "$HUB/hub.py" ] && ok "hub.py present" || bad "hub.py missing"
 [ -f "$HUB/room_watch.py" ] && ok "room_watch.py present" || bad "room_watch.py missing"
 [ -x "$HUB/.venv/bin/python" ] && ok "hub venv present" || bad "hub/.venv/bin/python missing"
@@ -34,6 +33,17 @@ echo "[services]"
 for u in pack-hub.service pack-tunnel.service pack-room-watch.service \
          pack-url-publisher.timer pack-db-backup.timer; do
   if systemctl is-active --quiet "$u"; then ok "$u active"; else bad "$u NOT active"; fi
+done
+for u in pack-hub.service pack-room-watch.service pack-tunnel.service \
+         pack-url-publisher.service pack-db-backup.service; do
+  SERVICE_USER=$(systemctl show -p User --value "$u" 2>/dev/null || true)
+  SERVICE_GROUP=$(systemctl show -p Group --value "$u" 2>/dev/null || true)
+  SERVICE_UMASK=$(systemctl show -p UMask --value "$u" 2>/dev/null || true)
+  if [ "$SERVICE_USER" = "hatch" ] && [ "$SERVICE_GROUP" = "hatch" ] && [ "$SERVICE_UMASK" = "0077" ]; then
+    ok "$u runs as hatch:hatch with UMask=0077"
+  else
+    bad "$u identity/umask mismatch (User=$SERVICE_USER Group=$SERVICE_GROUP UMask=$SERVICE_UMASK)"
+  fi
 done
 
 echo "[db]"
@@ -87,4 +97,4 @@ fi
 
 echo "----"
 [ "$FAIL" = "0" ] && echo "PREFLIGHT ALL GREEN" || echo "PREFLIGHT HAS FAILURES"
-exit $FAIL
+exit "$FAIL"
