@@ -994,9 +994,10 @@ def _week_start_cst(now=None, context: HubContext | None = None):
     monday = (current - _dt.timedelta(days=current.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0)
     return monday.timestamp()
-def sweep_once():
-    now = _now()
-    conn = db()
+def sweep_once(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    now = context.now()
+    conn = context.connect()
     # 待接受转交过期回收（与租约回收同节律、同在 sweep_once 内，不另起定时器）：
     # pending 转交超过 expires_at 仍未被接收方 task_accept_transfer 接受 →
     # 转交行标 expired；任务若仍挂在接收方名下（claimed/working 且令牌为空，
@@ -1028,7 +1029,7 @@ def sweep_once():
                     "UPDATE tasks SET status='open', assignee=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND claim_token IS NULL AND status IN ('claimed','working')",
                     (back_to, now, t["id"]))
                 requeued = cur.rowcount == 1
-        audit(conn, "sweeper", "transfer_expired",
+        context.audit(conn, "sweeper", "transfer_expired",
               f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
         n_expired += 1
     rows = conn.execute(
@@ -1045,9 +1046,9 @@ def sweep_once():
                                (now, t["id"], now))
             if cur.rowcount != 1:
                 continue
-            _close_run(conn, t["id"], "reaped", "sweeper")
-            _desktop_release_for_task(conn, t["id"], "sweeper", "max_attempts")
-            audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
+            _close_run(conn, t["id"], "reaped", "sweeper", context=context)
+            _desktop_release_for_task(conn, t["id"], "sweeper", "max_attempts", context=context)
+            context.audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
         else:
             nca = now + _backoff_seconds("transient", t["attempts"])
             # RT1（staging37）：回池保留原指派（成员已移除才解指派），
@@ -1056,9 +1057,9 @@ def sweep_once():
                                (nca, now, t["id"], now))
             if cur.rowcount != 1:
                 continue
-            _close_run(conn, t["id"], "reaped", "sweeper")
-            _desktop_release_for_task(conn, t["id"], "sweeper", "lease_expired")
-            audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
+            _close_run(conn, t["id"], "reaped", "sweeper", context=context)
+            _desktop_release_for_task(conn, t["id"], "sweeper", "lease_expired", context=context)
+            context.audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
             # 自动接力（§14.3）：原持有人掉线失联——回池后试着直接接力给合格
             # 成员。_auto_relay 的转交记账与 task_transfer 同账，为防与工具层
             # 的转交/接受竞态，记账段走 _lock 并复检任务仍是刚回池的状态。
@@ -1066,12 +1067,12 @@ def sweep_once():
                                       (t["assignee"],)).fetchone()
             holder_name = holder_row["name"] if holder_row else None
             if holder_name:
-                with _lock:
+                with context.lock:
                     t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
                     if (t2 and t2["status"] == "open" and (t2["assignee"] is None or t2["assignee"] == t["assignee"])
                             and t2["claim_token"] is None):
                         try:
-                            _auto_relay(conn, t2, holder_name, "掉线失联")
+                            _auto_relay(conn, t2, holder_name, "掉线失联", context=context)
                         except Exception:
                             pass  # 接力失败不连累本轮回收
     # staging48 未认领指派卡巡检（「让卡别躺死」，口径见 UNCLAIMED_* 常量）：
@@ -1115,14 +1116,14 @@ def sweep_once():
         cond_tag = ("A" if cond_a else "") + ("B" if cond_b else "")
         # 记账段走 _lock 并复检任务仍是扫描时的状态（与既有接力段同纪律），
         # 防与工具层的认领/转交竞态。
-        with _lock:
+        with context.lock:
             t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
             if (not t2 or t2["status"] != "open" or t2["assignee"] != t["assignee"]
                     or t2["claim_token"] is not None):
                 continue
             relayed = None
             try:
-                relayed = _auto_relay(conn, t2, t["a_name"], reason_label)
+                relayed = _auto_relay(conn, t2, t["a_name"], reason_label, context=context)
             except Exception:
                 relayed = None  # 接力失败不连累本轮巡检，落到升级判断
             if relayed:
@@ -1145,17 +1146,18 @@ def sweep_once():
                      f"任务#{t['id']} 指派给 {t['a_name']} 已超过宽限期未认领"
                      f"（{reason_label}），暂无可自动接力的成员，请调度员处理",
                      t["id"], now))
-            audit(conn, "sweeper", "task_unclaimed_escalate",
+            context.audit(conn, "sweeper", "task_unclaimed_escalate",
                   f"task {t['id']} assignee_id={t['assignee']} assignee={t['a_name']} cond={cond_tag} ")
     conn.commit()
     conn.close()
     return len(rows) + n_expired
 
 
-def sweeper():
+def sweeper(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
     while True:
         try:
-            sweep_once()
+            sweep_once(context)
         except Exception:
             pass
         time.sleep(60)
@@ -5250,10 +5252,11 @@ def build_server(context: HubContext | None = None):
     return mcp
 
 
-def serve():
-    init()
-    threading.Thread(target=sweeper, daemon=True).start()
-    mcp = build_server()
+def serve(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    init(context)
+    threading.Thread(target=sweeper, args=(context,), daemon=True).start()
+    mcp = build_server(context)
     mcp.run(transport="http", host=os.environ.get("PACK_HUB_HOST", "127.0.0.1"), port=PORT, path="/mcp")
 
 
