@@ -21,6 +21,48 @@ actor AgentManager {
         try await store.allProfiles()
     }
 
+    /// Rebuilds in-memory adapters from persisted profiles on app launch.
+    /// Missing Keychain entries remain visible as authentication-required profiles.
+    func restoreAdapters() async throws -> [AgentProfile] {
+        var restored: [AgentProfile] = []
+        for var profile in try await store.allProfiles() {
+            guard profile.providerID == "openai", profile.mode == .api else { continue }
+            guard let credential = profile.credential else {
+                profile.connection = AgentConnectionState(
+                    status: .authenticationRequired, checkedAt: Date(),
+                    message: "Keychain credential reference is missing"
+                )
+                profile.updatedAt = Date()
+                try await store.save(profile)
+                restored.append(profile)
+                continue
+            }
+            let adapter = OpenAIResponsesAdapter()
+            do {
+                let configuration = AgentAdapterConfiguration(
+                    agentID: profile.id, providerID: profile.providerID, mode: profile.mode,
+                    credential: credential, endpoint: profile.endpoint, model: profile.model,
+                    adapterVersion: profile.adapterVersion
+                )
+                let connection = try await adapter.connect(configuration: configuration)
+                profile.capabilities = try await adapter.probeCapabilities()
+                profile.connection = connection
+                profile.updatedAt = Date()
+                try await registry.register(adapter, for: profile.id)
+            } catch {
+                await adapter.disconnect()
+                profile.connection = AgentConnectionState(
+                    status: .authenticationRequired, checkedAt: Date(),
+                    message: "Could not restore the Keychain credential or adapter"
+                )
+                profile.updatedAt = Date()
+            }
+            try await store.save(profile)
+            restored.append(profile)
+        }
+        return restored
+    }
+
     /// Adds an OpenAI API profile. The API key is written to Keychain first;
     /// the SQLite profile stores only its Keychain reference.
     func addOpenAIProfile(
