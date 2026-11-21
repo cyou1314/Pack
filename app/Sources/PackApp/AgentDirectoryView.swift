@@ -9,7 +9,7 @@ final class AgentWorkspaceState: ObservableObject {
     @Published var apiKey = ""
     @Published var endpoint = ""
     @Published var chatInput = ""
-    @Published var chatOutput = ""
+    @Published var chatOutputs: [UUID: String] = [:]
     @Published var sessionIDs: [UUID: String] = [:]
     @Published var isAdding = false
     @Published var addSucceeded = false
@@ -94,7 +94,7 @@ final class AgentWorkspaceState: ObservableObject {
             defer { isTesting = false }
             do {
                 let response = try await manager.testConnection(agentID: selectedAgentID)
-                chatOutput += "\n[连接测试]\n" + response + "\n"
+                chatOutputs[selectedAgentID, default: ""] += "\n[连接测试]\n" + response + "\n"
                 profiles = try await manager.profiles()
                 note = "API 连接测试完成"
             } catch {
@@ -111,7 +111,7 @@ final class AgentWorkspaceState: ObservableObject {
         chatInput = ""
         isSending = true
         error = ""
-        chatOutput += "\n你：\n\(text)\n"
+        chatOutputs[profile.id, default: ""] += "\n你：\n\(text)\n"
         Task {
             defer { isSending = false }
             do {
@@ -120,7 +120,7 @@ final class AgentWorkspaceState: ObservableObject {
                 var responseID: String?
                 for try await event in stream {
                     if event.kind == .messageDelta {
-                        chatOutput += event.text ?? ""
+                        chatOutputs[profile.id, default: ""] += event.text ?? ""
                     }
                     if let detail = event.detail, detail.hasPrefix("session_id=") {
                         responseID = String(detail.dropFirst("session_id=".count))
@@ -145,7 +145,7 @@ final class AgentWorkspaceState: ObservableObject {
                 _ = try await manager.removeProfile(agentID: selectedAgentID)
                 profiles = try await manager.profiles()
                 self.selectedAgentID = profiles.first?.id
-                chatOutput = ""
+                chatOutputs.removeValue(forKey: selectedAgentID)
                 note = "Agent 配置已移除"
             } catch {
                 self.error = error.localizedDescription
@@ -233,7 +233,7 @@ struct AgentDirectoryView: View {
                 }.font(.system(size: 11))
                 Divider()
                 ScrollView {
-                    Text(state.chatOutput.isEmpty ? "发送一条消息，验证 Agent API 适配器。" : state.chatOutput)
+                    Text((state.chatOutputs[profile.id] ?? "").isEmpty ? "发送一条消息，验证 Agent API 适配器。" : (state.chatOutputs[profile.id] ?? ""))
                         .font(.system(size: 13, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
