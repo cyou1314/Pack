@@ -81,7 +81,9 @@ def export_mcp_tools() -> dict[str, Any]:
         name = _field(tool, "name")
         if not isinstance(name, str) or not name:
             raise RuntimeError(f"FastMCP returned a tool without a valid name: {tool!r}")
-        input_schema = _field(tool, "input_schema", "inputSchema")
+        # FastMCP 4's registered FunctionTool stores the generated JSON
+        # Schema as `parameters`; MCP wire Tool objects expose input_schema.
+        input_schema = _field(tool, "parameters", "input_schema", "inputSchema")
         if input_schema is None:
             raw = _jsonable(tool)
             input_schema = raw.get("inputSchema", raw.get("input_schema"))
