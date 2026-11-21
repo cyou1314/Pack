@@ -196,6 +196,9 @@ struct AgentProfile: Codable, Hashable, Identifiable, Sendable {
                   !credential.account.isEmpty else {
                 throw AgentAdapterError.invalidConfiguration("API Agent requires a valid Keychain credential reference")
             }
+            guard let model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw AgentAdapterError.invalidConfiguration("API Agent requires a model identifier")
+            }
         }
         if let endpoint {
             guard let url = URL(string: endpoint),
