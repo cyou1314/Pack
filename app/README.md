@@ -36,6 +36,8 @@ App 读取 `~/.pack/config.json`：
 
 ### 当前支持
 
+- 聊天展示：按消息角色渲染独立气泡，支持 SwiftUI `AttributedString` Markdown 基础解析与文本选择；代码高亮和附件消息仍未实现。
+
 - 清空会话：只清空当前会话消息并重置该会话 Response ID，不影响同 Agent 的其他会话。
 
 - 会话迁移：SQLite Schema v3 将旧版每 Agent 单聊天记录迁移到该 Agent 的“默认会话”，迁移在事务中执行；切换模型或 Endpoint 会清除该 Agent 的所有会话续接 ID。
