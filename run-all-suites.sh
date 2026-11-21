@@ -130,14 +130,16 @@ prepare_stage() {
   if [ "$with_hub" = "1" ]; then
     # Replace only the disposable copy. The source staging hub.py is untouched.
     cp "$HUB" "$work/hub.py"
-    # The production Hub may now import sibling core modules. Copy that package
-    # into the disposable stage too; historical staging sources stay immutable.
-    local hub_dir
+    # The production Hub imports sibling packages. Copy them into the
+    # disposable stage too; historical staging sources stay immutable.
+    local hub_dir package
     hub_dir="$(cd "$(dirname "$HUB")" && pwd)"
-    if [ -d "$hub_dir/core" ]; then
-      rm -rf "$work/core"
-      cp -a "$hub_dir/core" "$work/core"
-    fi
+    for package in core services; do
+      if [ -d "$hub_dir/$package" ]; then
+        rm -rf "$work/$package"
+        cp -a "$hub_dir/$package" "$work/$package"
+      fi
+    done
   fi
 
   rm -f "$work/pack.db" "$work/pack.db-wal" "$work/pack.db-shm" \

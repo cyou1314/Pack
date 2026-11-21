@@ -116,7 +116,10 @@ def export_mcp_tools() -> dict[str, Any]:
 
 def _copy_hub(destination: Path) -> Path:
     shutil.copy2(HUB_DIR / "hub.py", destination / "hub.py")
-    shutil.copytree(HUB_DIR / "core", destination / "core")
+    for package in ("core", "services"):
+        package_dir = HUB_DIR / package
+        if package_dir.is_dir():
+            shutil.copytree(package_dir, destination / package)
     return destination / "hub.py"
 
 
