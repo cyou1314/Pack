@@ -67,3 +67,68 @@ def get_room_summary(
         "updated_at": summary_row["updated_at"],
         "updated_by": summary_row["updated_by"],
     }
+
+
+DELETED_PLACEHOLDER = "\\uff08\\u5df2\\u5220\\u9664\\uff09"
+
+
+def read_new_messages(context, me, room: str, since_id: int = 0,
+                      limit: int = 50, tail: bool = False) -> dict[str, Any]:
+    """Read room messages with external-room and join-cursor restrictions."""
+        limit = max(1, min(int(limit), 200))
+        conn = context.connect()
+        r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+        if not r:
+            conn.close()
+            raise ValueError(f"no such room: {room}")
+        if (me.get("kind") or "") == "external":
+            if r["id"] != me["bound_room_id"]:
+                conn.close()
+                raise ValueError(
+                    "forbidden: external members may only read their bound room")
+            # 入群水位硬截断（件二）：external 的读路径强制
+            # effective_since = max(since_id, joined_msg_id)，传 0 也
+            # 翻不到入群前的历史。
+            since_id = max(int(since_id), me["joined_msg_id"] or 0)
+        if tail:
+            rows = conn.execute(
+                """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
+                          m.deleted_at, m.edited_at, m.payload, m.reply_to_id
+                   FROM messages m JOIN members mb ON mb.id=m.author_id
+                   WHERE m.room_id=? AND m.id>? ORDER BY m.id DESC LIMIT ?""",
+                (r["id"], since_id, limit)).fetchall()
+            rows = list(reversed(rows))
+        else:
+            rows = conn.execute(
+                """SELECT m.id, mb.name AS author, m.kind, m.body, m.task_id, m.created_at,
+                          m.deleted_at, m.edited_at, m.payload, m.reply_to_id
+                   FROM messages m JOIN members mb ON mb.id=m.author_id
+                   WHERE m.room_id=? AND m.id>? ORDER BY m.id ASC LIMIT ?""",
+                (r["id"], since_id, limit)).fetchall()
+        amap = {}
+        if rows:
+            mids = [x["id"] for x in rows]
+            q = ("SELECT id, message_id, mime, size, original_name FROM attachments "
+                 "WHERE message_id IN (%s) ORDER BY id" % ",".join("?" * len(mids)))
+            for a in conn.execute(q, mids).fetchall():
+                amap.setdefault(a["message_id"], []).append(
+                    {"id": a["id"], "mime": a["mime"], "size": a["size"],
+                     "filename": a["original_name"]})
+        conn.close()
+        out = []
+        for x in rows:
+            deleted = bool(x["deleted_at"])
+            out.append({
+                "id": x["id"], "author": x["author"], "kind": x["kind"],
+                # 已删消息只回占位文本（删除时 body 已替换，这里再兜底一层，
+                # 保证任何路径读到的都是占位、绝不漏原正文）
+                "body": DELETED_PLACEHOLDER if deleted else x["body"],
+                "task_id": x["task_id"], "created_at": x["created_at"],
+                "deleted": deleted, "edited": bool(x["edited_at"]),
+                "payload": None if deleted else x["payload"],
+                # staging55: reply_to_id readback (staging53 missed it here;
+                # inbox_pull had it). Deleted rows report None like payload.
+                "reply_to_id": None if deleted else x["reply_to_id"],
+                "attachments": amap.get(x["id"], []),
+            })
+        return {"messages": out}
