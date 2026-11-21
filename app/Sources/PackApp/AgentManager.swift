@@ -68,6 +68,7 @@ actor AgentManager {
             return profile
         } catch {
             await adapter.disconnect()
+            try? await store.remove(id: id)
             try? AgentCredentialVault.delete(credential)
             throw error
         }
@@ -132,22 +133,22 @@ actor AgentManager {
     func removeProfile(agentID: UUID) async throws -> Bool {
         guard let profile = try await store.profile(id: agentID) else { return false }
         let secret = try profile.credential.map { try AgentCredentialVault.read($0) }
-        _ = try await store.remove(id: agentID)
-        await registry.remove(agentID: agentID)
         if let credential = profile.credential {
-            do {
-                try AgentCredentialVault.delete(credential)
-            } catch {
-                if let secret {
-                    _ = try? AgentCredentialVault.store(
-                        secret: secret,
-                        service: credential.keychainService,
-                        account: credential.account
-                    )
-                }
-                throw error
-            }
+            try AgentCredentialVault.delete(credential)
         }
+        do {
+            _ = try await store.remove(id: agentID)
+        } catch {
+            if let credential = profile.credential, let secret {
+                _ = try? AgentCredentialVault.store(
+                    secret: secret,
+                    service: credential.keychainService,
+                    account: credential.account
+                )
+            }
+            throw error
+        }
+        await registry.remove(agentID: agentID)
         return true
     }
 
