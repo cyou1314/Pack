@@ -1,6 +1,6 @@
 # Pack Phase 4：模块边界与渐进拆分方案
 
-> 状态：设计盘点完成，尚未执行架构重构。  
+> 状态：执行中；policy/schema/storage 已提取，MCP 与 SQLite 契约快照已固定；HubContext 和领域迁移待完成。  
 > 原则：先冻结协议与数据契约，再按领域提取模块；不做大爆炸式重写。
 
 ## 1. 当前代码边界
@@ -9,7 +9,7 @@
 
 | 区域 | 当前文件 | 规模 | 现状 |
 |---|---|---:|---|
-| Hub 服务端 | `hub/hub.py` | 约 5,397 行 | 配置、DB、鉴权、审计和约 75 个 MCP tool 注册集中在一个服务入口/闭包中 |
+| Hub 服务端 | `hub/hub.py` | 约 5,221 行 | 配置、DB、鉴权、审计和 75 个 MCP tool 注册仍集中在服务入口/闭包；纯 policy/schema/storage 已开始外提 |
 | App 状态与入口 | `app/Sources/PackApp/PackApp.swift` | 约 1,366 行 | App 启动、AppState 和多个跨域状态操作集中 |
 | App 视图 | `app/Sources/PackApp/Views.swift` | 约 1,618 行 | ContentView 与大量功能视图/组件集中 |
 | 网络客户端 | `app/Sources/PackApp/HubClient.swift` | 约 362 行 | JSON-RPC 请求、连接、重试/超时等传输职责 |
@@ -93,46 +93,58 @@ hub/
 - 变更仅涉及当前领域；无关文件不格式化、不重构。
 - 有明确回滚点；回滚不要求用户迁移数据。
 
-## 6. 第一项可执行任务
+## 6. 第一项可执行任务（已完成）
 
-Phase 4 不应直接拆 5,000 行 Hub。第一项建议是：
+Phase 4 不应直接拆 5,000 行 Hub。第一项采用低风险提取样板：
 
 1. 将 Hub 纯 policy helper 提取到 `hub/core/policy.py`；
 2. 保留 `hub.py` 兼容导入，确保现有 tool closure 无需改变；
 3. 将 `hub/test_policy_helpers.py` 改为直接测试 policy 模块；
-4. 增加 MCP tool/schema snapshot，防止后续领域迁移改变协议；
+4. 增加 MCP tool/schema 与 SQLite schema/迁移快照，防止后续领域迁移改变协议；
 5. CI 全绿后，再抽取 `HubContext`。
+
+以上 1–4 已完成；第 5 项尚未开始。
 
 这一步改动面小，能验证模块边界和测试方法，为后续拆分建立样板。
 
 
 ## 7. 执行记录（2026-11-21）
 
-Phase 4 已开始执行，当前完成的是“纯策略层提取”样板，尚未进入 HubContext 与领域工具迁移。
+Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/访问层和契约冻结样板；尚未迁移 MCP 领域工具，也未改变 SQLite 的运行语义。
 
-### 已落地
+### 已落地的模块边界
 
-- 新增 `hub/core/policy.py`，独立承载无数据库副作用的策略原语：
-  - 动作标记识别、访问模式归一、失败退避、执行体固定标记；
-  - URL/域名规范化、域名覆盖关系、任务文本 host 提取；
-  - 审批规则候选优先级、出口规则最具体匹配选择。
-- `hub.py` 保留原函数名作为兼容导入；数据库查询、审计写入和权限闸门仍留在服务层。
-- 新增 `hub/test_policy.py`，对纯策略和 Hub 数据库适配器分别测试；原有 `hub/test_policy_helpers.py` 保留。
-- CI 增加纯策略测试；`run-all-suites.sh` 在每个临时隔离套件中同时复制 Hub 的 `core/` 包，历史 staging 源目录不变。
-- 修复审查发现的两个部署问题：恢复 `hub/publish-url.sh` 可执行位；将 URL 校验重新内置到单文件 `runtime/pack-agent.mjs`，并增加独立安装回归测试。
+- `hub/core/policy.py`：纯策略函数，包括 action tag、access mode、退避、executor pinning、egress host/domain 规则和规则优先级选择。
+- `hub/core/schema.py`：集中存放原 `hub.py` 中的 SQLite 基础 `SCHEMA` 常量；`hub.py` 通过兼容导入继续调用。
+- `hub/core/storage.py`：集中存放 SQLite 连接配置和 audit insert 原语；`hub.py` 保留 `db()` / `audit()` 兼容入口，事务提交仍由调用方负责。
+- `hub/test_policy.py`、`hub/test_storage.py`：覆盖纯策略、egress rule adapter、WAL/busy_timeout 和 audit 事务边界。
+- `hub/export_contracts.py`：从实际 FastMCP 注册表和临时 SQLite 初始化数据库生成契约，不从手写清单推测工具接口。
+- `hub/contracts/`：已提交 MCP 工具和 SQLite schema/迁移基线；更新规则见同目录 README。
 
-### 当前验证状态
+### 契约快照基线
 
-- Python 编译、Hub 单元测试：已通过最近一次 CI。
-- Runtime 语法与单元测试：已通过。
-- macOS App 构建、Swift 单元测试：已通过最近一次 CI。
-- 完整默认 staging 回归：正在由最新提交重新验证；此前失败已定位为隔离测试目录漏复制 `hub/core/`，不是历史 staging 源码损坏。
-- 用户 Mac 的 LaunchAgent、Keychain、DMG 和真实登录态验收：尚未开始，继续遵守“仓库整改完成后再跑本机”的顺序。
+- MCP：当前实际注册 **75 个工具**，快照包括名称、描述、输入 JSON Schema 和输出 JSON Schema。
+- SQLite：fresh init 与 legacy fixture upgrade 均得到 **24 张表**；快照覆盖列、索引、外键和触发器。
+- Legacy fixture 验证既有 member/token hash、room、message、task 和 task transfer 数据保留；旧 transfer 状态会按当前迁移逻辑回填为 `accepted`。
+- `python hub/export_contracts.py --check` 已接入 CI；CI 只检查，不自动改写快照。
+- 快照导出使用临时目录复制 `hub.py` 与 `hub/core/`，不会接触开发机或生产 Hub 数据库。
+
+### 兼容与安全修复
+
+- `run-all-suites.sh` 在每个隔离 staging 副本中复制整个 `hub/core/` 包；历史 staging 源目录保持不变。
+- 恢复 `hub/publish-url.sh` 的 Git 可执行权限。
+- 将 URL 校验内置回单文件 `runtime/pack-agent.mjs`，保持现有外部 Agent 单文件安装方式，并增加独立安装回归测试。
+- 两条对应的 P1 代码审查意见已回复并解决。
+
+### 自动化验证
+
+- Run #313：Hub 单测、17 组默认 staging、Runtime、Swift build/test、App Bundle 检查全部通过。
+- Run #320：Hub 单元测试、MCP/SQLite 契约快照检查、Runtime 测试和 macOS App 构建/测试均通过；该轮默认 staging 回归当时仍在运行。
+- 用户 Mac 的 LaunchAgent、Keychain、DMG、真实账号登录态和数据恢复验收尚未开始，继续遵守“仓库整改完成后再跑本机”的顺序。
 
 ### 下一步（未完成）
 
-1. 再跑通完整 staging 回归，确认新模块在全部隔离套件中可导入。
-2. 建立 MCP 工具名称/参数 Schema 快照与 SQLite schema/迁移快照。
-3. 建立显式 `HubContext`，逐步移除对全局 DB/config/actor/audit 的隐式依赖。
-4. 按 members/rooms、tasks/approvals/rules、attachments/memory/skills、desktop/runtime 顺序逐域迁移。
-5. 完成 Hub 拆分后，再拆 Swift Core、Transport、Store 与 Feature UI。
+1. 建立显式 `HubContext`，统一 DB 路径/连接工厂、clock、lock、attachment root 和 audit 依赖；先做可注入测试，不移动领域逻辑。
+2. 逐步让认证、actor 身份和审计通过 context 传递，移除隐式全局依赖。
+3. 按 members/rooms、tasks/approvals/rules、attachments/memory/skills、desktop/runtime 顺序逐域迁移，每次保持 tool schema 快照无意外差异。
+4. 完成 Hub 领域层后，再拆 Swift Core、Transport、Store 与 Feature UI。
