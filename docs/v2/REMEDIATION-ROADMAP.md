@@ -1,6 +1,6 @@
 # Pack 仓库系统性整改路线图
 
-> 状态：执行中  
+> 状态：仓库级安全与打包质量门禁已通过 CI；真实 Mac/VM 与完整 DMG 验收仍待执行  
 > 基线：PR #6 `codex/pack-v2-foundation-20261121` @ `23c52203d69be0b47eb5ce58833aa1a55d9e19fe`  
 > 整改分支：`codex/pack-repository-remediation-20261121`  
 > 原则：先完成仓库级整改与 CI 验收，再进行用户 Mac 本机部署和端到端验收。
@@ -54,7 +54,7 @@
 - [x] 更新服务安装脚本：使用脚本相对路径安装 unit；reload 后确保长驻服务重启，令新权限真正生效。
 - [x] 将 Hub “总是允许” UI 限制为明确的动作标记 + 指派成员；无明确范围时只允许单次批准，不自动创建空 action 通配规则。
 - [x] 为 systemd unit 策略和安装脚本增加静态回归测试。
-- [ ] 复核本地服务 LaunchAgent 的权限与卸载边界。
+- [x] 复核本地服务 LaunchAgent 的权限与卸载边界：安装/卸载路径拒绝符号链接，卸载前验证 plist 身份和启动命令。
 
 验收：所有系统服务的运行身份和 umask 有自动化检查；安装脚本语法检查通过；未标记任务不能通过 App 创建通配自动批准规则；原有显式规则库语义保持兼容。
 
@@ -76,12 +76,12 @@
 
 - [x] 将 `runtime/l2-handoff/engine.test.cjs` 纳入 CI。
 - [x] Node 语法检查覆盖 `.cjs` 文件。
-- [ ] 盘点归档 staging 中仍代表当前安全边界的测试；只迁移有明确现行价值的用例，不直接恢复全部历史套件。
-- [ ] 为 Hub 的权限、审批、规则通配、任务状态转换和并发边界建立正式测试。
+- [x] 盘点并选择当前有效 staging 回归：默认 CI 执行 staging 15–19、23–24、38–46；其余历史快照继续隔离。
+- [ ] 为 Hub 的权限、审批、规则通配、任务状态转换和并发边界建立完整正式测试。（已覆盖访问模式、审批持有人/dispatcher、action_tag/rule_eval；任务状态与并发仍主要由 staging 集成回归覆盖，待进一步独立化。）
 - [x] 为 PackCore 增加 Swift 测试 Target，覆盖凭证迁移、Keychain 故障、Hub URL 与重定向策略。
 - [x] 增加配置目录权限与符号链接拒绝的回归测试。
-- [ ] 将审批规则范围逻辑抽为可独立测试的纯函数，并补充对应单元测试。
-- [x] 增加安装脚本和 systemd 单元的自动检查；DMG 内容清单与版本元数据检查仍待补齐。
+- [x] 将审批规则范围逻辑抽为 PackCore 纯函数，并补充单元测试。
+- [x] 增加安装脚本、systemd/LaunchAgent 和 DMG 内容/版本元数据的自动检查。
 
 验收：关键安全逻辑进入 CI；每项安全修复都有正向和反向测试；历史快照仍隔离，不污染默认回归链。
 
@@ -150,7 +150,34 @@
 - 未验证：真实 Mac Keychain ACL、不同安装用户/自定义 `PACK_CONFIG_PATH` 场景，以及真实用户目录的权限修复。
 - 回滚：回退本批 PackConfig 与 PackConfigTests 两个文件的提交；已被收紧为 0700 的目录权限不会自动放宽。
 
-## 7. 每批交付记录格式
+## 7. 第三批：审批范围与 LaunchAgent 安全边界（2026-11-21）
+
+- PackCore 新增 `ApprovalRuleScope`：从任务标题提取与 Hub 相同格式的首个动作标记，并要求明确指派成员；空 action/target 不会生成通配规则。
+- AppState 在单次批准前构造并验证规则范围，后续 `rule_upsert` 直接使用同一份已验证范围，避免 UI 校验与实际写入二次解析不一致。
+- 新增 Swift 单元测试，覆盖首个动作标记、允许字符、非法/空标记、空白成员和目标名称清理。
+- `local/install-local.sh` 安装前拒绝符号链接根目录、已有 Hub 目录、已存在 plist 和已加载的同名服务；创建私有数据目录。
+- `local/uninstall-local.sh` 在任何 bootout 前验证所有目录和 plist 的 Label、launcher、ProgramArguments；遇到无法确认归属的已加载服务时拒绝操作。只删除明确的程序文件和 venv，保留数据库、凭证、附件、备份。
+- `installer/manager.py` 对 `~/.pack`、Library、LaunchAgents、Hub、Engine、配置和 socket 路径增加安全预检；卸载前精确校验每个 LaunchAgent 的入口参数；Pack 数据根目录固定为 0700。
+- Runtime LaunchAgent 显式设置 umask 077；本地 LaunchAgent 模板继续保持私有 umask。
+- 自动化测试：`installer/test_launch_agent_safety.py`；CI 增加本地 shell 语法、Python 编译和安装/卸载边界测试。
+
+验收：GitHub Actions [Run #139](https://github.com/cyou1314/Pack/actions/runs/44873563806) 全部通过，包含 Hub 默认 staging 回归、Runtime 和 macOS App 构建。
+
+## 8. 第四批：DMG 构建可复现与版本清单（2026-11-21）
+
+- `app/make-bundle.sh` 支持显式输出路径；目标已存在或为符号链接时拒绝覆盖，不再删除工作区内已有的 `Pack.app`。
+- `installer/build-dmg.sh` 直接在临时 staging 目录调用 bundle builder，不再依赖仓库里预先存在的 `app/Pack.app`。
+- `Info.plist` 增加 `CFBundleVersion`；DMG 根目录生成 `BUILD-MANIFEST.txt`，记录 App 版本/构建号、最低 macOS 版本、Python/FastMCP/Engine 版本和源码提交。
+- 打包前检查 Hub/Engine payload 中已知数据库、Cookie、Token、Vault、Session 等用户数据文件；打包后执行 `hdiutil verify` 并输出 SHA-256。
+- 新增 `installer/test_dmg_manifest.py`；macOS CI 实际构建 Pack.app，并执行 plist 与代码签名验证。
+
+验收：GitHub Actions [Run #141](https://github.com/cyou1314/Pack/actions/runs/44874307272) 全部通过，三个 Job 均为 success。CI 已真实构建并验证 App Bundle，但**没有实际生成 DMG**；完整 DMG 仍依赖目标 Mac 上的 Python 3.12 Runtime、锁定依赖 venv、Engine 目录和 `hdiutil`，必须在隔离 Mac 上单独验收。
+
+## 9. Phase 4 拆分前的代码边界盘点
+
+当前规模与目标模块边界见 [PHASE4-MODULE-BOUNDARIES.md](PHASE4-MODULE-BOUNDARIES.md)。本阶段尚未开始改动 Hub/App 大型文件；先冻结 MCP tool/数据库契约，再逐个提取纯逻辑和领域模块。
+
+## 10. 每批交付记录格式
 
 每批 PR/提交必须记录：
 
