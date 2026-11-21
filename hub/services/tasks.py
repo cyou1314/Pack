@@ -1,4 +1,4 @@
-"""Read-only task history services; authentication stays in the MCP tool layer."""
+"""Task domain services; MCP registration and authorization stay in hub.py."""
 from __future__ import annotations
 
 import json

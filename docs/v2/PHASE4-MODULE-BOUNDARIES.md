@@ -173,3 +173,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 
 - 任务列表 MCP task_list 已迁至 hub/services/tasks.py；保持原有排序、状态多选、队列序号、退避展示、外部成员房间/指派约束及分页语义，并通过 try/finally 关闭数据库连接。
 - hub/test_tasks_service.py 增补优先级与多状态组合、JSON envelope、退避时间、外部成员越权过滤及跨越 100 条分页的全队列序号测试；安装包 smoke test 检查 task_list 工具仍可注册。
+
+
+### 任务写入迁移：创建、加急与排班（2026-11-22）
+
+- task_create 与 task_set_urgent 已迁入 hub/services/tasks.py；保持原 MCP 工具声明、dispatcher 鉴权、审计名称和输出结构。task_create 的任务记录、task_card 消息与审计在同一事务提交。
+- task_schedule 已迁入任务服务；保持业务时钟下的未来排班约束、next_claim_at 与 sched_at 同步写入、仅允许在册 AI member、external 绑定房间及 executor-pinned 任务禁止指派等规则。
+- hub/test_tasks_write.py 覆盖创建/加急/排班成功和拒绝路径、重复加急审计、wall/business clock 差异，以及任务卡插入失败时的事务回滚。
+- hub/test_packaging.py 确认隔离运行包仍注册 task_create、task_set_urgent、task_schedule 这三个原 MCP 工具。
+- 认领租约、任务完成与审批状态机尚未迁移；完整 macOS 本机安装及登录态验收仍按原计划后置。
