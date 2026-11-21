@@ -378,6 +378,9 @@ final class AgentWorkspaceState: ObservableObject {
                 for conversation in conversations { messagesByConversation.removeValue(forKey: conversation.id) }
                 conversations = []
                 selectedConversationID = nil
+                if let nextAgentID = self.selectedAgentID {
+                    await loadConversations(for: nextAgentID)
+                }
                 note = "Agent 配置已移除"
             } catch {
                 self.error = error.localizedDescription
