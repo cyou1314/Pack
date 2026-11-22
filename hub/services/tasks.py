@@ -571,3 +571,114 @@ def block_task(context, member, task_id: int, claim_token: str, reason: str,
         }
     finally:
         conn.close()
+
+
+def review_task(context, member, task_id: int, approve: bool,
+                note: str = "", *, backoff_seconds) -> dict:
+    """Accept or reject a review without overwriting concurrent state changes.
+
+    Authorization to use this dispatcher-only tool stays at the MCP boundary.
+    All state and audit changes share a SQLite transaction.
+    """
+    conn = context.connect()
+    try:
+        task = conn.execute(
+            "SELECT status,fail_class,attempts FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        if not task:
+            raise ValueError(f"no such task: {task_id}")
+        if task["status"] != "review":
+            raise ValueError(
+                f"task {task_id} not in review (status={task['status']})"
+            )
+        now = context.now()
+        if approve:
+            changed = conn.execute(
+                "UPDATE tasks SET status='done', review_note=?, "
+                "fail_class=NULL, next_claim_at=NULL, updated_at=? "
+                "WHERE id=? AND status='review'",
+                (note, now, task_id),
+            )
+        else:
+            fail_category = task["fail_class"] or "unknown"
+            next_claim_at = now + backoff_seconds(
+                fail_category, task["attempts"]
+            )
+            changed = conn.execute(
+                "UPDATE tasks SET status='open', "
+                "assignee=CASE WHEN EXISTS(SELECT 1 FROM members "
+                "WHERE id=tasks.assignee AND removed_at IS NULL) "
+                "THEN assignee ELSE NULL END, "
+                "review_note=?, next_claim_at=?, updated_at=? "
+                "WHERE id=? AND status='review'",
+                (note, next_claim_at, now, task_id),
+            )
+        if changed.rowcount != 1:
+            raise ValueError(f"task {task_id} not in review (status=changed)")
+        if not approve:
+            context.audit(
+                conn, member["name"], "task_review_backoff",
+                f"task {task_id} fail_class={fail_category} next_claim_at={next_claim_at:.0f}",
+            )
+        context.audit(
+            conn, member["name"], "task_review",
+            f"task {task_id} approve={approve}",
+        )
+        conn.commit()
+        return {"task_id": task_id, "status": "done" if approve else "open"}
+    finally:
+        conn.close()
+
+
+def cancel_task(context, member, task_id: int, *,
+                close_run, desktop_release_for_task) -> dict:
+    """Cancel a nonterminal task with atomic run/desktop cleanup and audit.
+
+    Repeated cancels and already-done tasks keep the legacy no-op audit.
+    A guarded UPDATE cannot clobber a task changed to done or cancelled
+    after the initial state read.
+    """
+    conn = context.connect()
+    try:
+        task = conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (task_id,),
+        ).fetchone()
+        if not task:
+            raise ValueError(f"no such task: {task_id}")
+        if task["status"] in ("done", "cancelled"):
+            context.audit(
+                conn, member["name"], "task_cancel_noop",
+                f"task {task_id} already {task['status']}",
+            )
+            conn.commit()
+            return {"task_id": task_id, "status": task["status"]}
+
+        changed = conn.execute(
+            "UPDATE tasks SET status='cancelled', claim_token=NULL, "
+            "lease_expires=NULL, updated_at=? "
+            "WHERE id=? AND status NOT IN ('done','cancelled')",
+            (context.clock(), task_id),
+        )
+        if changed.rowcount != 1:
+            latest = conn.execute(
+                "SELECT status FROM tasks WHERE id=?", (task_id,),
+            ).fetchone()
+            if latest and latest["status"] in ("done", "cancelled"):
+                context.audit(
+                    conn, member["name"], "task_cancel_noop",
+                    f"task {task_id} already {latest['status']}",
+                )
+                conn.commit()
+                return {"task_id": task_id, "status": latest["status"]}
+            raise ValueError(f"task {task_id} changed while cancelling")
+
+        close_run(conn, task_id, "cancelled", member["name"])
+        desktop_release_for_task(conn, task_id, member["name"], "cancel")
+        context.audit(
+            conn, member["name"], "task_cancel", f"task {task_id}",
+        )
+        conn.commit()
+        return {"task_id": task_id, "status": "cancelled"}
+    finally:
+        conn.close()

@@ -221,3 +221,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 对自动接力增加 SQLite SAVEPOINT 隔离：接力发生写入异常时回滚接力部分变更，不再允许失败的转交/分配写入随 block 事务提交；任务 block 和额度审计仍保留。
 - 新增 `hub/test_task_block.py` 七项隔离 DB 测试：正常报卡+run/锁清理、失败类别退避、权限/错令牌、quota 无候选、quota 自动接力、部分接力写入失败回滚、关闭 run 异常回滚。
 - CI 增加单测，打包 smoke test 增加 `task_block` 工具注册；未修改 SQLite schema、MCP 契约或真实用户数据。
+
+
+### 调度员任务验收与取消迁移（2026-11-22）
+
+- 将 `task_review` / `task_cancel` 的权限后置服务迁入 `hub/services/tasks.py`。MCP 原签名、docstring、dispatcher 权限校验保持在 `hub.py`，没有新 MCP 工具，也未变更 SQLite schema。
+- `review_task` 保留 approve 时状态 done 并清理失败类别/退避；reject 时状态 open、保留 attempts、按 fail_class 或 unknown 重算 backoff；旧成员被移除时重新释放 assignee。
+- `cancel_task` 保留 done/cancelled 的审计型幂等返回；其他状态取消、run 关闭、desktop lock 释放、取消审计仍在单笔 SQLite 事务内提交。
+- 收紧任务状态写入：review 的 UPDATE 增加 `status='review'` 条件，cancel 的 UPDATE 排除 `done/cancelled`，核对 rowcount 并拒绝覆盖并发变更；移除原早返与异常路径遗漏的连接关闭。
+- 新增 `hub/test_task_review_cancel.py` 九项隔离数据库测试（批准、拒绝及退避、已移除 assignee、非法状态、审计失败回滚、取消 run/桌面锁、重复取消审计、缺失任务、释放异常整体回滚）。
+- CI 接入新测试；安装包 FastMCP 注册 smoke test 追加 task_review / task_cancel。

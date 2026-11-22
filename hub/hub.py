@@ -1645,6 +1645,8 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import update_task as _update_task
         from .services.tasks import complete_task as _complete_task
         from .services.tasks import block_task as _block_task
+        from .services.tasks import review_task as _review_task
+        from .services.tasks import cancel_task as _cancel_task
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
@@ -1656,6 +1658,8 @@ def build_server(context: HubContext | None = None):
         from services.tasks import update_task as _update_task
         from services.tasks import complete_task as _complete_task
         from services.tasks import block_task as _block_task
+        from services.tasks import review_task as _review_task
+        from services.tasks import cancel_task as _cancel_task
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3086,56 +3090,21 @@ def build_server(context: HubContext | None = None):
         attempts 重算退避 next_claim_at（合成清单第 3 项），到期才可再认领。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        if t["status"] != "review":
-            conn.close()
-            raise ValueError(f"task {task_id} not in review (status={t['status']})")
-        now = _now()
-        if approve:
-            conn.execute("UPDATE tasks SET status='done', review_note=?, fail_class=NULL, next_claim_at=NULL, updated_at=? WHERE id=?",
-                         (note, now, task_id))
-        else:
-            fc = t["fail_class"] or "unknown"
-            nca = now + _backoff_seconds(fc, t["attempts"])
-            conn.execute(
-                "UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, review_note=?, next_claim_at=?, updated_at=? WHERE id=?",
-                (note, nca, now, task_id))
-            audit(conn, me["name"], "task_review_backoff", f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
-        audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "done" if approve else "open"}
+        return _review_task(
+            context, me, task_id, approve, note,
+            backoff_seconds=_backoff_seconds,
+        )
 
     @mcp.tool
     def task_cancel(task_id: int) -> dict:
         """dispatcher cancels an unfinished task: status=cancelled, claim freed."""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        if t["status"] in ("done", "cancelled"):
-            # D3 (staging43): 早返也留审计，重复/误取消不再无痕。
-            audit(conn, me["name"], "task_cancel_noop",
-                  f"task {task_id} already {t['status']}")
-            conn.commit()
-            conn.close()
-            return {"task_id": task_id, "status": t["status"]}
-        conn.execute(
-            "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
-            (context.clock(), task_id))
-        _close_run(conn, task_id, "cancelled", me["name"])
-        _desktop_release_for_task(conn, task_id, me["name"], "cancel")
-        audit(conn, me["name"], "task_cancel", f"task {task_id}")
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "cancelled"}
+        return _cancel_task(
+            context, me, task_id,
+            close_run=_close_run,
+            desktop_release_for_task=_desktop_release_for_task,
+        )
 
     @mcp.tool
     def member_list() -> dict:
