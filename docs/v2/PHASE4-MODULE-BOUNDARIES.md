@@ -277,3 +277,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 超时后符合原接力条件时继续走 `_auto_relay`，使用既有 context.lock 并复检状态；自动接力失败新增 SAVEPOINT：只撤销失败的转交/指派部分写入，保留本轮合法的超时回收与审计。
 - 新增 `hub/test_lease_reaper.py` 八项隔离 DB 测试：正常回池与 Run/桌面锁、尝试上限、移除指派、未到期跳过、成功自动接力、部分接力失败回滚、Run 关闭异常回滚、重复扫描计数；加入 CI。
 - Mac 安装器、LaunchAgent、Keychain、权限白名单、MCP 和 SQLite 契约未改动；后续继续拆分未认领任务巡检。
+
+
+### 未认领任务巡检服务迁移（2026-11-22）
+
+- 将 `sweep_once` 的 open 且已指派任务巡检拆到 `hub/services/tasks.py:inspect_unclaimed_tasks`，保留原 `HubContext`、SQLite 连接、60 秒 sweeper、既有 MCP/表结构、审计类型和返回计数。
+- 原宽限期（内部 240 秒、external 2700 秒）、心跳陈旧 300 秒、候选配额新鲜度、额度触顶条件与 executor-pinned 排除继续有效；检查顺序保持「已到期 + 过宽限 + 失联或额度高 + 无 pending」。
+- 接力记账段依旧使用 `context.lock`，重新核查任务状态/assignee/claim_token，并复检 pending；best-effort 自动接力使用 SAVEPOINT，避免异常时已经写入的转交、任务状态或消息被最终 sweeper 事务一同提交。
+- 接力失败且无其他候选时仍按「task id + assignee id」升级一次；维持原消息和 `task_unclaimed_escalate` 审计格式。新测试 `hub/test_unclaimed_sweeper.py` 覆盖过期/重复告警、有效自动接力、时间/标记/待转交/额度/外部成员约束及失败接力回滚。
+- 此批保持 Mac 部署冻结，不修改 Agent、UI、安装器、Keychain 或数据库迁移；后续先继续 Hub 消息模块，再推进 Agent/Computer/UI。

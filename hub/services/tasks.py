@@ -1241,3 +1241,125 @@ def reap_expired_leases(context, conn, now: float, *, max_attempts: int,
             finally:
                 conn.execute("RELEASE SAVEPOINT pack_lease_auto_relay")
     return len(rows)
+
+
+def inspect_unclaimed_tasks(context, conn, now: float, *,
+                            is_executor_pinned, auto_relay,
+                            grace_seconds: int,
+                            external_grace_seconds: int,
+                            heartbeat_stale_seconds: int,
+                            quota_fresh_seconds: int,
+                            quota_headroom: float) -> None:
+    """Escalate abandoned assigned open tasks or try a permitted relay.
+
+    The caller owns the sweep connection/commit and task/transfer audit
+    transaction. Keep the existing policy thresholds and message text.
+    A failing relay must not leak half-written transfer/task changes.
+    """
+    unclaimed = conn.execute(
+        """SELECT t.*, m.name AS a_name, m.last_heartbeat AS a_hb,
+                  m.quota_week_used_pct AS a_pct, m.quota_updated_at AS a_quota_at,
+                  m.kind AS a_kind
+             FROM tasks t JOIN members m ON m.id=t.assignee
+            WHERE t.status='open' AND t.assignee IS NOT NULL
+              AND m.removed_at IS NULL
+              AND (t.next_claim_at IS NULL OR t.next_claim_at<=?)""",
+        (now,),
+    ).fetchall()
+    for task in unclaimed:
+        if is_executor_pinned(task["title"], task["body"]):
+            continue
+        eligible_at = max(
+            task["updated_at"] or 0,
+            task["next_claim_at"] or 0,
+            task["sched_at"] or 0,
+        )
+        grace = (external_grace_seconds
+                 if (task["a_kind"] or "") == "external" else grace_seconds)
+        if eligible_at + grace > now:
+            continue
+        heartbeat_stale = (
+            task["a_hb"] is None
+            or now - task["a_hb"] > heartbeat_stale_seconds
+        )
+        quota_exhausted = (
+            task["a_quota_at"] is not None
+            and now - task["a_quota_at"] <= quota_fresh_seconds
+            and task["a_pct"] is not None
+            and task["a_pct"] >= quota_headroom
+        )
+        if not (heartbeat_stale or quota_exhausted):
+            continue
+        pending = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_transfers "
+            "WHERE task_id=? AND status='pending'",
+            (task["id"],),
+        ).fetchone()["n"]
+        if pending:
+            continue
+
+        reason = (
+            "指派人失联未认领" if heartbeat_stale else "指派人额度见底未认领"
+        )
+        cond_tag = ("A" if heartbeat_stale else "") + (
+            "B" if quota_exhausted else ""
+        )
+        with context.lock:
+            current = conn.execute(
+                "SELECT * FROM tasks WHERE id=?", (task["id"],),
+            ).fetchone()
+            if (not current or current["status"] != "open"
+                    or current["assignee"] != task["assignee"]
+                    or current["claim_token"] is not None):
+                continue
+            # A transfer could have been created since the initial scan.
+            pending_now = conn.execute(
+                "SELECT 1 FROM task_transfers "
+                "WHERE task_id=? AND status='pending' LIMIT 1",
+                (task["id"],),
+            ).fetchone()
+            if pending_now:
+                continue
+            # Relay is best-effort. Isolate its writes from the guaranteed
+            # requeue/alert transaction, including partial transfer inserts.
+            conn.execute("SAVEPOINT pack_unclaimed_auto_relay")
+            relayed = None
+            try:
+                relayed = auto_relay(
+                    conn, current, task["a_name"], reason,
+                )
+            except Exception:
+                conn.execute("ROLLBACK TO SAVEPOINT pack_unclaimed_auto_relay")
+            finally:
+                conn.execute("RELEASE SAVEPOINT pack_unclaimed_auto_relay")
+            if relayed:
+                continue
+            seen = conn.execute(
+                "SELECT COUNT(*) AS n FROM audit "
+                "WHERE action='task_unclaimed_escalate' "
+                "AND detail LIKE ?",
+                (f"task {task['id']} assignee_id={task['assignee']} %",),
+            ).fetchone()["n"]
+            if seen:
+                continue
+            dispatcher = conn.execute(
+                "SELECT id FROM members WHERE role='dispatcher'"
+            ).fetchone()
+            if dispatcher:
+                conn.execute(
+                    "INSERT INTO messages("
+                    "room_id,author_id,kind,body,task_id,created_at) "
+                    "VALUES(?,?,'chat',?,?,?)",
+                    (
+                        current["room_id"], dispatcher["id"],
+                        f"任务#{task['id']} 指派给 {task['a_name']} "
+                        f"已超过宽限期未认领（{reason}），"
+                        "暂无可自动接力的成员，请调度员处理",
+                        task["id"], now,
+                    ),
+                )
+            context.audit(
+                conn, "sweeper", "task_unclaimed_escalate",
+                f"task {task['id']} assignee_id={task['assignee']} "
+                f"assignee={task['a_name']} cond={cond_tag} ",
+            )

@@ -64,6 +64,7 @@ import time
 if __package__:
     from .services.tasks import expire_pending_transfers as _expire_pending_transfers
     from .services.tasks import reap_expired_leases as _reap_expired_leases
+    from .services.tasks import inspect_unclaimed_tasks as _inspect_unclaimed_tasks
     from .core.schema import SCHEMA
     from .core.context import HubContext
     from .core.policy import (
@@ -77,6 +78,7 @@ if __package__:
 else:
     from services.tasks import expire_pending_transfers as _expire_pending_transfers
     from services.tasks import reap_expired_leases as _reap_expired_leases
+    from services.tasks import inspect_unclaimed_tasks as _inspect_unclaimed_tasks
     from core.schema import SCHEMA
     from core.context import HubContext
     from core.policy import (
@@ -1014,79 +1016,17 @@ def sweep_once(context: HubContext | None = None):
         ),
         auto_relay=functools.partial(_auto_relay, context=context),
     )
-    # staging48 未认领指派卡巡检（「让卡别躺死」，口径见 UNCLAIMED_* 常量）：
-    # 只处理 next_claim_at 已到期/未设的卡；可认领时刻 eligible_at 取
-    # updated_at、next_claim_at、sched_at 三者最大值，过宽限期才判断。
-    # 钉死卡（标题开头或正文含执行体标记，沿用 _auto_relay 的不接力口径）
-    # 与已有 pending 转交（正在等人接受）的卡一律不碰。
-    unclaimed = conn.execute(
-        """SELECT t.*, m.name AS a_name, m.last_heartbeat AS a_hb,
-                  m.quota_week_used_pct AS a_pct, m.quota_updated_at AS a_quota_at,
-                  m.kind AS a_kind
-             FROM tasks t JOIN members m ON m.id=t.assignee
-            WHERE t.status='open' AND t.assignee IS NOT NULL AND m.removed_at IS NULL
-              AND (t.next_claim_at IS NULL OR t.next_claim_at<=?)""",
-        (now,)).fetchall()
-    for t in unclaimed:
-        if _is_executor_pinned(t["title"], t["body"]):
-            continue
-        eligible_at = max(t["updated_at"] or 0, t["next_claim_at"] or 0,
-                          t["sched_at"] or 0)
-        # staging51：external 靠定时 check-in（默认 15 分钟）维持在线，
-        # 240s 宽限必误报——其指派卡宽限放宽到 UNCLAIMED_GRACE_EXTERNAL
-        # （45 分钟，覆盖 3 个签到周期）再升级；接力路径仍排除 external
-        # （_auto_relay 候选已排除），超限走既有升级提示兜底。
-        grace = UNCLAIMED_GRACE_EXTERNAL if (t["a_kind"] or "") == "external" \
-            else UNCLAIMED_GRACE
-        if eligible_at + grace > now:
-            continue
-        cond_a = t["a_hb"] is None or (now - t["a_hb"]) > UNCLAIMED_HEARTBEAT_STALE
-        cond_b = (t["a_quota_at"] is not None
-                  and (now - t["a_quota_at"]) <= RELAY_QUOTA_FRESH
-                  and t["a_pct"] is not None and t["a_pct"] >= RELAY_QUOTA_HEADROOM)
-        if not (cond_a or cond_b):
-            continue
-        pend = conn.execute(
-            "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=? AND status='pending'",
-            (t["id"],)).fetchone()["n"]
-        if pend:
-            continue
-        reason_label = "指派人失联未认领" if cond_a else "指派人额度见底未认领"
-        cond_tag = ("A" if cond_a else "") + ("B" if cond_b else "")
-        # 记账段走 _lock 并复检任务仍是扫描时的状态（与既有接力段同纪律），
-        # 防与工具层的认领/转交竞态。
-        with context.lock:
-            t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
-            if (not t2 or t2["status"] != "open" or t2["assignee"] != t["assignee"]
-                    or t2["claim_token"] is not None):
-                continue
-            relayed = None
-            try:
-                relayed = _auto_relay(conn, t2, t["a_name"], reason_label, context=context)
-            except Exception:
-                relayed = None  # 接力失败不连累本轮巡检，落到升级判断
-            if relayed:
-                continue
-            # 无合格候选：不清指派、只升级一次。去重按「任务+指派人」查
-            # 审计（detail 由本段写死格式，精确前缀匹配不会串到别的任务）；
-            # 指派人变更后可对新指派人再升级一次。
-            seen = conn.execute(
-                "SELECT COUNT(*) AS n FROM audit WHERE action='task_unclaimed_escalate'"
-                " AND detail LIKE ?",
-                (f"task {t['id']} assignee_id={t['assignee']} %",)).fetchone()["n"]
-            if seen:
-                continue
-            disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
-            if disp:
-                conn.execute(
-                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)"
-                    " VALUES(?,?,'chat',?,?,?)",
-                    (t2["room_id"], disp["id"],
-                     f"任务#{t['id']} 指派给 {t['a_name']} 已超过宽限期未认领"
-                     f"（{reason_label}），暂无可自动接力的成员，请调度员处理",
-                     t["id"], now))
-            context.audit(conn, "sweeper", "task_unclaimed_escalate",
-                  f"task {t['id']} assignee_id={t['assignee']} assignee={t['a_name']} cond={cond_tag} ")
+    # Scan open assigned tasks with the original grace/quota/heartbeat policy.
+    _inspect_unclaimed_tasks(
+        context, conn, now,
+        is_executor_pinned=_is_executor_pinned,
+        auto_relay=functools.partial(_auto_relay, context=context),
+        grace_seconds=UNCLAIMED_GRACE,
+        external_grace_seconds=UNCLAIMED_GRACE_EXTERNAL,
+        heartbeat_stale_seconds=UNCLAIMED_HEARTBEAT_STALE,
+        quota_fresh_seconds=RELAY_QUOTA_FRESH,
+        quota_headroom=RELAY_QUOTA_HEADROOM,
+    )
     conn.commit()
     conn.close()
     return n_leases + n_expired
