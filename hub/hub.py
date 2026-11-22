@@ -1643,6 +1643,7 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import schedule_task as _schedule_task
         from .services.tasks import claim_task as _claim_task
         from .services.tasks import update_task as _update_task
+        from .services.tasks import complete_task as _complete_task
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
@@ -1652,6 +1653,7 @@ def build_server(context: HubContext | None = None):
         from services.tasks import schedule_task as _schedule_task
         from services.tasks import claim_task as _claim_task
         from services.tasks import update_task as _update_task
+        from services.tasks import complete_task as _complete_task
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3047,75 +3049,12 @@ def build_server(context: HubContext | None = None):
         与状态更新同事务，任一不合规整笔回滚、任务保持 working。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            t0 = _holder(conn, me, task_id, claim_token)
-            if _is_external(me) and t0["room_id"] != me["bound_room_id"]:
-                raise ValueError("forbidden: task is outside the bound room")
-            env = None
-            stored = result
-            if envelope is not None:
-                env, problems = _validate_envelope(envelope)
-                if problems:
-                    conn.close()
-                    raise ValueError(json.dumps(
-                        {"error": "invalid_envelope", "task_id": task_id,
-                         "problems": problems}, ensure_ascii=False))
-                stored = env["summary"]
-            now = context.clock()
-            cur = conn.execute(
-                "UPDATE tasks SET status='review', result=?, envelope=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND assignee=? AND claim_token=?",
-                (stored, json.dumps(env, ensure_ascii=False) if env else None, now, task_id,
-                 me["id"], claim_token))
-            if cur.rowcount != 1:
-                conn.close()
-                raise ValueError("not the current holder (claim_token mismatch)")
-            _close_run(conn, task_id, "completed", me["name"])
-            _desktop_release_for_task(conn, task_id, me["name"], "complete")
-            t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
-            cur = conn.execute(
-                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
-                (t["room_id"], me["id"], f"交活 任务#{task_id}: {stored}", task_id, now))
-            mid = cur.lastrowid
-            n_att = 0
-            if attachment_ids:
-                # 交活绑附件（staging46）：与 room_post 同口径、同事务；
-                # 任一不合规整笔回滚（状态更新与 report 均不落库）。
-                try:
-                    ids = json.loads(attachment_ids)
-                except Exception:
-                    conn.rollback()
-                    conn.close()
-                    raise ValueError("attachment_ids must be a JSON array of ids")
-                if (not isinstance(ids, list) or not ids or len(ids) > 4
-                        or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
-                        or len(set(ids)) != len(ids)):
-                    conn.rollback()
-                    conn.close()
-                    raise ValueError("attachment_ids must be 1-4 unique integer ids")
-                for aid in ids:
-                    cur2 = conn.execute(
-                        "UPDATE attachments SET message_id=? WHERE id=? AND message_id IS NULL AND room_id=? AND uploader_id=?",
-                        (mid, aid, t["room_id"], me["id"]))
-                    if cur2.rowcount != 1:
-                        conn.rollback()
-                        conn.close()
-                        raise ValueError(f"attachment {aid} cannot be bound")
-                n_att = len(ids)
-            audit(conn, me["name"], "task_complete",
-                  f"task {task_id}" + (f" verdict={env['verdict']}" if env else "")
-                  + (f" attachments={n_att}" if n_att else ""))
-            conn.commit()
-            conn.close()
-            out = {"task_id": task_id, "status": "review"}
-            if n_att:
-                out["attachments"] = n_att
-            if env:
-                out["verdict"] = env["verdict"]
-                out["envelope"] = env
-            return out
-        finally:
-            conn.close()
+        return _complete_task(
+            context, me, task_id, claim_token, result, envelope, attachment_ids,
+            validate_envelope=_validate_envelope,
+            close_run=_close_run,
+            desktop_release_for_task=_desktop_release_for_task,
+        )
 
     @mcp.tool
     def task_block(task_id: int, claim_token: str, reason: str, fail_class: str = "") -> dict:

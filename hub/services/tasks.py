@@ -419,3 +419,81 @@ def update_task(context, member, task_id: int, claim_token: str, note: str = "",
         finally:
             # Exceptions must roll back both the task transition and report.
             conn.close()
+
+
+def complete_task(context, member, task_id: int, claim_token: str, result: str,
+                  envelope: dict | None = None, attachment_ids: str = "", *,
+                  validate_envelope, close_run, desktop_release_for_task) -> dict:
+    """Atomically finish a held task, including run, lock, report and attachments."""
+    conn = context.connect()
+    try:
+        task = _current_holder(conn, member, task_id, claim_token)
+        if (member.get("kind") or "") == "external" and task["room_id"] != member["bound_room_id"]:
+            raise ValueError("forbidden: task is outside the bound room")
+        env = None
+        stored = result
+        if envelope is not None:
+            env, problems = validate_envelope(envelope)
+            if problems:
+                raise ValueError(json.dumps(
+                    {"error": "invalid_envelope", "task_id": task_id,
+                     "problems": problems}, ensure_ascii=False))
+            stored = env["summary"]
+        now = context.clock()
+        cur = conn.execute(
+            "UPDATE tasks SET status='review', result=?, envelope=?, "
+            "claim_token=NULL, lease_expires=NULL, updated_at=? "
+            "WHERE id=? AND assignee=? AND claim_token=?",
+            (stored, json.dumps(env, ensure_ascii=False) if env else None,
+             now, task_id, member["id"], claim_token),
+        )
+        if cur.rowcount != 1:
+            raise ValueError("not the current holder (claim_token mismatch)")
+        close_run(conn, task_id, "completed", member["name"])
+        desktop_release_for_task(conn, task_id, member["name"], "complete")
+        room = conn.execute(
+            "SELECT room_id FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        cur = conn.execute(
+            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
+            "VALUES(?,?,'report',?,?,?)",
+            (room["room_id"], member["id"], f"交活 任务#{task_id}: {stored}",
+             task_id, now),
+        )
+        message_id = cur.lastrowid
+        attachment_count = 0
+        if attachment_ids:
+            try:
+                ids = json.loads(attachment_ids)
+            except Exception as exc:
+                raise ValueError("attachment_ids must be a JSON array of ids") from exc
+            if (not isinstance(ids, list) or not ids or len(ids) > 4
+                    or any(not isinstance(aid, int) or isinstance(aid, bool) for aid in ids)
+                    or len(set(ids)) != len(ids)):
+                raise ValueError("attachment_ids must be 1-4 unique integer ids")
+            for aid in ids:
+                cur = conn.execute(
+                    "UPDATE attachments SET message_id=? "
+                    "WHERE id=? AND message_id IS NULL AND room_id=? AND uploader_id=?",
+                    (message_id, aid, room["room_id"], member["id"]),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError(f"attachment {aid} cannot be bound")
+            attachment_count = len(ids)
+        context.audit(
+            conn, member["name"], "task_complete",
+            f"task {task_id}"
+            + (f" verdict={env['verdict']}" if env else "")
+            + (f" attachments={attachment_count}" if attachment_count else ""),
+        )
+        conn.commit()
+        out = {"task_id": task_id, "status": "review"}
+        if attachment_count:
+            out["attachments"] = attachment_count
+        if env:
+            out["verdict"] = env["verdict"]
+            out["envelope"] = env
+        return out
+    finally:
+        # SQLite rolls back uncommitted task/report/run/lock/attachment changes.
+        conn.close()

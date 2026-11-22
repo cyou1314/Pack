@@ -201,3 +201,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 写入报告消息失败时由连接关闭回滚任务状态；清理原实现的重复 close 分支。
 - 增加 `hub/test_task_update.py` 七个隔离 DB 测试：普通续租/报告、无备注、持有人拒绝、external 边界、频控审计、写入故障回滚和并发限流，并接入 CI。
 - 本次不迁移 `task_complete`、`task_block`、审批与转交；无需数据库迁移或客户端接口变更。
+
+
+### 任务完成服务迁移（2026-11-22）
+
+- `task_complete` 的持有人校验、envelope 校验、任务状态转 review、run 关闭、desktop lock 释放、report 消息、附件绑定与审计迁入 `hub/services/tasks.py:complete_task`。
+- 原 MCP 名称、输入/输出、文档说明和成员权限闸不变；继续使用原 constant-time token 比对及带 assignee/claim_token 条件的 UPDATE。
+- 交付写入各步骤使用同一 SQLite 事务；附件部分绑定、报告消息写入或审计失败时关闭连接回滚，不留下孤立的 review 状态、已关闭 run 或已释放的桌面锁。
+- 新增 `hub/test_task_complete.py` 七项测试：纯文本交活及 run/桌面锁、结构化 envelope、无效 envelope、合法附件、部分附件回滚、report 插入失败回滚、错误 token 与 external 跨房限制。
+- CI 增加该测试，安装包 smoke test 覆盖 task_claim / task_update / task_complete；不修改数据库 schema 或真实部署。
+- `task_block` 的 quota 耗尽与自动接力保持在 `hub.py`，下一批单独迁移。
