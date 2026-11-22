@@ -101,9 +101,9 @@ class RoomPostServiceTests(unittest.TestCase):
         a, b = self.make_attachment(), self.make_attachment()
         response = self.post(attachment_ids=json.dumps([a, b]))
         mid = response["message_id"]
-        self.assertEqual(self.db.execute(
+        self.assertEqual(tuple(self.db.execute(
             "SELECT body,kind FROM messages WHERE id=?", (mid,),
-        ).fetchone(), ("hello", "chat"))
+        ).fetchone()), ("hello", "chat"))
         attached = self.db.execute(
             "SELECT id,message_id FROM attachments ORDER BY id"
         ).fetchall()
@@ -130,7 +130,7 @@ class RoomPostServiceTests(unittest.TestCase):
             self.post(actor=self.guest, room="separate")
         self.assertEqual(self.count("messages"), before)
         with self.assertRaisesRegex(ValueError, "not allowed for external"):
-            self.post(actor=self.guest, kind="decision")
+            self.post(actor=self.guest, kind="question_answer")
         self.assertEqual(self.count("messages"), before)
 
     def test_external_question_denial_is_persistently_audited(self):
@@ -229,10 +229,10 @@ class RoomPostServiceTests(unittest.TestCase):
         answer = self.post(
             kind="question_answer", body="A", reply_to_id=question,
         )["message_id"]
-        self.assertEqual(self.db.execute(
+        self.assertEqual(tuple(self.db.execute(
             "SELECT reply_to_id,task_id FROM messages WHERE id=?",
             (answer,),
-        ).fetchone(), (question, tid))
+        ).fetchone()), (question, tid))
         with self.assertRaisesRegex(ValueError, "already answered"):
             self.post(kind="question_answer", body="B", reply_to_id=question)
 
