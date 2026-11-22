@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 
 
 def list_task_transfers(context, task_id: int) -> dict:
@@ -276,3 +277,70 @@ def schedule_task(context, actor, room: str, title: str, body: str,
         conn.close()
     return {"task_id": task_id, "status": "open",
             "assignee": member_name, "scheduled_at": float(at_epoch)}
+
+
+def claim_task(context, member, task_id: int, *, lease_seconds: int,
+               is_executor_pinned, desktop_release_for_task) -> dict:
+    """Atomically claim an eligible task and release its orphaned desktop lock.
+
+    Caller authenticates the member. The shared context lock must cover the
+    external-member checks and UPDATE together, preventing a reassignment or
+    executor-pinning TOCTOU window. No claim token is returned on failure.
+    """
+    conn = context.connect()
+    token = secrets.token_urlsafe(24)
+    now = context.now()
+    try:
+        with context.lock:
+            if (member.get("kind") or "") == "external":
+                task = conn.execute(
+                    "SELECT room_id,title,body,assignee FROM tasks WHERE id=?",
+                    (task_id,),
+                ).fetchone()
+                if task:
+                    if task["room_id"] != member["bound_room_id"]:
+                        raise ValueError("forbidden: task is outside the bound room")
+                    if task["assignee"] != member["id"]:
+                        raise ValueError(
+                            "forbidden: external members may only claim tasks assigned to themselves"
+                        )
+                    if is_executor_pinned(task["title"], task["body"]):
+                        raise ValueError("forbidden: executor-pinned task")
+            cursor = conn.execute(
+                """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
+                   lease_expires=?, attempts=attempts+1, next_claim_at=NULL,
+                   sched_at=NULL, updated_at=?
+                   WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)
+                     AND (next_claim_at IS NULL OR next_claim_at<=?)""",
+                (member["id"], token, now + lease_seconds, now,
+                 task_id, member["id"], now),
+            )
+            won = cursor.rowcount == 1
+            if won:
+                context.audit(conn, member["name"], "task_claim", f"task {task_id}")
+                # The previous owner may have left a stale desktop lock.
+                desktop_release_for_task(
+                    conn, task_id, member["name"], "orphan_on_claim"
+                )
+            conn.commit()
+        task = conn.execute(
+            "SELECT status,assignee,next_claim_at FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+    finally:
+        # Also close connections on forbidden claims and write/audit failures.
+        conn.close()
+
+    if not task:
+        raise ValueError(f"no such task: {task_id}")
+    if not won:
+        if task["status"] == "open" and task["next_claim_at"] and task["next_claim_at"] > now:
+            raise ValueError(
+                f"claim failed: task {task_id} in backoff until {task['next_claim_at']:.0f} "
+                f"(retry_after={task['next_claim_at'] - now:.0f}s)"
+            )
+        raise ValueError(f"claim failed: task {task_id} status={task['status']}")
+    return {
+        "task_id": task_id, "status": "claimed",
+        "claim_token": token, "lease_expires": now + lease_seconds,
+    }

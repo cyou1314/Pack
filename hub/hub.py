@@ -1641,6 +1641,7 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import create_task as _create_task
         from .services.tasks import set_task_urgent as _set_task_urgent
         from .services.tasks import schedule_task as _schedule_task
+        from .services.tasks import claim_task as _claim_task
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
@@ -1648,6 +1649,7 @@ def build_server(context: HubContext | None = None):
         from services.tasks import create_task as _create_task
         from services.tasks import set_task_urgent as _set_task_urgent
         from services.tasks import schedule_task as _schedule_task
+        from services.tasks import claim_task as _claim_task
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -2997,58 +2999,12 @@ def build_server(context: HubContext | None = None):
         执行体据此跳过该任务。返回 claim_token，后续更新凭它。"""
         me = authenticate()
         require(me)
-        conn = db()
-        tok = secrets.token_urlsafe(24)
-        now = _now()
-        with _lock:
-            if _is_external(me):
-                # 件二：external 只许认领绑定房内、指派给本人、非引擎
-                # 标记的卡（未指派卡不许抢）。staging51 红队修复：
-                # 前置检查在 _lock 内、用同一 conn 重读任务行后紧贴
-                # 原子 UPDATE 执行——原实现锁外预检与锁内 UPDATE
-                # 之间存在 TOCTOU 窗口（预检通过后任务被改派/改
-                # 正文即可绕过三条限制）。拒绝口径与既有 claim
-                # 失败区分开（forbidden 前缀）。
-                t0 = conn.execute(
-                    "SELECT room_id, title, body, assignee FROM tasks WHERE id=?",
-                    (task_id,)).fetchone()
-                if t0:
-                    if t0["room_id"] != me["bound_room_id"]:
-                        conn.close()
-                        raise ValueError("forbidden: task is outside the bound room")
-                    if t0["assignee"] != me["id"]:
-                        conn.close()
-                        raise ValueError(
-                            "forbidden: external members may only claim tasks assigned to themselves")
-                    if _is_executor_pinned(t0["title"], t0["body"]):
-                        conn.close()
-                        raise ValueError("forbidden: executor-pinned task")
-            cur = conn.execute(
-                """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
-                   lease_expires=?, attempts=attempts+1, next_claim_at=NULL, sched_at=NULL, updated_at=?
-                   WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)
-                     AND (next_claim_at IS NULL OR next_claim_at<=?)""",
-                (me["id"], tok, now + LEASE_SECONDS, now, task_id, me["id"], now))
-            won = cur.rowcount == 1
-            if won:
-                audit(conn, me["name"], "task_claim", f"task {task_id}")
-                # 防御：本任务名下若还挂着一把没放干净的旧锁（各出口本应
-                # 已放，此处兜底），新认领开始前清掉，免得新持有人被
-                # 自己任务的残锁挡住。
-                _desktop_release_for_task(conn, task_id, me["name"], "orphan_on_claim")
-            conn.commit()
-        t = conn.execute("SELECT status, assignee, next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
-        conn.close()
-        if not t:
-            raise ValueError(f"no such task: {task_id}")
-        if not won:
-            if t["status"] == "open" and t["next_claim_at"] and t["next_claim_at"] > now:
-                raise ValueError(
-                    f"claim failed: task {task_id} in backoff until {t['next_claim_at']:.0f} "
-                    f"(retry_after={t['next_claim_at'] - now:.0f}s)")
-            raise ValueError(f"claim failed: task {task_id} status={t['status']}")
-        return {"task_id": task_id, "status": "claimed", "claim_token": tok,
-                "lease_expires": now + LEASE_SECONDS}
+        return _claim_task(
+            context, me, task_id,
+            lease_seconds=LEASE_SECONDS,
+            is_executor_pinned=_is_executor_pinned,
+            desktop_release_for_task=_desktop_release_for_task,
+        )
 
     def _holder(conn, me, task_id, claim_token):
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()

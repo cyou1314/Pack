@@ -182,3 +182,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - hub/test_tasks_write.py 覆盖创建/加急/排班成功和拒绝路径、重复加急审计、wall/business clock 差异，以及任务卡插入失败时的事务回滚。
 - hub/test_packaging.py 确认隔离运行包仍注册 task_create、task_set_urgent、task_schedule 这三个原 MCP 工具。
 - 认领租约、任务完成与审批状态机尚未迁移；完整 macOS 本机安装及登录态验收仍按原计划后置。
+
+
+### 任务认领原子性迁移（2026-11-22）
+
+- `task_claim` 的任务写入迁入 `hub/services/tasks.py:claim_task`；`hub.py` 仍保留同名 MCP 工具声明、鉴权、文档字符串和返回结构。
+- 外部成员绑定房间、本人指派、executor-pinned 检查仍与单条 CAS UPDATE 位于 `HubContext.lock` 同一临界区，避免 TOCTOU；认领成功的审计和遗留桌面锁清理仍处于同一事务。
+- 新实现使用注入的 `HubContext.now()` 业务时钟与既有 `LEASE_SECONDS`，并用 `try/finally` 保证拒绝分支及 DB 异常也关闭连接。
+- 新增 `hub/test_task_claim.py`，覆盖单人认领、拒绝与退避、external 约束、遗留锁清理、故障回滚、双线程竞争；接入 CI。
+- 本批不迁移 `task_update`、`task_complete`、`task_block`、转交和批准状态机；保留后续逐批验收边界。
