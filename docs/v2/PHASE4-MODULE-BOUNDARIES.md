@@ -268,3 +268,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 重复启动仍先提交 `run_fence_reject` 审计再抛错；成功启动的 Run 与 `run_start` 审计同事务。运行结束继续只关闭 Run、不改变任务状态；完成/失败/中止 outcome 保持原白名单，`run_close` 审计失败时回滚状态。
 - 新增 `hub/test_run_lifecycle.py` 八项隔离 DB 测试：开始/关闭及 fence 增长、重复启动审计、outcome 白名单及无 Run、错误 token/任务状态、external 跨房限制、启动/结束审计失败回滚、双线程竞争；纳入 CI 与运行时复制 smoke test。
 - 本批不改 SQLite schema、75 个 MCP 工具契约，不修改 Mac 安装路径、启动参数或客户端设置。
+
+
+### 租约超时回收服务迁移（2026-11-22）
+
+- `sweep_once` 过期 claim 回收迁入 `hub/services/tasks.py:reap_expired_leases`，继续由原 sweeper 按 60 秒轮询，复用原 SQLite 连接和最终事务提交；不新增 MCP 工具、计时器或数据库表。
+- 收紧回收 UPDATE：要求任务仍为 claimed/working、原 assignee/claim_token 未变、lease_expires 仍过期，避免旧扫描结果清理已续租或被转交的任务。达到 MAX_ATTEMPTS 转 blocked；其余保留有效 assignee、标 fail_class=transient、按原 backoff 重算 next_claim_at。Run 关闭、desktop 释放与审计仍在调用方事务。
+- 超时后符合原接力条件时继续走 `_auto_relay`，使用既有 context.lock 并复检状态；自动接力失败新增 SAVEPOINT：只撤销失败的转交/指派部分写入，保留本轮合法的超时回收与审计。
+- 新增 `hub/test_lease_reaper.py` 八项隔离 DB 测试：正常回池与 Run/桌面锁、尝试上限、移除指派、未到期跳过、成功自动接力、部分接力失败回滚、Run 关闭异常回滚、重复扫描计数；加入 CI。
+- Mac 安装器、LaunchAgent、Keychain、权限白名单、MCP 和 SQLite 契约未改动；后续继续拆分未认领任务巡检。

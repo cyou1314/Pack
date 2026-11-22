@@ -1151,3 +1151,93 @@ def finish_run(context, member, task_id: int, claim_token: str,
             }
         finally:
             conn.close()
+
+
+def reap_expired_leases(context, conn, now: float, *, max_attempts: int,
+                        backoff_seconds, close_run,
+                        desktop_release_for_task, auto_relay) -> int:
+    """Reap expired task claims inside the sweeper's existing transaction.
+
+    The count is the number of expired claims scanned, as in the original
+    sweep_once contract. Running runs, desktop locks and audit records are
+    updated with the task, never committed independently of the caller.
+    """
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE status IN ('claimed','working') "
+        "AND lease_expires IS NOT NULL AND lease_expires<?",
+        (now,),
+    ).fetchall()
+    for task in rows:
+        # Recheck state, owner, token and expiration at the write boundary.
+        # A renewed lease or a replacement claimant must never be reaped.
+        guard = (
+            " WHERE id=? AND status IN ('claimed','working') "
+            "AND assignee IS ? AND claim_token IS ? "
+            "AND lease_expires IS NOT NULL AND lease_expires<?"
+        )
+        conditions = (
+            task["id"], task["assignee"], task["claim_token"], now
+        )
+        if task["attempts"] >= max_attempts:
+            changed = conn.execute(
+                "UPDATE tasks SET status='blocked', claim_token=NULL, "
+                "lease_expires=NULL, fail_class='transient', "
+                "next_claim_at=NULL, updated_at=?" + guard,
+                (now, *conditions),
+            )
+            if changed.rowcount != 1:
+                continue
+            close_run(conn, task["id"], "reaped", "sweeper")
+            desktop_release_for_task(
+                conn, task["id"], "sweeper", "max_attempts"
+            )
+            context.audit(
+                conn, "sweeper", "task_blocked_max_attempts",
+                f"task {task['id']} fail_class=transient",
+            )
+            continue
+
+        next_claim_at = now + backoff_seconds("transient", task["attempts"])
+        changed = conn.execute(
+            "UPDATE tasks SET status='open', "
+            "assignee=CASE WHEN EXISTS("
+            "SELECT 1 FROM members WHERE id=tasks.assignee "
+            "AND removed_at IS NULL) THEN assignee ELSE NULL END, "
+            "claim_token=NULL, lease_expires=NULL, fail_class='transient', "
+            "next_claim_at=?, updated_at=?" + guard,
+            (next_claim_at, now, *conditions),
+        )
+        if changed.rowcount != 1:
+            continue
+        close_run(conn, task["id"], "reaped", "sweeper")
+        desktop_release_for_task(
+            conn, task["id"], "sweeper", "lease_expired"
+        )
+        context.audit(
+            conn, "sweeper", "lease_expired_requeue",
+            f"task {task['id']} attempts={task['attempts']} "
+            f"fail_class=transient next_claim_at={next_claim_at:.0f}",
+        )
+        holder = conn.execute(
+            "SELECT name FROM members WHERE id=?", (task["assignee"],),
+        ).fetchone()
+        if not holder:
+            continue
+        with context.lock:
+            current = conn.execute(
+                "SELECT * FROM tasks WHERE id=?", (task["id"],),
+            ).fetchone()
+            if not (current and current["status"] == "open"
+                    and current["assignee"] in (None, task["assignee"])
+                    and current["claim_token"] is None):
+                continue
+            # If a best-effort relay has already inserted a transfer before
+            # failing, roll that attempt back without losing the requeue.
+            conn.execute("SAVEPOINT pack_lease_auto_relay")
+            try:
+                auto_relay(conn, current, holder["name"], "掉线失联")
+            except Exception:
+                conn.execute("ROLLBACK TO SAVEPOINT pack_lease_auto_relay")
+            finally:
+                conn.execute("RELEASE SAVEPOINT pack_lease_auto_relay")
+    return len(rows)

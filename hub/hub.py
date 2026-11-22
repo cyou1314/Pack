@@ -63,6 +63,7 @@ import time
 
 if __package__:
     from .services.tasks import expire_pending_transfers as _expire_pending_transfers
+    from .services.tasks import reap_expired_leases as _reap_expired_leases
     from .core.schema import SCHEMA
     from .core.context import HubContext
     from .core.policy import (
@@ -75,6 +76,7 @@ if __package__:
     )
 else:
     from services.tasks import expire_pending_transfers as _expire_pending_transfers
+    from services.tasks import reap_expired_leases as _reap_expired_leases
     from core.schema import SCHEMA
     from core.context import HubContext
     from core.policy import (
@@ -1002,49 +1004,16 @@ def sweep_once(context: HubContext | None = None):
     conn = context.connect()
     # Expire transfers within the existing sweep transaction.
     n_expired = _expire_pending_transfers(context, conn, now)
-    rows = conn.execute(
-        "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
-        (now,)).fetchall()
-    for t in rows:
-        # 守卫：回收 UPDATE 复检租约仍过期——SELECT 之后持有人可能已
-        # task_update/heartbeat 续租，无守卫会按旧快照误回收活跃任务
-        # （staging14 复检 SW2）。rowcount=0 说明任务已变，整行跳过
-        # （run 不关、审计不写）。
-        # 租约超时 = 执行体失联，一律归 transient（合成清单第 3 项定死口径）。
-        if t["attempts"] >= MAX_ATTEMPTS:
-            cur = conn.execute("UPDATE tasks SET status='blocked', claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=NULL, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
-                               (now, t["id"], now))
-            if cur.rowcount != 1:
-                continue
-            _close_run(conn, t["id"], "reaped", "sweeper", context=context)
-            _desktop_release_for_task(conn, t["id"], "sweeper", "max_attempts", context=context)
-            context.audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
-        else:
-            nca = now + _backoff_seconds("transient", t["attempts"])
-            # RT1（staging37）：回池保留原指派（成员已移除才解指派），
-            # 否则运行时按名轮询看不见、重试链断裂。
-            cur = conn.execute("UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=?, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
-                               (nca, now, t["id"], now))
-            if cur.rowcount != 1:
-                continue
-            _close_run(conn, t["id"], "reaped", "sweeper", context=context)
-            _desktop_release_for_task(conn, t["id"], "sweeper", "lease_expired", context=context)
-            context.audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
-            # 自动接力（§14.3）：原持有人掉线失联——回池后试着直接接力给合格
-            # 成员。_auto_relay 的转交记账与 task_transfer 同账，为防与工具层
-            # 的转交/接受竞态，记账段走 _lock 并复检任务仍是刚回池的状态。
-            holder_row = conn.execute("SELECT name FROM members WHERE id=?",
-                                      (t["assignee"],)).fetchone()
-            holder_name = holder_row["name"] if holder_row else None
-            if holder_name:
-                with context.lock:
-                    t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
-                    if (t2 and t2["status"] == "open" and (t2["assignee"] is None or t2["assignee"] == t["assignee"])
-                            and t2["claim_token"] is None):
-                        try:
-                            _auto_relay(conn, t2, holder_name, "掉线失联", context=context)
-                        except Exception:
-                            pass  # 接力失败不连累本轮回收
+    # Reap expired claims and best-effort relay inside the same sweep transaction.
+    n_leases = _reap_expired_leases(
+        context, conn, now, max_attempts=MAX_ATTEMPTS,
+        backoff_seconds=_backoff_seconds,
+        close_run=functools.partial(_close_run, context=context),
+        desktop_release_for_task=functools.partial(
+            _desktop_release_for_task, context=context
+        ),
+        auto_relay=functools.partial(_auto_relay, context=context),
+    )
     # staging48 未认领指派卡巡检（「让卡别躺死」，口径见 UNCLAIMED_* 常量）：
     # 只处理 next_claim_at 已到期/未设的卡；可认领时刻 eligible_at 取
     # updated_at、next_claim_at、sched_at 三者最大值，过宽限期才判断。
@@ -1120,7 +1089,7 @@ def sweep_once(context: HubContext | None = None):
                   f"task {t['id']} assignee_id={t['assignee']} assignee={t['a_name']} cond={cond_tag} ")
     conn.commit()
     conn.close()
-    return len(rows) + n_expired
+    return n_leases + n_expired
 
 
 def sweeper(context: HubContext | None = None):
