@@ -497,3 +497,77 @@ def complete_task(context, member, task_id: int, claim_token: str, result: str,
     finally:
         # SQLite rolls back uncommitted task/report/run/lock/attachment changes.
         conn.close()
+
+
+def block_task(context, member, task_id: int, claim_token: str, reason: str,
+               fail_class: str = "", *, fail_classes, backoff_seconds,
+               close_run, desktop_release_for_task, auto_relay) -> dict:
+    """Block a held task, release its run/desktop lock and optionally relay.
+
+    Block/audit/quota markers are transactional. A failed best-effort relay
+    rolls back its own partially written transfer, task and message changes
+    without rolling back the confirmed quota-exhaustion block.
+    """
+    fail_category = fail_class if fail_class in fail_classes else "unknown"
+    conn = context.connect()
+    try:
+        task = _current_holder(conn, member, task_id, claim_token)
+        if (member.get("kind") or "") == "external" and task["room_id"] != member["bound_room_id"]:
+            raise ValueError("forbidden: task is outside the bound room")
+        now = context.now()
+        next_claim_at = now + backoff_seconds(fail_category, task["attempts"])
+        changed = conn.execute(
+            "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, "
+            "lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? "
+            "WHERE id=? AND assignee=? AND claim_token=?",
+            (reason, fail_category, next_claim_at, now,
+             task_id, member["id"], claim_token),
+        )
+        if changed.rowcount != 1:
+            raise ValueError("not the current holder (claim_token mismatch)")
+        close_run(conn, task_id, "blocked", member["name"])
+        desktop_release_for_task(conn, task_id, member["name"], "block")
+        context.audit(
+            conn, member["name"], "task_block",
+            f"task {task_id}: {reason} fail_class={fail_category}",
+        )
+        relayed_to = None
+        if fail_category == "quota":
+            conn.execute(
+                "UPDATE members SET quota_week_used_pct=100, quota_updated_at=?, "
+                "quota_source='fact' WHERE id=?",
+                (now, member["id"]),
+            )
+            context.audit(
+                conn, member["name"], "member_quota_exhausted",
+                f"task {task_id} via task_block quota source=fact",
+            )
+            with context.lock:
+                blocked = conn.execute(
+                    "SELECT * FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
+                if (blocked and blocked["status"] == "blocked"
+                        and blocked["assignee"] == member["id"]):
+                    # A relay is best-effort; its partial changes must never
+                    # leak into the main block transaction on failure.
+                    conn.execute("SAVEPOINT pack_task_block_relay")
+                    try:
+                        relayed_to = auto_relay(
+                            conn, blocked, member["name"], "额度耗尽"
+                        )
+                    except Exception:
+                        conn.execute("ROLLBACK TO SAVEPOINT pack_task_block_relay")
+                        relayed_to = None
+                    finally:
+                        conn.execute("RELEASE SAVEPOINT pack_task_block_relay")
+        conn.commit()
+        return {
+            "task_id": task_id,
+            "status": "claimed" if relayed_to else "blocked",
+            "fail_class": fail_category,
+            "next_claim_at": next_claim_at,
+            "relayed_to": relayed_to,
+            "quota_marked_exhausted": fail_category == "quota",
+        }
+    finally:
+        conn.close()

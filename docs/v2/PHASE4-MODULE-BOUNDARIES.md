@@ -211,3 +211,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 新增 `hub/test_task_complete.py` 七项测试：纯文本交活及 run/桌面锁、结构化 envelope、无效 envelope、合法附件、部分附件回滚、report 插入失败回滚、错误 token 与 external 跨房限制。
 - CI 增加该测试，安装包 smoke test 覆盖 task_claim / task_update / task_complete；不修改数据库 schema 或真实部署。
 - `task_block` 的 quota 耗尽与自动接力保持在 `hub.py`，下一批单独迁移。
+
+
+### 任务报卡服务迁移（2026-11-22）
+
+- `task_block` 的权限后置业务逻辑迁入 `hub/services/tasks.py:block_task`；`hub.py` 保留原 MCP 工具名、签名、描述、认证和工具访问模式闸。
+- 保留 `hmac.compare_digest` 令牌校验与受 assignee/token 约束的 UPDATE、失败分类缺省 unknown、基于业务时钟的指数退避、run 关闭与 desktop lock 释放。
+- quota 类报卡仍将 member 额度标记为 100%、source=fact 并写审计；既有候选筛选、transfer cap、pending 转交与执行者绑定规则继续由原 `_auto_relay` 实现。
+- 对自动接力增加 SQLite SAVEPOINT 隔离：接力发生写入异常时回滚接力部分变更，不再允许失败的转交/分配写入随 block 事务提交；任务 block 和额度审计仍保留。
+- 新增 `hub/test_task_block.py` 七项隔离 DB 测试：正常报卡+run/锁清理、失败类别退避、权限/错令牌、quota 无候选、quota 自动接力、部分接力写入失败回滚、关闭 run 异常回滚。
+- CI 增加单测，打包 smoke test 增加 `task_block` 工具注册；未修改 SQLite schema、MCP 契约或真实用户数据。

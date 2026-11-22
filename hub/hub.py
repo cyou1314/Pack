@@ -1644,6 +1644,7 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import claim_task as _claim_task
         from .services.tasks import update_task as _update_task
         from .services.tasks import complete_task as _complete_task
+        from .services.tasks import block_task as _block_task
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
@@ -1654,6 +1655,7 @@ def build_server(context: HubContext | None = None):
         from services.tasks import claim_task as _claim_task
         from services.tasks import update_task as _update_task
         from services.tasks import complete_task as _complete_task
+        from services.tasks import block_task as _block_task
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3068,54 +3070,14 @@ def build_server(context: HubContext | None = None):
         task_clear_backoff 可清。"""
         me = authenticate()
         require(me)
-        fc = fail_class if fail_class in FAIL_CLASSES else "unknown"
-        conn = db()
-        try:
-            t = _holder(conn, me, task_id, claim_token)
-            if _is_external(me) and t["room_id"] != me["bound_room_id"]:
-                raise ValueError("forbidden: task is outside the bound room")
-            now = _now()
-            nca = now + _backoff_seconds(fc, t["attempts"])
-            cur = conn.execute(
-                "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? WHERE id=? AND assignee=? AND claim_token=?",
-                (reason, fc, nca, now, task_id, me["id"], claim_token))
-            if cur.rowcount != 1:
-                conn.close()
-                raise ValueError("not the current holder (claim_token mismatch)")
-            _close_run(conn, task_id, "blocked", me["name"])
-            _desktop_release_for_task(conn, task_id, me["name"], "block")
-            audit(conn, me["name"], "task_block", f"task {task_id}: {reason} fail_class={fc}")
-            relayed_to = None
-            if fc == "quota":
-                # staging48 耗尽标记：block quota 是执行体侧的硬信号，自报
-                # 额度可能偏乐观——直接把本人周已用置 100 并刷新时间戳，
-                # 压过此前自报值，使后续接力候选判定（<90%）与未认领巡检
-                # 条件 B 都按耗尽处理。调度员 member_quota_set、本人的后续
-                # 如实自报均可覆盖纠偏；标记动作单独留审计。
-                conn.execute(
-                    "UPDATE members SET quota_week_used_pct=100, quota_updated_at=?,"
-                    " quota_source='fact' WHERE id=?", (now, me["id"]))
-                audit(conn, me["name"], "member_quota_exhausted",
-                      f"task {task_id} via task_block quota source=fact")
-                # 自动接力（§14.3）：额度耗尽先试着转给有额度、在线的成员，
-                # 没人可接才留在 blocked 等调度员。记账段走 _lock 并复检
-                # 任务仍是本人刚 block 的状态。
-                with _lock:
-                    t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-                    if t2 and t2["status"] == "blocked" and t2["assignee"] == me["id"]:
-                        try:
-                            relayed_to = _auto_relay(conn, t2, me["name"], "额度耗尽")
-                        except Exception:
-                            relayed_to = None  # 接力是尽力而为，失败不连累 block 本身
-            conn.commit()
-            conn.close()
-            return {"task_id": task_id,
-                    "status": "claimed" if relayed_to else "blocked",
-                    "fail_class": fc, "next_claim_at": nca,
-                    "relayed_to": relayed_to,
-                    "quota_marked_exhausted": fc == "quota"}
-        finally:
-            conn.close()
+        return _block_task(
+            context, me, task_id, claim_token, reason, fail_class,
+            fail_classes=FAIL_CLASSES,
+            backoff_seconds=_backoff_seconds,
+            close_run=_close_run,
+            desktop_release_for_task=_desktop_release_for_task,
+            auto_relay=_auto_relay,
+        )
 
     @mcp.tool
     def task_review(task_id: int, approve: bool, note: str = "") -> dict:
