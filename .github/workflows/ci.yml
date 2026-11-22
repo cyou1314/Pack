@@ -66,6 +66,7 @@ jobs:
           python hub/test_lease_reaper.py
           python hub/test_unclaimed_sweeper.py
           python hub/test_message_mutations.py
+          python hub/test_room_post_service.py
           python hub/test_packaging.py
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots

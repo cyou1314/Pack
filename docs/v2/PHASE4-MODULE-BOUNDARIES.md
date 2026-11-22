@@ -295,3 +295,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 两个 SQL UPDATE 增加 `author_id` 与 `kind='chat'` 约束，继续以 `deleted_at IS NULL` 和 rowcount 防重复删除；修改与审计同事务，异常自动关闭连接回滚。
 - 新增 `hub/test_message_mutations.py` 九项隔离测试：成功编辑/软删与读取遮蔽、重复删及删后编辑、非作者拒绝、external 跨房拒绝、结构性消息、输入限制、审计失败整体回滚、双线程重复删除；纳入 CI 和拷贝运行时的 MCP 注册 smoke test。
 - 本批未动 `room_post` 附件绑定和审批门槛逻辑、SQLite 表结构或 Mac 部署环境；该复杂写入路径独立后续批次处理。
+
+
+### 房间消息发送主路径迁移（2026-11-22）
+
+- `room_post` 核心写入迁移到新增 `hub/services/messages.py:post_message`；`hub.py` 仍保留兼容 `_room_post_impl` 薄入口，供 `room_post` 与 `inbox_send` 共享。原 FastMCP 工具名、参数、文档和身份/访问模式闸不变。
+- 原 kind 白名单、成员执行任务证明、external 绑定房/频控/审批额度、question payload 与未答去重、question_answer 跨房/重复答检查、附件 1–4 个同房同上传人且未绑定约束继续有效；原策略回调经注入保持单一实现，不在消息服务复刻权限规则。
+- `post_message` 负责新建和关闭 SQLite 连接；异常均由 `finally` 关闭并回滚未提交消息、附件绑定和决策副作用，成功提交仍原子。特别修复旧实现中 `_approval_gate` 抛错可能导致的连接未关闭风险；需持久写入的 external 拒绝审计仍按旧路径 `commit` 后抛错。
+- 新增 `hub/test_room_post_service.py` 十项隔离 DB 测试，覆盖正常/非法附件、external 房间与类型、external 频控与拒绝审计、approval_request 执行者权限、审批决议原子提交与失败回滚、question/answer 状态机和 kind/payload 限制；加入 Hub CI 和复制运行时 MCP smoke test。
+- 未增加数据表、Mac 目录、LaunchAgent 或部署要求。本阶段继续仓库整改，真实 Mac 集成测试最后执行。
