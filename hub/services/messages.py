@@ -14,7 +14,8 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                     payload: str = "", *, task_ref_re, question_body_limit,
                  validate_question_payload, question_state,
                  ext_approval_per_task, ext_approval_per_hour,
-                 ext_msg_retry_after, ext_rate_error, approval_gate) -> dict:
+                 ext_msg_retry_after, ext_rate_error, approval_gate,
+                 connection=None, before_commit=None) -> dict:
     """room_post 本体（身份已由 room_post 解析并传入）。完整性守卫：
     task_card 只能由 task_create 内部落库、decision 只能由
     规则引擎/审查内部落库或调度员客户端代发——成员经 room_post 伪造
@@ -49,15 +50,14 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
             and len(body or "") > question_body_limit:
         raise ValueError(
             f"{kind} body too long: > {question_body_limit} chars")
-    conn = context.connect()
+    owns_connection = connection is None
+    conn = context.connect() if owns_connection else connection
     try:
         r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
         if not r:
-            conn.close()
             raise ValueError(f"no such room: {room}")
         if ext:
             if r["id"] != me["bound_room_id"]:
-                conn.close()
                 raise ValueError(
                     "forbidden: external members may only post in their bound room")
             if kind not in ("chat", "approval_request"):
@@ -67,7 +67,6 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                     context.audit(conn, me["name"], "external_kind_denied",
                           f"kind={kind} room={room}")
                     conn.commit()
-                conn.close()
                 raise ValueError(f"kind not allowed for external members: {kind}")
         if kind == "approval_request":
             m = task_ref_re.search(body or "")
@@ -76,11 +75,9 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                 t = conn.execute("SELECT assignee, status FROM tasks WHERE id=?",
                                  (int(m.group(1)),)).fetchone()
             if not t:
-                conn.close()
                 raise ValueError("approval_request must reference an existing task")
             if me["role"] != "dispatcher" and (
                     t["assignee"] != me["id"] or t["status"] not in ("claimed", "working")):
-                conn.close()
                 raise ValueError("approval_request only from the member executing that task")
         msg_task_id = None
         msg_payload = None
@@ -91,43 +88,34 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                 t = conn.execute("SELECT id, assignee, status FROM tasks WHERE id=?",
                                  (int(m.group(1)),)).fetchone()
             if not t:
-                conn.close()
                 raise ValueError("question must reference an existing task")
             if me["role"] != "dispatcher" and (
                     t["assignee"] != me["id"] or t["status"] not in ("claimed", "working")):
-                conn.close()
                 raise ValueError("question only from the member executing that task")
             try:
                 msg_payload = validate_question_payload(payload)
             except ValueError:
-                conn.close()
                 raise
             q0, a0 = question_state(conn, t["id"])
             if q0 is not None and a0 is None:
-                conn.close()
                 raise ValueError("task already has an unanswered question")
             msg_task_id = t["id"]
         if kind == "question_answer":
             if me["role"] != "dispatcher" and me["name"] != "owner":
-                conn.close()
                 raise ValueError("question_answer is dispatcher/owner-only")
             if not reply_to_id:
-                conn.close()
                 raise ValueError("question_answer requires reply_to_id")
             tgt = conn.execute("SELECT * FROM messages WHERE id=?",
                                (int(reply_to_id),)).fetchone()
             if not tgt or tgt["kind"] != "question":
-                conn.close()
                 raise ValueError("reply_to_id must reference a question message")
             if tgt["room_id"] != r["id"]:
-                conn.close()
                 raise ValueError(
                     "reply_to_id must reference a question in this room")
             dup = conn.execute(
                 "SELECT id FROM messages WHERE kind='question_answer'"
                 " AND reply_to_id=?", (tgt["id"],)).fetchone()
             if dup:
-                conn.close()
                 raise ValueError("question already answered")
             msg_task_id = tgt["task_id"]
             if msg_task_id is None:
@@ -158,7 +146,6 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                           f"task={tid2} scope={cap[0]} per_task={per_task}"
                           f" per_hour={per_hour['n']}")
                     conn.commit()
-                    conn.close()
                     raise ValueError(json.dumps(
                         {"error": "approval_request_cap", "scope": cap[0],
                          "retry_after": cap[1]}, ensure_ascii=False))
@@ -168,7 +155,6 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                     context.audit(conn, me["name"], "external_rate_limited",
                           f"kind={kind} retry_after={ra}")
                     conn.commit()
-                    conn.close()
                     raise ext_rate_error(ra)
         cur = conn.execute(
             "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at,reply_to_id,payload)"
@@ -183,13 +169,11 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                 ids = json.loads(attachment_ids)
             except Exception:
                 conn.rollback()
-                conn.close()
                 raise ValueError("attachment_ids must be a JSON array of ids")
             if (not isinstance(ids, list) or not ids or len(ids) > 4
                     or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
                     or len(set(ids)) != len(ids)):
                 conn.rollback()
-                conn.close()
                 raise ValueError("attachment_ids must be 1-4 unique integer ids")
             for aid in ids:
                 cur2 = conn.execute(
@@ -197,15 +181,121 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                     (mid, aid, r["id"], me["id"]))
                 if cur2.rowcount != 1:
                     conn.rollback()
-                    conn.close()
                     raise ValueError(f"attachment {aid} cannot be bound")
         extra = {}
         if kind == "approval_request":
             extra = approval_gate(conn, r["id"], mid, body, poster=me)
+        if before_commit is not None:
+            before_commit(conn, mid)
         conn.commit()
-        conn.close()
         out = {"message_id": mid}
         out.update(extra)
         return out
+    finally:
+        if owns_connection:
+            conn.close()
+
+
+def send_inbox_message(context, member, body: str, reply_to_id: int = 0,
+                       attachment_ids: str = "", op_key: str = "",
+                       ignore_new: bool = False, room: str = "", *,
+                       resolve_room, read_cursor, inbox_msg_sql, inbox_items,
+                       blind_preview: int, post_on_connection) -> dict:
+    """Atomically send an inbox chat and persist its idempotency receipt.
+
+    BEGIN IMMEDIATE serializes the idempotency lookup and message insert
+    across Hub processes, not just threads sharing context.lock.
+    The injected poster must use this very connection and invoke the
+    before_commit hook after message/attachment writes, before commit.
+    """
+    room_id, room_name = resolve_room(member, room)
+    conn = context.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if op_key:
+            prior = conn.execute(
+                "SELECT message_id FROM message_op_keys "
+                "WHERE member_id=? AND op_key=?",
+                (member["id"], op_key),
+            ).fetchone()
+            if prior is not None and prior["message_id"] is not None:
+                return {
+                    "sent": True, "message_id": prior["message_id"],
+                    "deduplicated": True,
+                }
+
+        external = (member.get("kind") or "") == "external"
+        floor = (member["joined_msg_id"] or 0) if external else 0
+        cursor = read_cursor(conn, member["id"], room_id, floor)
+        if reply_to_id:
+            target = conn.execute(
+                "SELECT id,room_id FROM messages WHERE id=?",
+                (int(reply_to_id),),
+            ).fetchone()
+            if not target or target["room_id"] != room_id:
+                raise ValueError(
+                    "reply_to_id must reference a message in this room"
+                )
+            if external and target["id"] <= floor:
+                raise ValueError(
+                    "reply_to_id is before your join watermark"
+                )
+        if not ignore_new:
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM messages "
+                "WHERE room_id=? AND id>? AND author_id<>?",
+                (room_id, cursor, member["id"]),
+            ).fetchone()["n"]
+            if total:
+                rows = conn.execute(
+                    inbox_msg_sql + " WHERE m.room_id=? AND m.id>?"
+                    " AND m.author_id<>? ORDER BY m.id ASC LIMIT ?",
+                    (room_id, cursor, member["id"], blind_preview),
+                ).fetchall()
+                names = [
+                    row["name"] for row in
+                    conn.execute("SELECT name FROM members").fetchall()
+                ]
+                items = inbox_items(conn, rows, member, names)
+                context.audit(
+                    conn, member["name"], "inbox_send_blind_blocked",
+                    f"room={room_name} new={total}",
+                )
+                conn.commit()
+                return {
+                    "sent": False, "blocked": "new_messages",
+                    "new_count": total, "new_messages": items,
+                    "cursor": cursor,
+                }
+
+        def persist_receipt(connection, message_id):
+            if not op_key:
+                return
+            # Backfill an old nullable receipt if necessary, but never
+            # replace a completed receipt with a different message.
+            changed = connection.execute(
+                "INSERT INTO message_op_keys"
+                "(member_id,op_key,message_id,created_at) "
+                "VALUES(?,?,?,?) "
+                "ON CONFLICT(member_id,op_key) DO UPDATE SET "
+                "message_id=excluded.message_id, "
+                "created_at=excluded.created_at "
+                "WHERE message_op_keys.message_id IS NULL",
+                (member["id"], op_key, message_id, context.clock()),
+            )
+            if changed.rowcount != 1:
+                raise ValueError(
+                    "op_key has already been used for another message"
+                )
+            context.audit(
+                connection, member["name"], "inbox_send",
+                f"room={room_name} msg={message_id} op_key=1",
+            )
+
+        result = post_on_connection(
+            conn, room_name, body, attachment_ids,
+            int(reply_to_id or 0), persist_receipt,
+        )
+        return {"sent": True, "message_id": result["message_id"]}
     finally:
         conn.close()

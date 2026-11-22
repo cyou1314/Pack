@@ -1488,6 +1488,7 @@ def build_server(context: HubContext | None = None):
         from .services.rooms import delete_message as _delete_message
         from .services.rooms import edit_message as _edit_message
         from .services.messages import post_message as _post_message
+        from .services.messages import send_inbox_message as _send_inbox_message
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1499,6 +1500,7 @@ def build_server(context: HubContext | None = None):
         from services.rooms import delete_message as _delete_message
         from services.rooms import edit_message as _edit_message
         from services.messages import post_message as _post_message
+        from services.messages import send_inbox_message as _send_inbox_message
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2066,7 +2068,8 @@ def build_server(context: HubContext | None = None):
 
     def _room_post_impl(me, room: str, body: str, kind: str = "chat",
                         attachment_ids: str = "", reply_to_id: int = 0,
-                        payload: str = "") -> dict:
+                        payload: str = "", *, connection=None,
+                        before_commit=None) -> dict:
         """Shared legacy entrypoint for room_post and inbox_send."""
         return _post_message(
             context, me, room, body, kind, attachment_ids, reply_to_id, payload,
@@ -2079,6 +2082,7 @@ def build_server(context: HubContext | None = None):
             ext_msg_retry_after=_ext_msg_retry_after,
             ext_rate_error=_ext_rate_error,
             approval_gate=_approval_gate,
+            connection=connection, before_commit=before_commit,
         )
 
     @mcp.tool
@@ -2268,65 +2272,24 @@ def build_server(context: HubContext | None = None):
 
     def _inbox_send_impl(me, body, reply_to_id, attachment_ids, op_key,
                          ignore_new, room):
-        room_id, room_name = _inbox_resolve_room(me, room)
-        conn = db()
-        try:
-            if op_key:
-                prev = conn.execute(
-                    "SELECT message_id FROM message_op_keys"
-                    " WHERE member_id=? AND op_key=?",
-                    (me["id"], op_key)).fetchone()
-                if prev is not None and prev["message_id"] is not None:
-                    return {"sent": True, "message_id": prev["message_id"],
-                            "deduplicated": True}
-            floor = (me["joined_msg_id"] or 0) if _is_external(me) else 0
-            cursor = _read_cursor(conn, me["id"], room_id, floor)
-            if reply_to_id:
-                t = conn.execute("SELECT id, room_id FROM messages WHERE id=?",
-                                 (int(reply_to_id),)).fetchone()
-                if not t or t["room_id"] != room_id:
-                    raise ValueError(
-                        "reply_to_id must reference a message in this room")
-                if _is_external(me) and t["id"] <= floor:
-                    raise ValueError(
-                        "reply_to_id is before your join watermark")
-            if not ignore_new:
-                total = conn.execute(
-                    "SELECT COUNT(*) AS n FROM messages"
-                    " WHERE room_id=? AND id>? AND author_id<>?",
-                    (room_id, cursor, me["id"])).fetchone()["n"]
-                if total:
-                    rows = conn.execute(
-                        _INBOX_MSG_SQL + " WHERE m.room_id=? AND m.id>?"
-                        " AND m.author_id<>? ORDER BY m.id ASC LIMIT ?",
-                        (room_id, cursor, me["id"],
-                         INBOX_BLIND_REPLY_PREVIEW)).fetchall()
-                    all_names = [r["name"] for r in conn.execute(
-                        "SELECT name FROM members").fetchall()]
-                    items = _inbox_items(conn, rows, me, all_names)
-                    audit(conn, me["name"], "inbox_send_blind_blocked",
-                          f"room={room_name} new={total}")
-                    conn.commit()
-                    return {"sent": False, "blocked": "new_messages",
-                            "new_count": total, "new_messages": items,
-                            "cursor": cursor}
-        finally:
-            conn.close()
-        out = _room_post_impl(me, room_name, body, "chat", attachment_ids,
-                              reply_to_id=int(reply_to_id or 0))
-        if op_key:
-            conn = db()
-            try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO message_op_keys"
-                    "(member_id,op_key,message_id,created_at) VALUES(?,?,?,?)",
-                    (me["id"], op_key, out["message_id"], context.clock()))
-                audit(conn, me["name"], "inbox_send",
-                      f"room={room_name} msg={out['message_id']} op_key=1")
-                conn.commit()
-            finally:
-                conn.close()
-        return {"sent": True, "message_id": out["message_id"]}
+        def post_on_connection(conn, room_name, body, attachment_ids, reply_id,
+                               before_commit):
+            return _room_post_impl(
+                me, room_name, body, "chat", attachment_ids,
+                reply_to_id=reply_id, connection=conn,
+                before_commit=before_commit,
+            )
+
+        return _send_inbox_message(
+            context, me, body, reply_to_id, attachment_ids, op_key,
+            ignore_new, room,
+            resolve_room=_inbox_resolve_room,
+            read_cursor=_read_cursor,
+            inbox_msg_sql=_INBOX_MSG_SQL,
+            inbox_items=_inbox_items,
+            blind_preview=INBOX_BLIND_REPLY_PREVIEW,
+            post_on_connection=post_on_connection,
+        )
 
     @mcp.tool
     def attachment_put(room: str, filename: str, mime: str, data_base64: str) -> dict:

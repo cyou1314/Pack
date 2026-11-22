@@ -304,3 +304,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - `post_message` 负责新建和关闭 SQLite 连接；异常均由 `finally` 关闭并回滚未提交消息、附件绑定和决策副作用，成功提交仍原子。特别修复旧实现中 `_approval_gate` 抛错可能导致的连接未关闭风险；需持久写入的 external 拒绝审计仍按旧路径 `commit` 后抛错。
 - 新增 `hub/test_room_post_service.py` 十项隔离 DB 测试，覆盖正常/非法附件、external 房间与类型、external 频控与拒绝审计、approval_request 执行者权限、审批决议原子提交与失败回滚、question/answer 状态机和 kind/payload 限制；加入 Hub CI 和复制运行时 MCP smoke test。
 - 未增加数据表、Mac 目录、LaunchAgent 或部署要求。本阶段继续仓库整改，真实 Mac 集成测试最后执行。
+
+
+### inbox_send 幂等原子事务迁移（2026-11-23）
+
+- 修复 `inbox_send` 的历史双提交窗口：原先 `_room_post_impl` 先提交消息/附件，再独立 INSERT OR IGNORE `message_op_keys`，若后半段失败，同一 op_key 断线重试可能再次发消息。现在改由 `hub/services/messages.py:send_inbox_message` 编排单 SQLite 连接和 `BEGIN IMMEDIATE` 事务，防同一 Hub 进程及多进程竞争。
+- `post_message` 增加仅限内部使用的可选 `connection`、`before_commit`，在同一个事务依次落库消息、附件、op_key 和 `inbox_send` 审计，然后一次 commit。hook 抛错时整笔回滚；external 频控拒绝审计和 inbox 防盲回拦截审计仍按原语义持久化。
+- `message_op_keys` 唯一键继续是 (member_id, op_key)。发送前同事务查找已持久化 message_id，存在即原样返回 deduplicated；历史 message_id=NULL 行会在同事务填回，绝不覆盖已有非空回执。其他成员同名 key 不冲突；无 key 时保持普通发消息行为。
+- 保留 `inbox_send` 原 FastMCP 接口、身份权限、版本门、跨房回复水位、防盲回默认拦截和 ignore_new；底层仍复用 `room_post` 的附件、kind、频控逻辑，不更改表结构或 Mac 安装路径。
+- 新增 `hub/test_inbox_atomic.py` 十项隔离数据库回归：断线重试同 key、空 key 兼容、op_key/审计故障整体回滚、盲回拦截后允许强发、跨房/缺失引用、external 入群水位、跨成员 key 作用域、历史空回执修复、同 key 并发单次写入。加入 Hub CI；整套结果以 Actions 为准。
