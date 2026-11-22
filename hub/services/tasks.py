@@ -974,3 +974,99 @@ def expire_pending_transfers(context, conn, now: float) -> int:
         )
         count += 1
     return count
+
+
+def clear_task_backoff(context, actor, task_id: int) -> dict:
+    """Clear an open task's backoff without losing failure history.
+
+    Keep the MCP authorization at the hub boundary; persist the update and
+    audit in one transaction, guarded by the current task status.
+    """
+    conn = context.connect()
+    try:
+        task = conn.execute(
+            "SELECT status,fail_class FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if not task:
+            raise ValueError(f"no such task: {task_id}")
+        if task["status"] != "open":
+            raise ValueError(
+                f"task {task_id} not open (status={task['status']})"
+            )
+        changed = conn.execute(
+            "UPDATE tasks SET next_claim_at=NULL, sched_at=NULL, updated_at=? "
+            "WHERE id=? AND status='open'",
+            (context.now(), task_id),
+        )
+        if changed.rowcount != 1:
+            raise ValueError(f"task {task_id} changed while clearing backoff")
+        context.audit(
+            conn, actor["name"], "task_clear_backoff",
+            f"task {task_id} fail_class={task['fail_class']}",
+        )
+        conn.commit()
+        return {
+            "task_id": task_id, "status": "open", "next_claim_at": None,
+            "fail_class": task["fail_class"],
+        }
+    finally:
+        conn.close()
+
+
+def release_task(context, actor, task_id: int,
+                 clear_backoff: bool = False, *,
+                 max_attempts: int, backoff_seconds) -> dict:
+    """Return a blocked task to the claim queue without bypassing retry limits.
+
+    The assignee is preserved unless the assigned member has been removed.
+    A status and attempt-count guarded UPDATE prevents stale state from
+    reopening an already transitioned task.
+    """
+    conn = context.connect()
+    try:
+        task = conn.execute(
+            "SELECT status,attempts,fail_class FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        if not task:
+            raise ValueError(f"no such task: {task_id}")
+        if task["status"] != "blocked":
+            raise ValueError(
+                f"task {task_id} not blocked (status={task['status']})"
+            )
+        if task["attempts"] >= max_attempts:
+            raise ValueError(
+                f"task {task_id} attempts exhausted "
+                f"({task['attempts']}>={max_attempts}); "
+                "create a new task instead"
+            )
+        fail_category = task["fail_class"] or "unknown"
+        now = context.now()
+        next_claim_at = None if clear_backoff else now + backoff_seconds(
+            fail_category, task["attempts"],
+        )
+        changed = conn.execute(
+            "UPDATE tasks SET status='open', "
+            "assignee=CASE WHEN EXISTS("
+            "SELECT 1 FROM members WHERE id=tasks.assignee "
+            "AND removed_at IS NULL) THEN assignee ELSE NULL END, "
+            "claim_token=NULL, lease_expires=NULL, "
+            "next_claim_at=?, updated_at=? "
+            "WHERE id=? AND status='blocked' AND attempts=? "
+            "AND attempts<?",
+            (next_claim_at, now, task_id, task["attempts"], max_attempts),
+        )
+        if changed.rowcount != 1:
+            raise ValueError(f"task {task_id} changed while releasing")
+        context.audit(
+            conn, actor["name"], "task_release",
+            f"task {task_id} fail_class={fail_category} "
+            f"next_claim_at={next_claim_at if next_claim_at is None else round(next_claim_at)}",
+        )
+        conn.commit()
+        return {
+            "task_id": task_id, "status": "open",
+            "fail_class": fail_category, "next_claim_at": next_claim_at,
+        }
+    finally:
+        conn.close()

@@ -250,3 +250,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - `hub/test_task_transfer_expiry.py` 七项隔离回归验证：恢复原指派、未过期跳过、原成员移除后解除指派、已接受令牌保护、任务状态/归属/令牌变化保护、审计故障回滚、重复扫与混合过期计数。
 - **Mac 部署冻结原则**：本批不修改 `installer/manager.py`、`installer/build-dmg.sh`、`local/install-local.sh`、`local/*.plist`、App 配置键、服务 label、端口和数据路径。不引入 SQL schema 迁移；新增业务代码仍放在原打包脚本已包含的 `hub/services/` 包内。
 - 部署前必须单独验收现有安装实例的升级路径：当前 DMG manager 和 local installer 均会拒绝覆盖已存在的本机安装（这是安全约束，不是原位升级能力）。不能以「无需改动即可覆盖升级」宣传；待仓库整体验收完毕，设计一次性备份、差异升级和回滚流程，再在隔离 Mac 验证。
+
+
+### 任务释放与退避清理迁移（2026-11-22）
+
+- `task_release` / `task_clear_backoff` 的 dispatcher 鉴权之后的业务搬入 `hub/services/tasks.py:release_task`、`clear_task_backoff`，MCP tool 名称、签名、说明和鉴权原样保留。
+- blocked 任务放回池仍严格执行 `MAX_ATTEMPTS`，保留原 assignee（成员移除时清空），根据 fail_class 与 attempts 计算业务时钟下的退避；`clear_backoff=True` 则立即允许认领。open 任务的手动清退避同时清理 sched_at，但保留 fail_class 审计信息。
+- 两项操作均采用 SQLite 状态条件 UPDATE，并由 rowcount 检查保护任务已变更时不覆写；任务写入与原审计格式继续在一个事务内提交。所有失败路径关闭连接并回滚。
+- 新增 `hub/test_task_backoff.py` 八项隔离 DB 测试，覆盖标准退避、清退避、重试上限、已移除指派、状态限制、缺失任务与审计插入失败回滚；纳入 CI 和复制运行时 FastMCP 工具注册 smoke test。
+- 本批不涉及 Mac 部署脚本、Keychain、LaunchAgent、数据库 schema 或 API 契约变更；按照原 Phase 4 计划继续后续模块提取。

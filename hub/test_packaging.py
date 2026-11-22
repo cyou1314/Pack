@@ -21,7 +21,7 @@ class HubPackageLayoutTests(unittest.TestCase):
                 "import asyncio,inspect,hub; tools=hub.build_server().list_tools(); "
                 "tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; "
                 "names={tool.name for tool in tools}; "
-                "assert {'room_list','member_list','task_audit','task_transfers_list','task_list','task_create','task_set_urgent','task_schedule','task_claim','task_update','task_complete','task_block','task_review','task_cancel','task_transfer','task_accept_transfer'}.issubset(names), names"
+                "assert {'room_list','member_list','task_audit','task_transfers_list','task_list','task_create','task_set_urgent','task_schedule','task_claim','task_update','task_complete','task_block','task_review','task_cancel','task_transfer','task_accept_transfer','task_release','task_clear_backoff'}.issubset(names), names"
             )
             result = subprocess.run(
                 [sys.executable, "-c", smoke],

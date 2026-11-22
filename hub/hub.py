@@ -1619,6 +1619,8 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import cancel_task as _cancel_task
         from .services.tasks import transfer_task as _transfer_task
         from .services.tasks import accept_task_transfer as _accept_task_transfer
+        from .services.tasks import clear_task_backoff as _clear_task_backoff
+        from .services.tasks import release_task as _release_task
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
@@ -1634,6 +1636,8 @@ def build_server(context: HubContext | None = None):
         from services.tasks import cancel_task as _cancel_task
         from services.tasks import transfer_task as _transfer_task
         from services.tasks import accept_task_transfer as _accept_task_transfer
+        from services.tasks import clear_task_backoff as _clear_task_backoff
+        from services.tasks import release_task as _release_task
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3129,21 +3133,7 @@ def build_server(context: HubContext | None = None):
         （放回时按 fail_class 重算退避），之后再清。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        if t["status"] != "open":
-            conn.close()
-            raise ValueError(f"task {task_id} not open (status={t['status']})")
-        conn.execute("UPDATE tasks SET next_claim_at=NULL, sched_at=NULL, updated_at=? WHERE id=?",
-                     (_now(), task_id))
-        audit(conn, me["name"], "task_clear_backoff", f"task {task_id} fail_class={t['fail_class']}")
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "open", "next_claim_at": None,
-                "fail_class": t["fail_class"]}
+        return _clear_task_backoff(context, me, task_id)
 
     @mcp.tool
     def task_release(task_id: int, clear_backoff: bool = False) -> dict:
@@ -3159,30 +3149,11 @@ def build_server(context: HubContext | None = None):
         （2026-11-17 活群验收 #26 实证）。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
-            conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        if t["status"] != "blocked":
-            conn.close()
-            raise ValueError(f"task {task_id} not blocked (status={t['status']})")
-        if t["attempts"] >= MAX_ATTEMPTS:
-            conn.close()
-            raise ValueError(
-                f"task {task_id} attempts exhausted ({t['attempts']}>={MAX_ATTEMPTS}); "
-                "create a new task instead")
-        fc = t["fail_class"] or "unknown"
-        now = _now()
-        nca = None if clear_backoff else now + _backoff_seconds(fc, t["attempts"])
-        conn.execute(
-            "UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, claim_token=NULL, lease_expires=NULL, next_claim_at=?, updated_at=? WHERE id=?",
-            (nca, now, task_id))
-        audit(conn, me["name"], "task_release",
-              f"task {task_id} fail_class={fc} next_claim_at={nca if nca is None else round(nca)}")
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "open", "fail_class": fc, "next_claim_at": nca}
+        return _release_task(
+            context, me, task_id, clear_backoff,
+            max_attempts=MAX_ATTEMPTS,
+            backoff_seconds=_backoff_seconds,
+        )
 
     @mcp.tool
     def task_transfer(task_id: int, claim_token: str, to_member: str, reason: str = "") -> dict:
