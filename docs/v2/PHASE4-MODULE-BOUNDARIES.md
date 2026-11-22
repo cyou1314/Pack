@@ -241,3 +241,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 接受转交仅接收方本人可对最新 pending 且未过期的转交领取新随机 token，attempts 不变。先在数据库中带 pending/expiry 条件标记 accepted，再对任务做持有人/status/空 token 条件更新；任何失败都回滚整笔，防止与 sweeper 的 expired 状态竞态。
 - 新增 `hub/test_task_transfer.py` 九项隔离 DB 测试，覆盖 run 与 desktop 解锁、token 轮换、强制转交、目标与 pending 拦截、接力上限告警、超时及错误接收方、事务回滚、审计异常回滚和双线程接受竞争；纳入 Hub CI 和安装包工具注册 smoke test。
 - 本批暂不迁移 `sweep_once` 的 pending 超时回收，也不改 SQLite schema 或本机数据；后续独立完成 sweeper 模块与并发测试。
+
+
+### 转交超时回收迁移与 Mac 最小改动约束（2026-11-22）
+
+- 将 `sweep_once` 内的 pending 转交超时回收提取为 `hub/services/tasks.py:expire_pending_transfers`，由原 sweeper 传入同一 HubContext、SQLite 连接及业务时钟，保持原 60 秒轮询、返回计数和整批事务边界不变。
+- 过期 ledger UPDATE 复检 `status='pending'` 与 `expires_at<now`；回池 UPDATE 增加接收成员 assignee 条件，同时保持只对无 claim_token 且仍为 claimed/working 的任务回池，不得覆盖已接受或重新指派的任务。
+- `hub/test_task_transfer_expiry.py` 七项隔离回归验证：恢复原指派、未过期跳过、原成员移除后解除指派、已接受令牌保护、任务状态/归属/令牌变化保护、审计故障回滚、重复扫与混合过期计数。
+- **Mac 部署冻结原则**：本批不修改 `installer/manager.py`、`installer/build-dmg.sh`、`local/install-local.sh`、`local/*.plist`、App 配置键、服务 label、端口和数据路径。不引入 SQL schema 迁移；新增业务代码仍放在原打包脚本已包含的 `hub/services/` 包内。
+- 部署前必须单独验收现有安装实例的升级路径：当前 DMG manager 和 local installer 均会拒绝覆盖已存在的本机安装（这是安全约束，不是原位升级能力）。不能以「无需改动即可覆盖升级」宣传；待仓库整体验收完毕，设计一次性备份、差异升级和回滚流程，再在隔离 Mac 验证。

@@ -62,6 +62,7 @@ import threading
 import time
 
 if __package__:
+    from .services.tasks import expire_pending_transfers as _expire_pending_transfers
     from .core.schema import SCHEMA
     from .core.context import HubContext
     from .core.policy import (
@@ -73,6 +74,7 @@ if __package__:
         member_access_mode as _member_access_mode,
     )
 else:
+    from services.tasks import expire_pending_transfers as _expire_pending_transfers
     from core.schema import SCHEMA
     from core.context import HubContext
     from core.policy import (
@@ -993,43 +995,10 @@ def _week_start_cst(now=None, context: HubContext | None = None):
     current = _dt.datetime.fromtimestamp(now if now is not None else context.clock(), tz)
     monday = (current - _dt.timedelta(days=current.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0)
-    return monday.timestamp()
-def sweep_once(context: HubContext | None = None):
-    context = context or _DEFAULT_CONTEXT
-    now = context.now()
-    conn = context.connect()
-    # 待接受转交过期回收（与租约回收同节律、同在 sweep_once 内，不另起定时器）：
-    # pending 转交超过 expires_at 仍未被接收方 task_accept_transfer 接受 →
-    # 转交行标 expired；任务若仍挂在接收方名下（claimed/working 且令牌为空，
-    # 即没人真接手）则放回 open。pending 未过期时任务 lease_expires 为 NULL，
-    # 下面的租约回收天然跳过，不会误回收等人接受的任务。
-    expired = conn.execute(
-        "SELECT * FROM task_transfers WHERE status='pending' AND expires_at IS NOT NULL AND expires_at<?",
-        (now,)).fetchall()
-    n_expired = 0
-    for x in expired:
-        # 守卫：标 expired 只对仍为 pending 的行生效——SELECT 之后接收方可能
-        # 已 task_accept_transfer 成功（其持 _lock，但 sweeper 不持），无守卫
-        # UPDATE 会把 accepted 改标 expired、账面自相矛盾（staging14 复检 SW1）。
-        cur = conn.execute(
-            "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
-            (x["id"],))
-        if cur.rowcount != 1:
-            continue
-        t = conn.execute("SELECT * FROM tasks WHERE id=?", (x["task_id"],)).fetchone()
-        requeued = False
-        if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
-            recv = conn.execute("SELECT id FROM members WHERE name=?",
-                                (x["to_member"],)).fetchone()
-            if recv and t["assignee"] == recv["id"]:
-                snd = conn.execute("SELECT id, removed_at FROM members WHERE name=?",
-                                   (x["from_member"],)).fetchone()
-                back_to = snd["id"] if (snd and not snd["removed_at"]) else None
-                cur = conn.execute(
-                    "UPDATE tasks SET status='open', assignee=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND claim_token IS NULL AND status IN ('claimed','working')",
-                    (back_to, now, t["id"]))
-                requeued = cur.rowcount == 1
-        context.audit(conn, "sweeper", "transfer_expired",
+    r    # Expire pending transfer records in the existing sweep transaction.
+    # The helper shares this connection to preserve audit/rollback semantics.
+    n_expired = _expire_pending_transfers(context, conn, now)
+n, "sweeper", "transfer_expired",
               f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
         n_expired += 1
     rows = conn.execute(

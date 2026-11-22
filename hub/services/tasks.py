@@ -918,3 +918,59 @@ def accept_task_transfer(context, member, task_id: int, *,
             }
         finally:
             conn.close()
+
+
+def expire_pending_transfers(context, conn, now: float) -> int:
+    """Expire unaccepted task transfers inside the caller's sweep transaction.
+
+    The ledger UPDATE and optional task requeue are conditional to avoid
+    invalidating a transfer already accepted by its receiver. This function
+    intentionally neither opens a DB connection nor commits: sweep_once owns
+    the single transaction with its lease/recovery work.
+    """
+    expired = conn.execute(
+        "SELECT * FROM task_transfers "
+        "WHERE status='pending' AND expires_at IS NOT NULL AND expires_at<?",
+        (now,),
+    ).fetchall()
+    count = 0
+    for transfer in expired:
+        changed = conn.execute(
+            "UPDATE task_transfers SET status='expired' "
+            "WHERE id=? AND status='pending' "
+            "AND expires_at IS NOT NULL AND expires_at<?",
+            (transfer["id"], now),
+        )
+        if changed.rowcount != 1:
+            continue
+        task = conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (transfer["task_id"],),
+        ).fetchone()
+        requeued = False
+        if (task and task["status"] in ("claimed", "working")
+                and task["claim_token"] is None):
+            receiver = conn.execute(
+                "SELECT id FROM members WHERE name=?",
+                (transfer["to_member"],),
+            ).fetchone()
+            if receiver and task["assignee"] == receiver["id"]:
+                sender = conn.execute(
+                    "SELECT id,removed_at FROM members WHERE name=?",
+                    (transfer["from_member"],),
+                ).fetchone()
+                back_to = sender["id"] if sender and not sender["removed_at"] else None
+                updated = conn.execute(
+                    "UPDATE tasks SET status='open', assignee=?, "
+                    "claim_token=NULL, lease_expires=NULL, updated_at=? "
+                    "WHERE id=? AND assignee=? AND claim_token IS NULL "
+                    "AND status IN ('claimed','working')",
+                    (back_to, now, task["id"], receiver["id"]),
+                )
+                requeued = updated.rowcount == 1
+        context.audit(
+            conn, "sweeper", "transfer_expired",
+            f"task {transfer['task_id']} transfer {transfer['id']} "
+            f"{transfer['from_member']}->{transfer['to_member']} requeued={requeued}",
+        )
+        count += 1
+    return count
