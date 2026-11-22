@@ -995,12 +995,13 @@ def _week_start_cst(now=None, context: HubContext | None = None):
     current = _dt.datetime.fromtimestamp(now if now is not None else context.clock(), tz)
     monday = (current - _dt.timedelta(days=current.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0)
-    r    # Expire pending transfer records in the existing sweep transaction.
-    # The helper shares this connection to preserve audit/rollback semantics.
+    return monday.timestamp()
+def sweep_once(context: HubContext | None = None):
+    context = context or _DEFAULT_CONTEXT
+    now = context.now()
+    conn = context.connect()
+    # Expire transfers within the existing sweep transaction.
     n_expired = _expire_pending_transfers(context, conn, now)
-n, "sweeper", "transfer_expired",
-              f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
-        n_expired += 1
     rows = conn.execute(
         "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
         (now,)).fetchall()
