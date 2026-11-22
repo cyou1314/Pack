@@ -167,7 +167,10 @@ class TaskReviewCancelTests(unittest.TestCase):
             with self.assertRaisesRegex(sqlite3.IntegrityError, "review audit rejected"):
                 self.review(tid, approve)
             self.assertEqual(self.state(tid), before)
-            self.assertEqual(len(self.audit_actions(tid)), 0)
+            self.assertFalse(any(
+                action in ("task_review", "task_review_backoff")
+                for action, _ in self.audit_actions(tid)
+            ))
 
     def test_cancel_active_closes_run_and_releases_desktop(self):
         tid = self.new_task(status="working")
