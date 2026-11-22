@@ -259,3 +259,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 两项操作均采用 SQLite 状态条件 UPDATE，并由 rowcount 检查保护任务已变更时不覆写；任务写入与原审计格式继续在一个事务内提交。所有失败路径关闭连接并回滚。
 - 新增 `hub/test_task_backoff.py` 八项隔离 DB 测试，覆盖标准退避、清退避、重试上限、已移除指派、状态限制、缺失任务与审计插入失败回滚；纳入 CI 和复制运行时 FastMCP 工具注册 smoke test。
 - 本批不涉及 Mac 部署脚本、Keychain、LaunchAgent、数据库 schema 或 API 契约变更；按照原 Phase 4 计划继续后续模块提取。
+
+
+### Run 生命周期迁移（2026-11-22）
+
+- `run_start` / `run_finish` 的业务实现迁入 `hub/services/tasks.py:start_run`、`finish_run`；原 FastMCP tool 名称、签名、说明及成员/外部成员访问模式闸保留在 `hub.py`。
+- 启动 Run 继续检查当前持有人的 claim_token（hmac.compare_digest）、external 绑定房限制以及 claimed/working 状态，同一任务仅一条 running Run，fence 每次从历史最大值递增。
+- 重复启动仍先提交 `run_fence_reject` 审计再抛错；成功启动的 Run 与 `run_start` 审计同事务。运行结束继续只关闭 Run、不改变任务状态；完成/失败/中止 outcome 保持原白名单，`run_close` 审计失败时回滚状态。
+- 新增 `hub/test_run_lifecycle.py` 八项隔离 DB 测试：开始/关闭及 fence 增长、重复启动审计、outcome 白名单及无 Run、错误 token/任务状态、external 跨房限制、启动/结束审计失败回滚、双线程竞争；纳入 CI 与运行时复制 smoke test。
+- 本批不改 SQLite schema、75 个 MCP 工具契约，不修改 Mac 安装路径、启动参数或客户端设置。

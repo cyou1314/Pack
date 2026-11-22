@@ -1070,3 +1070,84 @@ def release_task(context, actor, task_id: int,
         }
     finally:
         conn.close()
+
+
+def start_run(context, member, task_id: int, claim_token: str) -> dict:
+    """Open exactly one running execution per held task and issue a new fence.
+
+    MCP authorization is performed by hub.py. The duplicate-run rejection
+    audit is deliberately committed before raising, as in the legacy tool.
+    """
+    with context.lock:
+        conn = context.connect()
+        try:
+            task = _current_holder(conn, member, task_id, claim_token)
+            if ((member.get("kind") or "") == "external"
+                    and task["room_id"] != member["bound_room_id"]):
+                raise ValueError("forbidden: task is outside the bound room")
+            if task["status"] not in ("claimed", "working"):
+                raise ValueError(
+                    f"task {task_id} not in claimed/working (status={task['status']})"
+                )
+            running = conn.execute(
+                "SELECT * FROM runs WHERE task_id=? AND status='running'",
+                (task_id,),
+            ).fetchone()
+            if running:
+                context.audit(
+                    conn, member["name"], "run_fence_reject",
+                    f"task {task_id} running run {running['id']} fence={running['fence']}",
+                )
+                conn.commit()
+                raise ValueError(
+                    f"run already running for task {task_id} "
+                    f"(run {running['id']}, fence {running['fence']})"
+                )
+            fence = conn.execute(
+                "SELECT COALESCE(MAX(fence),0)+1 AS f FROM runs WHERE task_id=?",
+                (task_id,),
+            ).fetchone()["f"]
+            now = context.clock()
+            cursor = conn.execute(
+                "INSERT INTO runs(task_id,member_id,fence,claim_token,status,started_at) "
+                "VALUES(?,?,?,?,'running',?)",
+                (task_id, member["id"], fence, claim_token, now),
+            )
+            run_id = cursor.lastrowid
+            context.audit(
+                conn, member["name"], "run_start",
+                f"task {task_id} run {run_id} fence={fence}",
+            )
+            conn.commit()
+            return {
+                "run_id": run_id, "task_id": task_id, "fence": fence,
+                "status": "running", "started_at": now,
+            }
+        finally:
+            conn.close()
+
+
+def finish_run(context, member, task_id: int, claim_token: str,
+               outcome: str = "completed", detail: str = "", *,
+               close_run) -> dict:
+    """Close the active run without changing its task's workflow status."""
+    if outcome not in ("completed", "failed", "aborted"):
+        raise ValueError("outcome must be completed/failed/aborted")
+    with context.lock:
+        conn = context.connect()
+        try:
+            task = _current_holder(conn, member, task_id, claim_token)
+            if ((member.get("kind") or "") == "external"
+                    and task["room_id"] != member["bound_room_id"]):
+                raise ValueError("forbidden: task is outside the bound room")
+            run = close_run(conn, task_id, outcome, member["name"], detail)
+            if not run:
+                raise ValueError(f"no running run for task {task_id}")
+            conn.commit()
+            return {
+                "run_id": run["id"], "task_id": task_id,
+                "fence": run["fence"], "status": "closed",
+                "outcome": outcome,
+            }
+        finally:
+            conn.close()

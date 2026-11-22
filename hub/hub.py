@@ -1621,6 +1621,8 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import accept_task_transfer as _accept_task_transfer
         from .services.tasks import clear_task_backoff as _clear_task_backoff
         from .services.tasks import release_task as _release_task
+        from .services.tasks import start_run as _start_run
+        from .services.tasks import finish_run as _finish_run
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
@@ -1638,6 +1640,8 @@ def build_server(context: HubContext | None = None):
         from services.tasks import accept_task_transfer as _accept_task_transfer
         from services.tasks import clear_task_backoff as _clear_task_backoff
         from services.tasks import release_task as _release_task
+        from services.tasks import start_run as _start_run
+        from services.tasks import finish_run as _finish_run
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3240,40 +3244,7 @@ def build_server(context: HubContext | None = None):
         与认领/租约互补：认领防抢单，本登记防同一认领被双进程重复执行。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            with _lock:
-                t = _holder(conn, me, task_id, claim_token)
-                if _is_external(me) and t["room_id"] != me["bound_room_id"]:
-                    raise ValueError("forbidden: task is outside the bound room")
-                if t["status"] not in ("claimed", "working"):
-                    raise ValueError(
-                        f"task {task_id} not in claimed/working (status={t['status']})")
-                open_run = conn.execute(
-                    "SELECT * FROM runs WHERE task_id=? AND status='running'",
-                    (task_id,)).fetchone()
-                if open_run:
-                    audit(conn, me["name"], "run_fence_reject",
-                          f"task {task_id} running run {open_run['id']} fence={open_run['fence']}")
-                    conn.commit()
-                    raise ValueError(
-                        f"run already running for task {task_id} "
-                        f"(run {open_run['id']}, fence {open_run['fence']})")
-                fence = conn.execute(
-                    "SELECT COALESCE(MAX(fence),0)+1 AS f FROM runs WHERE task_id=?",
-                    (task_id,)).fetchone()["f"]
-                now = context.clock()
-                cur = conn.execute(
-                    """INSERT INTO runs(task_id,member_id,fence,claim_token,status,started_at)
-                       VALUES(?,?,?,?,'running',?)""",
-                    (task_id, me["id"], fence, claim_token, now))
-                rid = cur.lastrowid
-                audit(conn, me["name"], "run_start", f"task {task_id} run {rid} fence={fence}")
-                conn.commit()
-            return {"run_id": rid, "task_id": task_id, "fence": fence,
-                    "status": "running", "started_at": now}
-        finally:
-            conn.close()
+        return _start_run(context, me, task_id, claim_token)
 
     @mcp.tool
     def run_finish(task_id: int, claim_token: str, outcome: str = "completed",
@@ -3283,22 +3254,10 @@ def build_server(context: HubContext | None = None):
         若先交活/报卡，run 记录会被自动以 completed/blocked 关闭，无须再调本工具。"""
         me = authenticate()
         require(me)
-        if outcome not in ("completed", "failed", "aborted"):
-            raise ValueError("outcome must be completed/failed/aborted")
-        conn = db()
-        try:
-            with _lock:
-                t0 = _holder(conn, me, task_id, claim_token)
-                if _is_external(me) and t0["room_id"] != me["bound_room_id"]:
-                    raise ValueError("forbidden: task is outside the bound room")
-                row = _close_run(conn, task_id, outcome, me["name"], detail)
-                if not row:
-                    raise ValueError(f"no running run for task {task_id}")
-                conn.commit()
-            return {"run_id": row["id"], "task_id": task_id, "fence": row["fence"],
-                    "status": "closed", "outcome": outcome}
-        finally:
-            conn.close()
+        return _finish_run(
+            context, me, task_id, claim_token, outcome, detail,
+            close_run=_close_run,
+        )
 
     @mcp.tool
     def run_list(task_id: int = 0, limit: int = 50) -> dict:
