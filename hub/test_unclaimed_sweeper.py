@@ -155,7 +155,7 @@ class UnclaimedSweeperTests(unittest.TestCase):
         self.assertIn("assignee=guest", self.actions("task_unclaimed_escalate")[0]["detail"])
 
     def test_executor_pinned_and_pending_transfer_are_skipped(self):
-        pinned = self.seed_task(title="[worker] pinned")
+        pinned = self.seed_task(title="[M4A] pinned")
         pending = self.seed_task()
         self.conn.execute(
             "INSERT INTO task_transfers(task_id,from_member,to_member,actor,"
