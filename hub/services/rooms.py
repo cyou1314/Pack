@@ -249,3 +249,73 @@ def set_room_summary(context, member, room: str, summary: str, validate_summary)
     finally:
         connection.close()
     return {"room": room, "summary": data, "updated_at": now, "updated_by": member["name"]}
+
+
+def _message_for_author(conn, member, message_id: int, operation: str):
+    """Check author, external room, structural kind and deletion state."""
+    message = conn.execute(
+        "SELECT * FROM messages WHERE id=?", (message_id,)
+    ).fetchone()
+    if not message:
+        raise ValueError(f"no such message: {message_id}")
+    if message["author_id"] != member["id"]:
+        raise ValueError(f"only the author can {operation} this message")
+    if ((member.get("kind") or "") == "external"
+            and message["room_id"] != member["bound_room_id"]):
+        raise ValueError("forbidden: message is outside the bound room")
+    if message["kind"] != "chat":
+        raise ValueError(
+            f"only chat messages can be {operation}d (kind={message['kind']})"
+        )
+    if message["deleted_at"] is not None:
+        raise ValueError(f"message {message_id} already deleted")
+    return message
+
+
+def delete_message(context, member, message_id: int) -> dict[str, Any]:
+    """Soft-delete one's own chat without retaining its former body."""
+    conn = context.connect()
+    try:
+        message = _message_for_author(conn, member, message_id, "delete")
+        changed = conn.execute(
+            "UPDATE messages SET body=?, deleted_at=? "
+            "WHERE id=? AND author_id=? AND kind='chat' "
+            "AND deleted_at IS NULL",
+            (DELETED_PLACEHOLDER, context.clock(), message_id, member["id"]),
+        )
+        if changed.rowcount != 1:
+            raise ValueError(f"message {message_id} already deleted")
+        context.audit(
+            conn, member["name"], "message_delete", f"message {message_id}"
+        )
+        conn.commit()
+        return {"message_id": message_id, "deleted": True}
+    finally:
+        conn.close()
+
+
+def edit_message(context, member, message_id: int,
+                 new_body: str) -> dict[str, Any]:
+    """Edit one's own undeleted chat, preserving id-only audit entries."""
+    if not new_body or not new_body.strip():
+        raise ValueError("new_body must not be empty")
+    if len(new_body) > 20000:
+        raise ValueError("new_body too long: > 20000 chars")
+    conn = context.connect()
+    try:
+        _message_for_author(conn, member, message_id, "edit")
+        changed = conn.execute(
+            "UPDATE messages SET body=?, edited_at=? "
+            "WHERE id=? AND author_id=? AND kind='chat' "
+            "AND deleted_at IS NULL",
+            (new_body, context.clock(), message_id, member["id"]),
+        )
+        if changed.rowcount != 1:
+            raise ValueError(f"message {message_id} already deleted")
+        context.audit(
+            conn, member["name"], "message_edit", f"message {message_id}"
+        )
+        conn.commit()
+        return {"message_id": message_id, "edited": True}
+    finally:
+        conn.close()

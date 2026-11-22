@@ -1485,6 +1485,8 @@ def build_server(context: HubContext | None = None):
         from .services.rooms import rename_room as _rename_room
         from .services.rooms import archive_room as _archive_room
         from .services.rooms import set_room_summary as _set_room_summary
+        from .services.rooms import delete_message as _delete_message
+        from .services.rooms import edit_message as _edit_message
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1493,6 +1495,8 @@ def build_server(context: HubContext | None = None):
         from services.rooms import rename_room as _rename_room
         from services.rooms import archive_room as _archive_room
         from services.rooms import set_room_summary as _set_room_summary
+        from services.rooms import delete_message as _delete_message
+        from services.rooms import edit_message as _edit_message
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2675,35 +2679,7 @@ def build_server(context: HubContext | None = None):
         结构性消息不可删（它们是任务与批准的账面）。已删除的不可重复删。"""
         me = authenticate()
         require(me)
-        conn = db()
-        m = conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
-        if not m:
-            conn.close()
-            raise ValueError(f"no such message: {message_id}")
-        if m["author_id"] != me["id"]:
-            conn.close()
-            raise ValueError("only the author can delete this message")
-        if _is_external(me) and m["room_id"] != me["bound_room_id"]:
-            conn.close()
-            raise ValueError("forbidden: message is outside the bound room")
-        if m["kind"] != "chat":
-            conn.close()
-            raise ValueError(f"only chat messages can be deleted (kind={m['kind']})")
-        if m["deleted_at"]:
-            conn.close()
-            raise ValueError(f"message {message_id} already deleted")
-        # UPDATE 带 deleted_at IS NULL 守卫 + rowcount 复核：先检后写无守卫时
-        # 并发删同一条会一路成功（staging14 复检 C3：4 路并发 4 成功 4 审计）。
-        cur = conn.execute(
-            "UPDATE messages SET body=?, deleted_at=? WHERE id=? AND deleted_at IS NULL",
-            (DELETED_PLACEHOLDER, context.clock(), message_id))
-        if cur.rowcount != 1:
-            conn.close()
-            raise ValueError(f"message {message_id} already deleted")
-        audit(conn, me["name"], "message_delete", f"message {message_id}")
-        conn.commit()
-        conn.close()
-        return {"message_id": message_id, "deleted": True}
+        return _delete_message(context, me, message_id)
 
     @mcp.tool
     def message_edit(message_id: int, new_body: str) -> dict:
@@ -2712,37 +2688,7 @@ def build_server(context: HubContext | None = None):
         不记新旧正文（旧正文不留存）。"""
         me = authenticate()
         require(me)
-        if not new_body or not new_body.strip():
-            raise ValueError("new_body must not be empty")
-        if len(new_body) > 20000:
-            raise ValueError("new_body too long: > 20000 chars")
-        conn = db()
-        m = conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
-        if not m:
-            conn.close()
-            raise ValueError(f"no such message: {message_id}")
-        if m["author_id"] != me["id"]:
-            conn.close()
-            raise ValueError("only the author can edit this message")
-        if _is_external(me) and m["room_id"] != me["bound_room_id"]:
-            conn.close()
-            raise ValueError("forbidden: message is outside the bound room")
-        if m["kind"] != "chat":
-            conn.close()
-            raise ValueError(f"only chat messages can be edited (kind={m['kind']})")
-        if m["deleted_at"]:
-            conn.close()
-            raise ValueError(f"message {message_id} already deleted")
-        cur = conn.execute(
-            "UPDATE messages SET body=?, edited_at=? WHERE id=? AND deleted_at IS NULL",
-            (new_body, context.clock(), message_id))
-        if cur.rowcount != 1:
-            conn.close()
-            raise ValueError(f"message {message_id} already deleted")
-        audit(conn, me["name"], "message_edit", f"message {message_id}")
-        conn.commit()
-        conn.close()
-        return {"message_id": message_id, "edited": True}
+        return _edit_message(context, me, message_id, new_body)
 
     @mcp.tool
     def task_create(room: str, title: str, body: str, assignee_name: str = "", urgent: bool = False) -> dict:

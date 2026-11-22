@@ -286,3 +286,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 接力记账段依旧使用 `context.lock`，重新核查任务状态/assignee/claim_token，并复检 pending；best-effort 自动接力使用 SAVEPOINT，避免异常时已经写入的转交、任务状态或消息被最终 sweeper 事务一同提交。
 - 接力失败且无其他候选时仍按「task id + assignee id」升级一次；维持原消息和 `task_unclaimed_escalate` 审计格式。新测试 `hub/test_unclaimed_sweeper.py` 覆盖过期/重复告警、有效自动接力、时间/标记/待转交/额度/外部成员约束及失败接力回滚。
 - 此批保持 Mac 部署冻结，不修改 Agent、UI、安装器、Keychain 或数据库迁移；后续先继续 Hub 消息模块，再推进 Agent/Computer/UI。
+
+
+### 房间消息编辑与软删除服务迁移（2026-11-22）
+
+- `message_edit` 与 `message_delete` 从 `hub.py` 入口迁至 `hub/services/rooms.py:edit_message` / `delete_message`；原 MCP 工具名、签名、中文描述、成员认证与 external/readonly 闸门保持不变。
+- 仅作者本人可以修改 `chat` 类型且尚未删除的消息；external 成员必须在绑定房间内，结构性消息（task_card/report/approval_request/system）不可编辑或删除。编辑保留 20,000 字上限、空白拒绝；删除以原占位文本覆盖正文，保留原软删除字段和只含 message id 的审计。
+- 两个 SQL UPDATE 增加 `author_id` 与 `kind='chat'` 约束，继续以 `deleted_at IS NULL` 和 rowcount 防重复删除；修改与审计同事务，异常自动关闭连接回滚。
+- 新增 `hub/test_message_mutations.py` 九项隔离测试：成功编辑/软删与读取遮蔽、重复删及删后编辑、非作者拒绝、external 跨房拒绝、结构性消息、输入限制、审计失败整体回滚、双线程重复删除；纳入 CI 和拷贝运行时的 MCP 注册 smoke test。
+- 本批未动 `room_post` 附件绑定和审批门槛逻辑、SQLite 表结构或 Mac 部署环境；该复杂写入路径独立后续批次处理。
