@@ -231,3 +231,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 收紧任务状态写入：review 的 UPDATE 增加 `status='review'` 条件，cancel 的 UPDATE 排除 `done/cancelled`，核对 rowcount 并拒绝覆盖并发变更；移除原早返与异常路径遗漏的连接关闭。
 - 新增 `hub/test_task_review_cancel.py` 九项隔离数据库测试（批准、拒绝及退避、已移除 assignee、非法状态、审计失败回滚、取消 run/桌面锁、重复取消审计、缺失任务、释放异常整体回滚）。
 - CI 接入新测试；安装包 FastMCP 注册 smoke test 追加 task_review / task_cancel。
+
+
+### 任务转交发起与接受服务迁移（2026-11-22）
+
+- 将 `task_transfer` 与 `task_accept_transfer` 从 `hub.py` 的闭包提取到 `hub/services/tasks.py:transfer_task`、`accept_task_transfer`；保留原 FastMCP 注册、文档字符串、输入/输出和成员/访问模式认证。
+- 发起转交继续校验旧持有人 claim_token，dispatcher 可强制转交；目标必须是未移除的内部执行成员，禁止 owner、dispatcher、external、自转交和同任务已有 pending；达到 TRANSFER_CAP 时仍向房间发告警并留审计后拒绝转交。
+- 转交成功时原任务状态/attempts 不变，原 token 与 lease 清零，关闭 running Run、释放 desktop lock，在同一事务写入 pending 转交、调度员聊天消息及审计；任务条件 UPDATE 新增 status、assignee、claim_token 谓词，防止旧快照覆盖其他持有人。
+- 接受转交仅接收方本人可对最新 pending 且未过期的转交领取新随机 token，attempts 不变。先在数据库中带 pending/expiry 条件标记 accepted，再对任务做持有人/status/空 token 条件更新；任何失败都回滚整笔，防止与 sweeper 的 expired 状态竞态。
+- 新增 `hub/test_task_transfer.py` 九项隔离 DB 测试，覆盖 run 与 desktop 解锁、token 轮换、强制转交、目标与 pending 拦截、接力上限告警、超时及错误接收方、事务回滚、审计异常回滚和双线程接受竞争；纳入 Hub CI 和安装包工具注册 smoke test。
+- 本批暂不迁移 `sweep_once` 的 pending 超时回收，也不改 SQLite schema 或本机数据；后续独立完成 sweeper 模块与并发测试。

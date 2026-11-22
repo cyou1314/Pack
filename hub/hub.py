@@ -1647,6 +1647,8 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import block_task as _block_task
         from .services.tasks import review_task as _review_task
         from .services.tasks import cancel_task as _cancel_task
+        from .services.tasks import transfer_task as _transfer_task
+        from .services.tasks import accept_task_transfer as _accept_task_transfer
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
@@ -1660,6 +1662,8 @@ def build_server(context: HubContext | None = None):
         from services.tasks import block_task as _block_task
         from services.tasks import review_task as _review_task
         from services.tasks import cancel_task as _cancel_task
+        from services.tasks import transfer_task as _transfer_task
+        from services.tasks import accept_task_transfer as _accept_task_transfer
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3241,115 +3245,13 @@ def build_server(context: HubContext | None = None):
         DEPLOY）。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            with _lock:
-                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-                if not t:
-                    raise ValueError(f"no such task: {task_id}")
-                if t["status"] not in ("claimed", "working"):
-                    raise ValueError(
-                        f"task {task_id} not transferable (status={t['status']}); "
-                        "only claimed/working tasks can be transferred")
-                forced = me["role"] == "dispatcher"
-                if not forced:
-                    _holder(conn, me, task_id, claim_token)
-                chain_len = conn.execute(
-                    "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=?",
-                    (task_id,)).fetchone()["n"]
-                if chain_len >= TRANSFER_CAP:
-                    holder_row = conn.execute(
-                        "SELECT name FROM members WHERE id=?",
-                        (t["assignee"],)).fetchone()
-                    holder_name = holder_row["name"] if holder_row else str(t["assignee"])
-                    disp0 = conn.execute(
-                        "SELECT id FROM members WHERE role='dispatcher'").fetchone()
-                    now0 = context.clock()
-                    conn.execute(
-                        """INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)
-                           VALUES(?,?,'chat',?,?,?)""",
-                        (t["room_id"], disp0["id"] if disp0 else me["id"],
-                         f"任务#{task_id} 转交已达接力上限（{chain_len}/{TRANSFER_CAP}），"
-                         f"当前持有人 {holder_name}，已上报调度员处理",
-                         task_id, now0))
-                    audit(conn, me["name"], "transfer_cap_reject",
-                          f"task {task_id} chain={chain_len} cap={TRANSFER_CAP}"
-                          + (" (forced)" if forced else ""))
-                    conn.commit()
-                    raise ValueError(
-                        f"task {task_id} transfer relay cap reached "
-                        f"(chain {chain_len}/{TRANSFER_CAP}); "
-                        "reported to dispatcher")
-                target = conn.execute(
-                    "SELECT * FROM members WHERE name=?", (to_member,)).fetchone()
-                if not target:
-                    raise ValueError(f"no such member: {to_member}")
-                if target["removed_at"] is not None:
-                    # staging49：已移除成员不得再作转交目标（其 token 已作废，
-                    # 永远无法 task_accept_transfer，卡只会挂到 pending 过期）
-                    raise ValueError(f"member is removed: {to_member}")
-                if target["role"] != "member":
-                    raise ValueError(
-                        f"transfer target must be a member (got {to_member} "
-                        f"with role={target['role']})")
-                if target["name"] == "owner":
-                    # owner 在库里 role 就是 'member'，单靠 role 拦不住——
-                    # 本工具口径「不得转给 owner/dispatcher」须按名补检
-                    # （与 _task_mention 对 owner 的处理同构；staging14 复检）。
-                    raise ValueError(
-                        "transfer target must be a member (owner is not an "
-                        "executor and cannot receive transfers)")
-                if (target["kind"] or "") == "external":
-                    # staging51 红队修复：external 不在转交体系内——其
-                    # task_accept_transfer 被白名单闸门全禁，转给它任务
-                    # 只会挂 pending 等过期回收，故在发端直接拒。
-                    raise ValueError("transfer target cannot be an external member")
-                if target["id"] == t["assignee"]:
-                    raise ValueError("cannot transfer to the current holder (self)")
-                pending = conn.execute(
-                    "SELECT id FROM task_transfers WHERE task_id=? AND status='pending'",
-                    (task_id,)).fetchone()
-                if pending:
-                    raise ValueError(
-                        f"task {task_id} already has a pending transfer "
-                        f"(id={pending['id']}); receiver must accept it or it must expire first")
-                from_row = conn.execute(
-                    "SELECT name FROM members WHERE id=?", (t["assignee"],)).fetchone()
-                from_name = from_row["name"] if from_row else str(t["assignee"])
-                _close_run(conn, task_id, "transferred", me["name"])
-                now = context.clock()
-                expires_at = now + TRANSFER_ACCEPT_TTL
-                conn.execute(
-                    """UPDATE tasks SET assignee=?, claim_token=NULL, lease_expires=NULL,
-                       next_claim_at=NULL, updated_at=? WHERE id=?""",
-                    (target["id"], now, task_id))
-                cur = conn.execute(
-                    """INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,accepted_at,expires_at)
-                       VALUES(?,?,?,?,?,?,'pending',NULL,?)""",
-                    (task_id, from_name, to_member, reason or None, me["name"], now, expires_at))
-                transfer_id = cur.lastrowid
-                disp = conn.execute(
-                    "SELECT id FROM members WHERE role='dispatcher'").fetchone()
-                body = f"任务#{task_id} 已由 {from_name} 转交 {to_member}"
-                if reason:
-                    body += f"：{reason}"
-                conn.execute(
-                    """INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)
-                       VALUES(?,?,'chat',?,?,?)""",
-                    (t["room_id"], disp["id"] if disp else me["id"], body, task_id, now))
-                audit(conn, me["name"], "task_transfer",
-                      f"task {task_id} {from_name}->{to_member}"
-                      + (" (forced)" if forced else "")
-                      + (f": {reason}" if reason else ""))
-                _desktop_release_for_task(conn, task_id, me["name"], "transfer")
-                conn.commit()
-            return {"task_id": task_id, "status": t["status"],
-                    "transfer_id": transfer_id, "transfer_status": "pending",
-                    "from_member": from_name, "to_member": to_member,
-                    "expires_at": expires_at,
-                    "attempts": t["attempts"], "forced": forced}
-        finally:
-            conn.close()
+        return _transfer_task(
+            context, me, task_id, claim_token, to_member, reason,
+            transfer_cap=TRANSFER_CAP,
+            transfer_accept_ttl=TRANSFER_ACCEPT_TTL,
+            close_run=_close_run,
+            desktop_release_for_task=_desktop_release_for_task,
+        )
 
     @mcp.tool
     def task_accept_transfer(task_id: int) -> dict:
@@ -3363,53 +3265,10 @@ def build_server(context: HubContext | None = None):
         归属已变。接受不改变 attempts 与任务状态。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            with _lock:
-                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-                if not t:
-                    raise ValueError(f"no such task: {task_id}")
-                x = conn.execute(
-                    "SELECT * FROM task_transfers WHERE task_id=? ORDER BY id DESC LIMIT 1",
-                    (task_id,)).fetchone()
-                if not x:
-                    raise ValueError(f"task {task_id} has no transfer to accept")
-                if x["to_member"] != me["name"]:
-                    raise ValueError(
-                        f"task {task_id} latest transfer is addressed to "
-                        f"{x['to_member']}, not to {me['name']}")
-                if x["status"] == "accepted":
-                    raise ValueError(
-                        f"transfer {x['id']} for task {task_id} already accepted")
-                if x["status"] == "expired":
-                    raise ValueError(
-                        f"transfer {x['id']} for task {task_id} already expired")
-                now = context.clock()
-                if x["expires_at"] is not None and x["expires_at"] <= now:
-                    raise ValueError(
-                        f"transfer {x['id']} for task {task_id} expired at "
-                        f"{x['expires_at']:.0f}; sweeper will requeue the task")
-                if t["status"] not in ("claimed", "working"):
-                    raise ValueError(
-                        f"task {task_id} not acceptable (status={t['status']})")
-                if t["assignee"] != me["id"]:
-                    raise ValueError(
-                        f"task {task_id} is not assigned to {me['name']}")
-                new_tok = secrets.token_urlsafe(24)
-                conn.execute(
-                    "UPDATE tasks SET claim_token=?, lease_expires=?, updated_at=? WHERE id=?",
-                    (new_tok, now + LEASE_SECONDS, now, task_id))
-                conn.execute(
-                    "UPDATE task_transfers SET status='accepted', accepted_at=? WHERE id=?",
-                    (now, x["id"]))
-                audit(conn, me["name"], "task_accept_transfer",
-                      f"task {task_id} transfer {x['id']} {x['from_member']}->{x['to_member']}")
-                conn.commit()
-            return {"task_id": task_id, "transfer_id": x["id"],
-                    "status": t["status"], "claim_token": new_tok,
-                    "lease_expires": now + LEASE_SECONDS}
-        finally:
-            conn.close()
+        return _accept_task_transfer(
+            context, me, task_id,
+            lease_seconds=LEASE_SECONDS,
+        )
 
     @mcp.tool
     def task_transfers_list(task_id: int) -> dict:
