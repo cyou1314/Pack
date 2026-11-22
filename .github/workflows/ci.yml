@@ -55,6 +55,7 @@ jobs:
           python hub/test_tasks_service.py
           python hub/test_tasks_write.py
           python hub/test_task_claim.py
+          python hub/test_task_update.py
           python hub/test_packaging.py
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots

@@ -191,3 +191,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 新实现使用注入的 `HubContext.now()` 业务时钟与既有 `LEASE_SECONDS`，并用 `try/finally` 保证拒绝分支及 DB 异常也关闭连接。
 - 新增 `hub/test_task_claim.py`，覆盖单人认领、拒绝与退避、external 约束、遗留锁清理、故障回滚、双线程竞争；接入 CI。
 - 本批不迁移 `task_update`、`task_complete`、`task_block`、转交和批准状态机；保留后续逐批验收边界。
+
+
+### 任务进度写入迁移（2026-11-22）
+
+- 将 `task_update` 的持有人认证之后的任务校验、条件更新、续租和进度消息写入迁入 `hub/services/tasks.py:update_task`；`hub.py` 保留原 MCP 名称、文档字符串、鉴权和访问模式闸。
+- 保持原逻辑：旧 claim_token 经 `hmac.compare_digest` 检查，再由受持有人 id+token 约束的 SQL UPDATE 决胜；被替换的持有人不能覆盖新任务状态。
+- external 成员的绑定房、4000 字 note 限制、三窗口速率计数与写事务继续在统一 `HubContext.lock` 内执行；触限审计单独提交，拒绝续租。
+- 写入报告消息失败时由连接关闭回滚任务状态；清理原实现的重复 close 分支。
+- 增加 `hub/test_task_update.py` 七个隔离 DB 测试：普通续租/报告、无备注、持有人拒绝、external 边界、频控审计、写入故障回滚和并发限流，并接入 CI。
+- 本次不迁移 `task_complete`、`task_block`、审批与转交；无需数据库迁移或客户端接口变更。

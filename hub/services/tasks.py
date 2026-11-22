@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import secrets
+import hmac
+from contextlib import nullcontext
 
 
 def list_task_transfers(context, task_id: int) -> dict:
@@ -344,3 +346,76 @@ def claim_task(context, member, task_id: int, *, lease_seconds: int,
         "task_id": task_id, "status": "claimed",
         "claim_token": token, "lease_expires": now + lease_seconds,
     }
+
+
+def _current_holder(conn, member, task_id: int, claim_token: str):
+    """Check holder identity with the legacy constant-time token comparison."""
+    task = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if not task:
+        raise ValueError(f"no such task: {task_id}")
+    if (
+        task["assignee"] != member["id"]
+        or not task["claim_token"]
+        or not hmac.compare_digest(task["claim_token"], claim_token or "")
+    ):
+        raise ValueError("not the current holder (claim_token mismatch)")
+    return task
+
+
+def update_task(context, member, task_id: int, claim_token: str, note: str = "",
+                *, lease_seconds: int, external_note_max_chars: int,
+                external_retry_after, external_rate_error) -> dict:
+    """Renew a held task and optionally append a progress report atomically.
+
+    External member checks, message quota calculation and write share the
+    context lock. Internal members retain the legacy unlocked write path.
+    """
+    external = (member.get("kind") or "") == "external"
+    with (context.lock if external else nullcontext()):
+        conn = context.connect()
+        try:
+            task = _current_holder(conn, member, task_id, claim_token)
+            if external:
+                if task["room_id"] != member["bound_room_id"]:
+                    raise ValueError("forbidden: task is outside the bound room")
+                if note:
+                    if len(note) > external_note_max_chars:
+                        raise ValueError(
+                            "note too long for external members:"
+                            f" > {external_note_max_chars} chars"
+                        )
+                    retry_after = external_retry_after(
+                        conn, member["id"], context.clock()
+                    )
+                    if retry_after is not None:
+                        context.audit(
+                            conn, member["name"], "external_rate_limited",
+                            f"kind=task_update_note retry_after={retry_after}",
+                        )
+                        conn.commit()
+                        raise external_rate_error(retry_after)
+
+            now = context.clock()
+            # The guarded UPDATE prevents writing on an expired/replaced claim
+            # even if the token matched at the preceding SELECT.
+            cursor = conn.execute(
+                "UPDATE tasks SET status='working', lease_expires=?, updated_at=? "
+                "WHERE id=? AND assignee=? AND claim_token=?",
+                (now + lease_seconds, now, task_id, member["id"], claim_token),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("not the current holder (claim_token mismatch)")
+            if note:
+                conn.execute(
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
+                    "VALUES(?,?,'report',?,?,?)",
+                    (task["room_id"], member["id"], note, task_id, now),
+                )
+            conn.commit()
+            return {
+                "task_id": task_id, "status": "working",
+                "lease_expires": now + lease_seconds,
+            }
+        finally:
+            # Exceptions must roll back both the task transition and report.
+            conn.close()

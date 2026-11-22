@@ -1642,6 +1642,7 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import set_task_urgent as _set_task_urgent
         from .services.tasks import schedule_task as _schedule_task
         from .services.tasks import claim_task as _claim_task
+        from .services.tasks import update_task as _update_task
     else:
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
@@ -1650,6 +1651,7 @@ def build_server(context: HubContext | None = None):
         from services.tasks import set_task_urgent as _set_task_urgent
         from services.tasks import schedule_task as _schedule_task
         from services.tasks import claim_task as _claim_task
+        from services.tasks import update_task as _update_task
     # Bind every tool closure to the same runtime dependencies. The default
     # context preserves the current process behavior; isolated contexts are
     # available to tests and future multi-instance service assembly.
@@ -3014,61 +3016,19 @@ def build_server(context: HubContext | None = None):
             raise ValueError("not the current holder (claim_token mismatch)")
         return t
 
-    def _task_update_impl(me, task_id: int, claim_token: str, note: str = "") -> dict:
-        """task_update 本体（身份已由 task_update 解析并传入）。
-        staging51：external 另加绑定房校验、note ≤4000 字、带 note 的
-        调用计入其发消息限流窗口（note 落成 report 消息，与 room_post
-        普通消息同窗口计数）；external 调用由 task_update 在 _lock 内
-        进入本函数，保证计数与落库串行。"""
-        conn = db()
-        try:
-            t = _holder(conn, me, task_id, claim_token)
-            if _is_external(me):
-                if t["room_id"] != me["bound_room_id"]:
-                    raise ValueError("forbidden: task is outside the bound room")
-                if note:
-                    if len(note) > EXT_NOTE_MAX_CHARS:
-                        raise ValueError(
-                            f"note too long for external members:"
-                            f" > {EXT_NOTE_MAX_CHARS} chars")
-                    ra = _ext_msg_retry_after(conn, me["id"], context.clock())
-                    if ra is not None:
-                        audit(conn, me["name"], "external_rate_limited",
-                              f"kind=task_update_note retry_after={ra}")
-                        conn.commit()
-                        raise _ext_rate_error(ra)
-            now = context.clock()
-            # UPDATE 带持有人守卫 + rowcount 复核：_holder 是先检后写，两步之间
-            # 租约可能被 sweeper 回收并被他人重认领，无守卫 UPDATE 会覆盖新认领
-            # （staging14 复检 C6 语句级实证）。complete/block 同此修。
-            cur = conn.execute(
-                "UPDATE tasks SET status='working', lease_expires=?, updated_at=? "
-                "WHERE id=? AND assignee=? AND claim_token=?",
-                (now + LEASE_SECONDS, now, task_id, me["id"], claim_token))
-            if cur.rowcount != 1:
-                conn.close()
-                raise ValueError("not the current holder (claim_token mismatch)")
-            if note:
-                t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
-                conn.execute(
-                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
-                    (t["room_id"], me["id"], note, task_id, now))
-            conn.commit()
-            conn.close()
-            return {"task_id": task_id, "status": "working", "lease_expires": now + LEASE_SECONDS}
-        finally:
-            conn.close()
-
     @mcp.tool
     def task_update(task_id: int, claim_token: str, note: str = "") -> dict:
         """持有人汇报进度：状态转 working 并续租，可附一句进度说明（进房间消息）。
         staging51：external 调用整体走 _lock（note 限流计数与落库串行）。"""
         me = authenticate()
         require(me)
-        if _is_external(me):
-            with _lock:
-                return _task_update_impl(me, task_id, claim_token, note)
-        return _task_update_impl(me, task_id, claim_token, note)
+        return _update_task(
+            context, me, task_id, claim_token, note,
+            lease_seconds=LEASE_SECONDS,
+            external_note_max_chars=EXT_NOTE_MAX_CHARS,
+            external_retry_after=_ext_msg_retry_after,
+            external_rate_error=_ext_rate_error,
+        )
 
     @mcp.tool
     def task_complete(task_id: int, claim_token: str, result: str,
