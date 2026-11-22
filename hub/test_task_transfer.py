@@ -28,7 +28,7 @@ class TaskTransferTests(unittest.TestCase):
         self.dispatcher = dict(self.conn.execute(
             "SELECT id,name,role FROM members WHERE role='dispatcher'"
         ).fetchone())
-        for name in ("worker", "receiver", "other", "removed"):
+        for name in ("worker", "receiver", "other", "removed", "owner"):
             self.conn.execute(
                 "INSERT INTO members(name,role,token_hash,created_at) "
                 "VALUES(?,'member',?,9200)", (name, f"{name}-hash"),
@@ -194,7 +194,7 @@ class TaskTransferTests(unittest.TestCase):
             ("owner", "owner is not an executor"),
             ("guest", "external member"),
             ("worker", "current holder"),
-            ("dispatcher", "transfer target must be a member"),
+            (self.dispatcher["name"], "transfer target must be a member"),
         ]:
             with self.assertRaisesRegex(ValueError, pattern):
                 self.transfer(tid, token, to=target)
