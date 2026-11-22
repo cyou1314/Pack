@@ -265,7 +265,7 @@ def _message_for_author(conn, member, message_id: int, operation: str):
         raise ValueError("forbidden: message is outside the bound room")
     if message["kind"] != "chat":
         raise ValueError(
-            f"only chat messages can be {operation}d (kind={message['kind']})"
+            f"only chat messages can be {'edited' if operation == 'edit' else 'deleted'} (kind={message['kind']})"
         )
     if message["deleted_at"] is not None:
         raise ValueError(f"message {message_id} already deleted")
