@@ -136,5 +136,89 @@ class LaunchAgentTemplateTests(unittest.TestCase):
         self.assertIn('including pack.db, attachments and backups', source)
 
 
+
+class InstallRollbackTests(unittest.TestCase):
+    def _run_injected_copy_failure(self, agents_preexisting):
+        with tempfile.TemporaryDirectory(prefix="pack-install-rollback-") as directory:
+            root = Path(directory)
+            home = root / "home"
+            (home / "Library").mkdir(parents=True)
+            base = root / "pack"
+            base.mkdir()
+            base_marker = base / "keep-me"
+            base_marker.write_text("user data", encoding="utf-8")
+            agents = home / "Library" / "LaunchAgents"
+            if agents_preexisting:
+                agents.mkdir()
+                agent_marker = agents / "keep-me"
+                agent_marker.write_text("existing agent data", encoding="utf-8")
+            else:
+                agent_marker = None
+
+            bundle = root / "bundle"
+            for path in (
+                bundle / "python",
+                bundle / "hub" / "core",
+                bundle / "hub" / "services",
+                bundle / "engine" / "app",
+                bundle / "engine" / "Electron.app",
+            ):
+                path.mkdir(parents=True, exist_ok=True)
+            for name in ("hub.py", "room_watch.py", "backup-db.sh", "verify-backup.sh"):
+                (bundle / "hub" / name).write_text("stub", encoding="utf-8")
+
+            labels = {
+                "hub": "com.pack.installer-test-hub",
+                "watch": "com.pack.installer-test-watch",
+                "backup": "com.pack.installer-test-backup",
+                "engine": "com.pack.installer-test-engine",
+            }
+            with patch.multiple(
+                manager,
+                HOME=home,
+                base=base,
+                hub=base / "local-hub",
+                engine=base / "local-engine",
+                config=base / "config.json",
+                socket_dir=base / "handoff-socket",
+                agents=agents,
+                BUNDLE=bundle,
+                labels=labels,
+                uid=501,
+            ), patch.object(manager, "available", return_value=True), patch.object(
+                manager, "ctl", return_value=type("CtlResult", (), {"returncode": 1})()
+            ):
+                real_copytree = shutil.copytree
+                calls = 0
+
+                def fail_second_copy(source, destination, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 2:
+                        raise OSError("injected staging copy failure")
+                    return real_copytree(source, destination, **kwargs)
+
+                with patch.object(manager.shutil, "copytree", side_effect=fail_second_copy):
+                    with self.assertRaisesRegex(OSError, "injected staging copy failure"):
+                        manager.install()
+
+            self.assertFalse((base / "local-hub").exists())
+            self.assertFalse((base / "local-engine").exists())
+            self.assertFalse((base / "config.json").exists())
+            self.assertFalse((base / "handoff-socket").exists())
+            self.assertTrue(base_marker.is_file(), "pre-existing Pack data root must be preserved")
+            if agents_preexisting:
+                self.assertTrue(agent_marker.is_file(), "pre-existing LaunchAgents contents must be preserved")
+            else:
+                self.assertFalse(agents.exists(), "new LaunchAgents directory must be removed")
+
+    def test_copy_failure_rolls_back_new_install_paths(self):
+        self._run_injected_copy_failure(agents_preexisting=False)
+
+    def test_copy_failure_preserves_preexisting_launch_agents(self):
+        self._run_injected_copy_failure(agents_preexisting=True)
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
