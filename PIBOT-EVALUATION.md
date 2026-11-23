@@ -22,7 +22,7 @@ Pack 当前是 SwiftUI/macOS App + Python/SQLite Hub + Node runtime。PiBot 不�
 
 ### POC 步骤
 
-1. Pack 调度员调用 pair_code_create(member_name="pibot-main", provider="generic", room="pack-main", display_name="PiBot")。
+1. Pack 调度员调用 pair_code_create(member_name="pibot-main", provider="generic", room="pack-main")。
 2. 通过 Pack 的 /pair 兑换配对码，取得一次性显示的 external Bearer token。
 3. 在 PiBot Desktop 的 Connections → Add → MCP 中添加 Pack Hub URL。本机默认示例为 http://127.0.0.1:8794/mcp；HTTP header 设置为 Authorization: Bearer <token>。
 4. 先手动触发 PiBot Bot：调用 inbox_pull，处理分配任务，再通过 task_claim、task_update、inbox_send、task_complete 回报。
