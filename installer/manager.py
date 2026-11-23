@@ -469,25 +469,31 @@ def upgrade():
     swaps = []
     services_stopped = False
     backup_verified = False
+    new_services_started = False
     try:
         validate_upgrade_installation()
-        backup_root = create_upgrade_backup()
-        populate_upgrade_backup(backup_root)
-        backup_verified = True
+        # Stage and smoke-test the new payload before taking services offline.
+        # The backup is created only after every Pack writer has stopped, so it
+        # includes writes accepted while staging and cannot rewind them on abort.
         stage_root, stage_hub, stage_engine, app_stage = stage_upgrade_payload()
 
+        services_stopped = True
         for label in labels.values():
             ctl("bootout", f"gui/{uid}/{label}", check=False)
-        services_stopped = True
         for label in labels.values():
             if ctl("print", f"gui/{uid}/{label}", check=False).returncode == 0:
                 raise RuntimeError(f"Pack LaunchAgent did not stop: {label}")
         if not available(hp) or not available(ep):
             raise RuntimeError("A Pack service port is still occupied after stopping LaunchAgents.")
 
+        backup_root = create_upgrade_backup()
+        populate_upgrade_backup(backup_root)
+        backup_verified = True
+
         replace_program_paths(stage_root, stage_hub, stage_engine, swaps)
         app_previous = swap_app_bundle(app_stage, app_swap_state)
         app_stage = None
+        new_services_started = True
         bootstrap_upgrade_agents()
 
         try:
@@ -513,7 +519,7 @@ def upgrade():
                 app_previous = app_swap_state[-1]
             rollback_errors.extend(rollback_app_bundle(app_previous))
             rollback_errors.extend(rollback_program_paths(swaps))
-            if backup_root is not None:
+            if backup_root is not None and new_services_started:
                 try:
                     restore_database_snapshot(backup_root)
                 except Exception as database_error:
@@ -540,12 +546,12 @@ def upgrade():
             ) from exc
         if backup_root is not None and not backup_verified:
             raise RuntimeError(
-                f"Upgrade aborted before service changes; existing installation was left unchanged. "
+                f"Upgrade aborted before program replacement; previous services were restarted and existing data was left unchanged. "
                 f"Partial backup retained at {backup_root}: {type(exc).__name__}: {exc}"
             ) from exc
-        if backup_root is not None and not services_stopped:
+        if backup_root is not None and not new_services_started:
             raise RuntimeError(
-                f"Upgrade aborted before service replacement; existing installation was left unchanged. "
+                f"Upgrade failed before new services started; previous program files were restored and live database was left untouched. "
                 f"Verified backup retained at {backup_root}: {type(exc).__name__}: {exc}"
             ) from exc
         if backup_root is not None:

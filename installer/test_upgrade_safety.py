@@ -143,10 +143,10 @@ class UpgradeFixture:
         }.items():
             self.patches.enter_context(patch.object(manager, name, value))
 
-    def fake_ctl(self, fail_watch_once=False, mutate_db_on_hub_bootstrap=False):
+    def fake_ctl(self, fail_watch_once=False, mutate_db_on_hub_bootstrap=False, mutate_db_on_first_bootout=False):
         loaded = set(self.labels.values())
         calls = []
-        state = {"fail_watch_once": fail_watch_once, "mutate_db": mutate_db_on_hub_bootstrap}
+        state = {"fail_watch_once": fail_watch_once, "mutate_db": mutate_db_on_hub_bootstrap, "mutate_on_bootout": mutate_db_on_first_bootout}
 
         def ctl(*args, check=True):
             args = tuple(str(value) for value in args)
@@ -155,6 +155,9 @@ class UpgradeFixture:
                 label = args[1].split("/")[-1]
                 return SimpleNamespace(returncode=0 if label in loaded else 1)
             if args[0] == "bootout":
+                if state["mutate_on_bootout"]:
+                    write_text(self.hub / "pack.db", "written-before-backup")
+                    state["mutate_on_bootout"] = False
                 loaded.discard(args[1].split("/")[-1])
                 return SimpleNamespace(returncode=0)
             if args[0] == "bootstrap":
@@ -237,19 +240,27 @@ class UpgradeSafetyTests(unittest.TestCase):
 
     def test_backup_failure_aborts_before_stopping_services(self):
         f = self.fixture
-        ctl, calls, _ = f.fake_ctl()
+        ctl, calls, loaded = f.fake_ctl()
         run, _ = f.fake_subprocess_run(backup_failure=True)
-        with patch.object(manager, "ctl", side_effect=ctl), patch.object(manager.subprocess, "run", side_effect=run):
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_port", return_value=None),
+        ):
             with self.assertRaisesRegex(RuntimeError, "Partial backup retained"):
                 manager.upgrade()
 
-        self.assertFalse(any(call[0] == "bootout" for call in calls))
+        self.assertTrue(any(call[0] == "bootout" for call in calls))
+        self.assertTrue(any(call[0] == "bootstrap" for call in calls))
+        self.assertEqual(loaded, set(f.labels.values()))
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
         self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
 
     def test_successful_upgrade_preserves_data_and_retains_verified_backup(self):
         f = self.fixture
-        ctl, calls, loaded = f.fake_ctl()
+        ctl, calls, loaded = f.fake_ctl(mutate_db_on_first_bootout=True)
         run, subprocess_calls = f.fake_subprocess_run()
         output = StringIO()
         with (
@@ -267,7 +278,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertTrue((f.app_path / "new-app.txt").is_file())
         self.assertFalse((f.app_path / "old-app.txt").exists())
 
-        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "written-before-backup")
         self.assertEqual((f.hub / "attachments" / "image.bin").read_text(encoding="utf-8"), "original-attachment")
         self.assertEqual((f.engine / "data" / "local" / "session.json").read_text(encoding="utf-8"), "original-session")
         self.assertEqual(f.config.read_text(encoding="utf-8"), json.dumps({"hubUrl": "http://127.0.0.1:18795/mcp"}))
@@ -278,7 +289,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         backups = list((f.hub / "backups").glob("upgrade-*"))
         self.assertEqual(len(backups), 1)
         backup = backups[0]
-        self.assertEqual((backup / "database" / "pack-test.db").read_text(encoding="utf-8"), "original-db")
+        self.assertEqual((backup / "database" / "pack-test.db").read_text(encoding="utf-8"), "written-before-backup")
         self.assertEqual((backup / "code" / "hub" / "hub.py").read_text(encoding="utf-8"), "old-hub")
         self.assertTrue((backup / "Pack.app" / "old-app.txt").is_file())
         self.assertEqual((backup / "state" / "config.json").stat().st_mode & 0o777, 0o600)
