@@ -31,6 +31,7 @@ jobs:
           bash -n hub/test_backup.sh
           bash -n hub/install-services.sh
           bash -n run-all-suites.sh
+          bash -n tests/hub-staging56/run_tests.sh
           bash -n installer/build-dmg.sh
       - name: Python compile
         run: python -m compileall -q hub tests
