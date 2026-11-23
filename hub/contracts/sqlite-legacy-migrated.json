@@ -2,6 +2,7 @@
   "format": 1,
   "integrity_check": "ok",
   "migration_assertions": {
+    "legacy_agent_mapping_preserved": true,
     "legacy_member_avatar_backfilled": true,
     "legacy_member_preserved": true,
     "legacy_member_token_hash_preserved": true,
