@@ -83,5 +83,11 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r hub/requirements-ci.txt
       - name: Hub SQLite migration and query-plan smoke
         run: python hub/test_db_query_indexes.py
-      - name: Swift build
-        run: swift build --package-path app
+      - name: App bundle output path safety
+        run: bash app/test-make-bundle.sh
+      - name: Swift app bundle build
+        run: |
+          STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-app-ci.XXXXXX")"
+          trap 'rm -rf "$STAGE"' EXIT
+          bash app/make-bundle.sh "$STAGE/Pack.app"
+          test -x "$STAGE/Pack.app/Contents/MacOS/PackApp"
