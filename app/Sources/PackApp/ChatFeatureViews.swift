@@ -79,7 +79,7 @@ struct RoomView: View {
                 .padding(.horizontal, DesignTokens.chatInset).padding(.vertical, DesignTokens.chatVerticalInset)
         }.onAppear {
             if let id = state.highlightedMessageId { proxy.scrollTo(id, anchor: .center) }
-        }.onChange(of: state.highlightedMessageId) { id in
+        }.onChange(of: state.highlightedMessageId) { _, id in
             if let id { withAnimation(DesignTokens.animStd) { proxy.scrollTo(id, anchor: .center) } }
         }
         }

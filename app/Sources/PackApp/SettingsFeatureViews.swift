@@ -29,7 +29,7 @@ struct SettingsView: View {
                 }
                 GroupBox("批准默认模式") {
                     VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
-                        Toggle("新任务默认需要批准", isOn: $state.approvalDefault).onChange(of: state.approvalDefault) { value in state.newNeedsApproval = value }
+                        Toggle("新任务默认需要批准", isOn: $state.approvalDefault).onChange(of: state.approvalDefault) { _, value in state.newNeedsApproval = value }
                         Text(state.notificationStatus).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
                         Text("通知与 Dock 数字基于当前房间已加载的待批准和待验收项目；离线通知基于已加载成员。")
                             .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
