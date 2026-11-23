@@ -558,11 +558,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 
 - M1a 已通过 PR #21 合入 v2 Foundation：版本化 migration ledger/checksum、事务化增量 DDL、members → agents 稳定映射、逐连接 FK enforcement、迁移回滚测试与 schema snapshots 均已通过 CI 和代码审查。
 - M1a 代码已合入 Foundation，但尚未在用户 Mac/生产数据库运行。
-- M1b 只读 shadow report/CLI 已通过 PR #22 合入；手动执行、SQLite `mode=ro`、`query_only=ON`，不加入 MCP、不在启动时运行、不自动修复；旧 `members` 仍是唯一读写事实来源。
+- M1b 只读 shadow report/CLI 已通过 PR #22 合入，PR #23 补齐并发迁移和 CLI 只读性测试；手动执行、SQLite `mode=ro`、`query_only=ON`，不加入 MCP、不自动修复；旧 `members` 仍是唯一读写事实来源。
 
 
 ### Agent Registry M1a/M1b 状态更新（2026-11-23）
 
 - M1a 已合入 v2 Foundation，合并提交 `51128b954764b3e9e59d0e00eb802d24fea2684e`；PR #21 全部 CI 通过，Codex 代码审查无发现。
 - M1b 只读影子比对已合入 Foundation；PR #22 的 CI 和 Codex 审查均通过。CLI 不加入 Hub MCP，不切换旧读写路径。
-- M1b hardening 正补充并发初始化和只读性测试。用户 Mac/生产数据库仍未运行迁移或 shadow report；实际部署继续后置。
+- PR #23 的并发初始化、只读性和敏感字段输出测试已通过 CI。PR #24 正补充 SQLite quick_check / foreign_key_check 预检；用户 Mac/生产数据库仍未运行迁移或 shadow report，实际部署继续后置。
