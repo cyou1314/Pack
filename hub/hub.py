@@ -863,6 +863,13 @@ def _used_combos(conn) -> set:
 def init():
     conn = db()
     conn.executescript(SCHEMA)
+    # audit() is used while init creates the dispatcher, so the additive column
+    # must exist before any initialization audit event can be written.
+    acols = [r[1] for r in conn.execute("PRAGMA table_info(audit)").fetchall()]
+    if "task_id" not in acols:
+        conn.execute("ALTER TABLE audit ADD COLUMN task_id INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_task ON audit(task_id, id)")
     conn.execute("INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)", (time.time(),))
     # 存量 DB 的 members 可能没有 avatar 列：迁移必须先于下面带 avatar 的
     # dispatcher INSERT，否则全新/未迁移 DB 在建调度员时就炸（顺序坑）。
@@ -961,9 +968,6 @@ def init():
         "INSERT OR IGNORE INTO hub_settings(key,value) VALUES('external_enabled','1')")
     # staging57 / 查询索引：审计事件结构化归属 + 历史数据一次性回填。
     # 旧 detail 前缀口径严格对应 task <id>、task <id>:...、task <id> ...。
-    acols = [r[1] for r in conn.execute("PRAGMA table_info(audit)").fetchall()]
-    if "task_id" not in acols:
-        conn.execute("ALTER TABLE audit ADD COLUMN task_id INTEGER")
     if not conn.execute(
             "SELECT 1 FROM hub_settings WHERE key='audit_task_id_backfill_v1'").fetchone():
         for r in conn.execute(
@@ -975,8 +979,6 @@ def init():
         conn.execute(
             "INSERT OR REPLACE INTO hub_settings(key,value) "
             "VALUES('audit_task_id_backfill_v1','1')")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_audit_task ON audit(task_id, id)")
     # 历史 approval_request 由正文携带任务号；迁移时补 task_id 后，热路径
     # 可走 idx_messages_approval_task，不再每次倒扫整张 messages 表。
     if not conn.execute(
