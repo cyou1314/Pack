@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Install the packaged local stack; PACK_INSTALL_TEST_ROOT isolates acceptance."""
-import asyncio, json, os, pathlib, plistlib, shutil, socket, subprocess, sys, tempfile, time
+import asyncio, fcntl, json, os, pathlib, plistlib, shutil, socket, stat, subprocess, sys, tempfile, time
 
 BUNDLE = pathlib.Path(__file__).resolve().parent
 HOME = pathlib.Path.home()
@@ -659,6 +659,28 @@ def upgrade():
         os.umask(previous_umask)
 
 
+def _acquire_install_lock():
+    """Serialize fresh installs before preflight so rollback cannot delete another attempt's paths."""
+    lock_path = HOME / ".pack-install.lock"
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise SystemExit(f"Cannot safely open Pack installer lock: {lock_path}") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or (info.st_mode & 0o077):
+            raise SystemExit(f"Pack installer lock must be a private regular file owned by this user: {lock_path}")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SystemExit("Another Pack installation is already running; wait for it to finish.") from exc
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _rollback_failed_install(agent_plists, owned_paths, agents_dir, agents_preexisting, base_dir, base_preexisting):
     """Remove only destinations verified absent before this fresh install attempt."""
     for label in labels.values():
@@ -683,7 +705,7 @@ def _rollback_failed_install(agent_plists, owned_paths, agents_dir, agents_preex
             pass
 
 
-def install():
+def _install_unlocked():
     require_real_directory(base, 'Pack data root')
     require_real_directory(HOME/'Library', 'Library directory')
     require_real_directory(agents, 'LaunchAgents directory')
@@ -760,6 +782,14 @@ def install():
         os.umask(previous_umask)
     print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
     print('Open Pack to migrate the private local credentials into Keychain.')
+
+
+def install():
+    lock_fd = _acquire_install_lock()
+    try:
+        _install_unlocked()
+    finally:
+        os.close(lock_fd)
 
 def uninstall():
     require_real_directory(base, 'Pack data root')
