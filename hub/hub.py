@@ -225,15 +225,31 @@ CREATE INDEX IF NOT EXISTS idx_pair_attempts_ts ON pair_attempts(ts);
 
 
 AUDIT_TASK_RE = re.compile(r"^task ([0-9]+)(?:$|[: ])")
+SQLITE_INT_MAX = (1 << 63) - 1
+
+
+def _bounded_task_id(match):
+    """把正则捕获的十进制任务号限制在 SQLite 有符号 64 位整数范围。"""
+    if not match:
+        return None
+    digits = match.group(1).lstrip("0") or "0"
+    if len(digits) > 19:
+        return None
+    value = int(digits)
+    return value if value <= SQLITE_INT_MAX else None
+
+
+def _audit_task_id(detail):
+    if not isinstance(detail, str):
+        return None
+    return _bounded_task_id(AUDIT_TASK_RE.match(detail))
 
 
 def audit(conn, actor, action, detail=""):
     """写审计时同步提取标准 task 前缀，供 task_audit 使用结构化索引。"""
-    match = AUDIT_TASK_RE.match(detail or "") if isinstance(detail, str) else None
-    task_id = int(match.group(1)) if match else None
     conn.execute(
         "INSERT INTO audit(ts,actor,action,detail,task_id) VALUES(?,?,?,?,?)",
-        (time.time(), actor, action, detail, task_id))
+        (time.time(), actor, action, detail, _audit_task_id(detail)))
 
 
 def _task_audit_events(conn, task_id):
@@ -325,7 +341,9 @@ def _approval_gate(conn, room_id, msg_id, body, poster=None):
     m = TASK_REF_RE.search(body or "")
     if not m:
         return {}
-    tid = int(m.group(1))
+    tid = _bounded_task_id(m)
+    if tid is None:
+        return {}
     t = conn.execute(
         """SELECT t.title, t.assignee, mb.name AS assignee_name FROM tasks t
            LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (tid,)).fetchone()
@@ -506,8 +524,8 @@ def _approval_state(conn, task_id):
                ORDER BY id DESC"""):
         if req is not None and r["id"] <= req["id"]:
             break
-        m = TASK_REF_RE.search(r["body"] or "")
-        if m and int(m.group(1)) == task_id:
+        matched_task_id = _bounded_task_id(TASK_REF_RE.search(r["body"] or ""))
+        if matched_task_id == task_id:
             req = r
             break
     if not req:
@@ -970,10 +988,10 @@ def init():
             "SELECT 1 FROM hub_settings WHERE key='audit_task_id_backfill_v1'").fetchone():
         for r in conn.execute(
                 "SELECT id, detail FROM audit WHERE task_id IS NULL").fetchall():
-            match = AUDIT_TASK_RE.match(r["detail"] or "")
-            if match:
+            task_id = _audit_task_id(r["detail"])
+            if task_id is not None:
                 conn.execute("UPDATE audit SET task_id=? WHERE id=?",
-                             (int(match.group(1)), r["id"]))
+                             (task_id, r["id"]))
         conn.execute(
             "INSERT OR REPLACE INTO hub_settings(key,value) "
             "VALUES('audit_task_id_backfill_v1','1')")
@@ -984,10 +1002,10 @@ def init():
         for r in conn.execute(
                 "SELECT id, body FROM messages "
                 "WHERE kind='approval_request' AND task_id IS NULL").fetchall():
-            match = TASK_REF_RE.search(r["body"] or "")
-            if match:
+            task_id = _bounded_task_id(TASK_REF_RE.search(r["body"] or ""))
+            if task_id is not None:
                 conn.execute("UPDATE messages SET task_id=? WHERE id=? AND task_id IS NULL",
-                             (int(match.group(1)), r["id"]))
+                             (task_id, r["id"]))
         conn.execute(
             "INSERT OR REPLACE INTO hub_settings(key,value) "
             "VALUES('approval_task_id_backfill_v1','1')")
@@ -4431,12 +4449,7 @@ def build_server():
         if not t:
             conn.close()
             raise ValueError(f"no such task: {task_id}")
-        pre = f"task {task_id}"
-        arows = conn.execute(
-            """SELECT ts, actor, action, detail FROM audit
-               WHERE detail=? OR detail LIKE ? OR detail LIKE ?
-               ORDER BY id ASC LIMIT 201""",
-            (pre, pre + ":%", pre + " %")).fetchall()
+        events, events_truncated = _task_audit_events(conn, task_id)
         rrows = conn.execute(
             """SELECT r.fence, mb.name AS member, r.status, r.outcome, r.detail,
                       r.started_at, r.ended_at
@@ -4448,9 +4461,8 @@ def build_server():
                FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
             (task_id,)).fetchall()
         conn.close()
-        events = [dict(r) for r in arows[:200]]
         return {"task": dict(t), "events": events,
-                "events_truncated": len(arows) > 200,
+                "events_truncated": events_truncated,
                 "runs": [dict(r) for r in rrows],
                 "transfers": [dict(r) for r in xrows]}
 
