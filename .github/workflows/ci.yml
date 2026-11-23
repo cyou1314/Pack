@@ -50,6 +50,7 @@ jobs:
           python installer/test_dmg_manifest.py
           python hub/test_policy.py
           python hub/test_storage.py
+          python hub/test_db_query_indexes.py
           python hub/test_agent_registry_migration.py
           python hub/test_agent_registry_shadow.py
           PYTHONPATH=hub python -m services.agent_registry_shadow --help >/dev/null
