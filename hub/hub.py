@@ -125,6 +125,10 @@ CREATE TABLE IF NOT EXISTS messages(
   kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER, created_at REAL NOT NULL,
   deleted_at REAL, edited_at REAL);
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_approval_task
+  ON messages(task_id, id DESC) WHERE kind='approval_request';
+CREATE INDEX IF NOT EXISTS idx_messages_dispatch_decisions
+  ON messages(author_id, id) WHERE kind IN ('chat','decision');
 CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
   created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
@@ -132,7 +136,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   result TEXT, envelope TEXT, review_note TEXT, fail_class TEXT, next_claim_at REAL,
   created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
-  id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);
+  id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
+  detail TEXT, task_id INTEGER);
 CREATE TABLE IF NOT EXISTS room_summaries(
   room_id INTEGER PRIMARY KEY, data TEXT NOT NULL,
   updated_at REAL NOT NULL, updated_by TEXT NOT NULL);
@@ -155,6 +160,8 @@ CREATE TABLE IF NOT EXISTS review_log(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, target_url TEXT NOT NULL,
   owner_quote TEXT NOT NULL, member_desc TEXT NOT NULL, verdict TEXT NOT NULL,
   reviewer TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_review_log_task_time
+  ON review_log(task_id, created_at);
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, member_id INTEGER NOT NULL,
   fence INTEGER NOT NULL, claim_token TEXT, status TEXT NOT NULL DEFAULT 'running',
@@ -217,9 +224,41 @@ CREATE INDEX IF NOT EXISTS idx_pair_attempts_ts ON pair_attempts(ts);
 """
 
 
+AUDIT_TASK_RE = re.compile(r"^task ([0-9]+)(?:$|[: ])")
+SQLITE_INT_MAX = (1 << 63) - 1
+
+
+def _bounded_task_id(match):
+    """把正则捕获的十进制任务号限制在 SQLite 有符号 64 位整数范围。"""
+    if not match:
+        return None
+    digits = match.group(1).lstrip("0") or "0"
+    if len(digits) > 19:
+        return None
+    value = int(digits)
+    return value if value <= SQLITE_INT_MAX else None
+
+
+def _audit_task_id(detail):
+    if not isinstance(detail, str):
+        return None
+    return _bounded_task_id(AUDIT_TASK_RE.match(detail))
+
+
 def audit(conn, actor, action, detail=""):
-    conn.execute("INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
-                 (time.time(), actor, action, detail))
+    """写审计时同步提取标准 task 前缀，供 task_audit 使用结构化索引。"""
+    conn.execute(
+        "INSERT INTO audit(ts,actor,action,detail,task_id) VALUES(?,?,?,?,?)",
+        (time.time(), actor, action, detail, _audit_task_id(detail)))
+
+
+def _task_audit_events(conn, task_id):
+    """按结构化 task_id 读取任务事件，额外读取一行用于截断判断。"""
+    rows = conn.execute(
+        """SELECT ts, actor, action, detail FROM audit
+           WHERE task_id=? ORDER BY id ASC LIMIT 201""",
+        (task_id,)).fetchall()
+    return [dict(r) for r in rows[:200]], len(rows) > 200
 
 
 # ---------------- 附件通道（staging39 / D18） ----------------
@@ -302,7 +341,9 @@ def _approval_gate(conn, room_id, msg_id, body, poster=None):
     m = TASK_REF_RE.search(body or "")
     if not m:
         return {}
-    tid = int(m.group(1))
+    tid = _bounded_task_id(m)
+    if tid is None:
+        return {}
     t = conn.execute(
         """SELECT t.title, t.assignee, mb.name AS assignee_name FROM tasks t
            LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (tid,)).fetchone()
@@ -471,15 +512,20 @@ def _approval_state(conn, task_id):
     没有返回 None；decided_by 为其后已出现的决议来源
     （'message' = 调度员决议消息，kind='decision'（规则引擎/独立审查）或历史
     kind='chat' 决议均认；'review' = 先前审查留痕），未决议为 None。"""
-    req = None
-    rows = conn.execute(
-        "SELECT * FROM messages WHERE kind='approval_request' ORDER BY id DESC").fetchall()
-    for r in rows:
-        if r["task_id"] == task_id:
-            req = r
+    req = conn.execute(
+        """SELECT * FROM messages
+           WHERE kind='approval_request' AND task_id=?
+           ORDER BY id DESC LIMIT 1""", (task_id,)).fetchone()
+    # 兼容迁移后新出现的旧式直写记录：只检查 task_id 为空且比已命中记录
+    # 更新的候选；正常 room_post 已在 _approval_gate 中补写 task_id。
+    for r in conn.execute(
+            """SELECT * FROM messages
+               WHERE kind='approval_request' AND task_id IS NULL
+               ORDER BY id DESC"""):
+        if req is not None and r["id"] <= req["id"]:
             break
-        m = TASK_REF_RE.search(r["body"] or "")
-        if m and int(m.group(1)) == task_id:
+        matched_task_id = _bounded_task_id(TASK_REF_RE.search(r["body"] or ""))
+        if matched_task_id == task_id:
             req = r
             break
     if not req:
@@ -833,6 +879,13 @@ def _used_combos(conn) -> set:
 def init():
     conn = db()
     conn.executescript(SCHEMA)
+    # audit() is used while init creates the dispatcher, so the additive column
+    # must exist before any initialization audit event can be written.
+    acols = [r[1] for r in conn.execute("PRAGMA table_info(audit)").fetchall()]
+    if "task_id" not in acols:
+        conn.execute("ALTER TABLE audit ADD COLUMN task_id INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_task ON audit(task_id, id)")
     conn.execute("INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)", (time.time(),))
     # 存量 DB 的 members 可能没有 avatar 列：迁移必须先于下面带 avatar 的
     # dispatcher INSERT，否则全新/未迁移 DB 在建调度员时就炸（顺序坑）。
@@ -929,6 +982,33 @@ def init():
         conn.execute("ALTER TABLE members ADD COLUMN access_mode TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO hub_settings(key,value) VALUES('external_enabled','1')")
+    # staging57 / 查询索引：审计事件结构化归属 + 历史数据一次性回填。
+    # 旧 detail 前缀口径严格对应 task <id>、task <id>:...、task <id> ...。
+    if not conn.execute(
+            "SELECT 1 FROM hub_settings WHERE key='audit_task_id_backfill_v1'").fetchone():
+        for r in conn.execute(
+                "SELECT id, detail FROM audit WHERE task_id IS NULL").fetchall():
+            task_id = _audit_task_id(r["detail"])
+            if task_id is not None:
+                conn.execute("UPDATE audit SET task_id=? WHERE id=?",
+                             (task_id, r["id"]))
+        conn.execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value) "
+            "VALUES('audit_task_id_backfill_v1','1')")
+    # 历史 approval_request 由正文携带任务号；迁移时补 task_id 后，热路径
+    # 可走 idx_messages_approval_task，不再每次倒扫整张 messages 表。
+    if not conn.execute(
+            "SELECT 1 FROM hub_settings WHERE key='approval_task_id_backfill_v1'").fetchone():
+        for r in conn.execute(
+                "SELECT id, body FROM messages "
+                "WHERE kind='approval_request' AND task_id IS NULL").fetchall():
+            task_id = _bounded_task_id(TASK_REF_RE.search(r["body"] or ""))
+            if task_id is not None:
+                conn.execute("UPDATE messages SET task_id=? WHERE id=? AND task_id IS NULL",
+                             (task_id, r["id"]))
+        conn.execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value) "
+            "VALUES('approval_task_id_backfill_v1','1')")
     # H2 房间归档标记。
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
     if "archived_at" not in rcols:
@@ -4354,11 +4434,9 @@ def build_server():
 
     @mcp.tool
     def task_audit(task_id: int) -> dict:
-        """调度员查某任务的完整轨迹（定稿 §11.1 任务详情的审计入口）：任务基本
-        信息 + audit 事件流中属于该任务的全部事件（detail 以 "task <id>" 开头
-        做归属匹配，分隔符精确匹配，防 task 1 误配 task 12）+ runs 执行台账
-        + task_transfers 转交链，一次返回供 App 渲染时间线。事件流上限 200 条，
-        超出时 truncated=true。"""
+        """调度员查某任务的完整轨迹：任务基本信息 + 按 audit.task_id 索引读取
+        的事件流 + runs 执行台账 + task_transfers 转交链。历史 detail 前缀由
+        init 一次性回填；事件流上限 200 条，额外读取一行判断是否截断。"""
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
@@ -4371,12 +4449,7 @@ def build_server():
         if not t:
             conn.close()
             raise ValueError(f"no such task: {task_id}")
-        pre = f"task {task_id}"
-        arows = conn.execute(
-            """SELECT ts, actor, action, detail FROM audit
-               WHERE detail=? OR detail LIKE ? OR detail LIKE ?
-               ORDER BY id ASC LIMIT 201""",
-            (pre, pre + ":%", pre + " %")).fetchall()
+        events, events_truncated = _task_audit_events(conn, task_id)
         rrows = conn.execute(
             """SELECT r.fence, mb.name AS member, r.status, r.outcome, r.detail,
                       r.started_at, r.ended_at
@@ -4388,9 +4461,8 @@ def build_server():
                FROM task_transfers WHERE task_id=? ORDER BY id ASC""",
             (task_id,)).fetchall()
         conn.close()
-        events = [dict(r) for r in arows[:200]]
         return {"task": dict(t), "events": events,
-                "events_truncated": len(arows) > 200,
+                "events_truncated": events_truncated,
                 "runs": [dict(r) for r in rrows],
                 "transfers": [dict(r) for r in xrows]}
 
