@@ -62,7 +62,7 @@ def _seed_pre_index_database(path: Path) -> None:
                 (2,2,'legacy','task_update','task 12 second event'),
                 (3,3,'legacy','task_update','task 1x must not match'),
                 (4,4,'legacy','task_update','task 9223372036854775808 overflow'),
-                (5,5,'legacy','task_update','task 0000000000000000000000000000000000001 too long');
+                (5,5,'legacy','task_update','task 10000000000000000000 too long');
             INSERT INTO messages VALUES
                 (1,1,1,'approval_request','请批准 任务#1',NULL,1),
                 (2,1,1,'approval_request','请批准 任务#12',NULL,2),
