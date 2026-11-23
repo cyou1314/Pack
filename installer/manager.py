@@ -341,7 +341,8 @@ def rollback_program_paths(swaps):
     return errors
 
 
-def replace_program_paths(stage_root, stage_hub, stage_engine):
+def replace_program_paths(stage_root, stage_hub, stage_engine, swaps):
+    """Swap staged program paths and record each mutation for caller-owned rollback."""
     previous_root = stage_root / "previous"
     previous_root.mkdir(mode=0o700)
     specs = []
@@ -350,37 +351,25 @@ def replace_program_paths(stage_root, stage_hub, stage_engine):
     for name in ENGINE_PROGRAM_DIRS:
         specs.append((engine / name, stage_engine / name, previous_root / "engine" / name))
 
-    swaps = []
-    try:
-        for target, staged, previous in specs:
-            previous.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if target.exists() or target.is_symlink():
-                os.replace(target, previous)
-            try:
-                os.replace(staged, target)
-            except Exception:
-                if previous.exists() or previous.is_symlink():
-                    os.replace(previous, target)
-                raise
-            swaps.append((target, previous))
-    except Exception:
-        errors = rollback_program_paths(swaps)
-        if errors:
-            raise RuntimeError("Program-file swap failed and automatic rollback was incomplete: " + "; ".join(errors))
-        raise
-    return swaps
+    for target, staged, previous in specs:
+        previous.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if target.exists() or target.is_symlink():
+            os.replace(target, previous)
+        # Record before installing the staged path: if the next rename fails,
+        # the outer transaction still knows where the original path lives.
+        swaps.append((target, previous))
+        os.replace(staged, target)
 
 
-def swap_app_bundle(app_stage):
+def swap_app_bundle(app_stage, previous_paths):
     previous = app_path.parent / f".Pack.app.previous-{time.time_ns()}"
     if previous.exists() or previous.is_symlink():
         raise RuntimeError(f"App rollback path already exists: {previous}")
     os.replace(app_path, previous)
-    try:
-        os.replace(app_stage, app_path)
-    except Exception:
-        os.replace(previous, app_path)
-        raise
+    # Record the moved bundle before the replacement rename so the caller can
+    # recover it even when the second rename itself fails.
+    previous_paths.append(previous)
+    os.replace(app_stage, app_path)
     return previous
 
 
@@ -476,6 +465,7 @@ def upgrade():
     stage_root = None
     app_stage = None
     app_previous = None
+    app_swap_state = []
     swaps = []
     services_stopped = False
     backup_verified = False
@@ -495,8 +485,8 @@ def upgrade():
         if not available(hp) or not available(ep):
             raise RuntimeError("A Pack service port is still occupied after stopping LaunchAgents.")
 
-        swaps = replace_program_paths(stage_root, stage_hub, stage_engine)
-        app_previous = swap_app_bundle(app_stage)
+        replace_program_paths(stage_root, stage_hub, stage_engine, swaps)
+        app_previous = swap_app_bundle(app_stage, app_swap_state)
         app_stage = None
         bootstrap_upgrade_agents()
 
@@ -519,6 +509,8 @@ def upgrade():
                     ctl("bootout", f"gui/{uid}/{label}", check=False)
                 except Exception as stop_error:
                     rollback_errors.append(f"stop {label}: {stop_error}")
+            if app_previous is None and app_swap_state:
+                app_previous = app_swap_state[-1]
             rollback_errors.extend(rollback_app_bundle(app_previous))
             rollback_errors.extend(rollback_program_paths(swaps))
             if backup_root is not None:

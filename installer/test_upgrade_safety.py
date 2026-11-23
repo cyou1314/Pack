@@ -288,6 +288,107 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertTrue(any(call[0] == "bootout" for call in calls))
         self.assertTrue(any(call[0] == "bootstrap" for call in calls))
 
+    def test_program_swap_rollback_failure_keeps_services_stopped(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl()
+        run, _ = f.fake_subprocess_run()
+        real_replace = os.replace
+        failed = {"services_install": False}
+
+        def guarded_replace(source, destination):
+            source = Path(source)
+            destination = Path(destination)
+            if (
+                destination == f.hub / "services"
+                and ".pack-upgrade-" in str(source)
+                and not failed["services_install"]
+            ):
+                failed["services_install"] = True
+                raise OSError("injected staged services rename failure")
+            if (
+                destination == f.hub / "python"
+                and "previous" in source.parts
+            ):
+                raise OSError("injected Python rollback rename failure")
+            return real_replace(source, destination)
+
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=True),
+            patch.object(manager, "os") as os_mock,
+        ):
+            os_mock.replace.side_effect = guarded_replace
+            os_mock.umask.side_effect = os.umask
+            os_mock.environ = os.environ
+            os_mock.path = os.path
+            os_mock.name = os.name
+            os_mock.getuid = os.getuid
+            os_mock.open = os.open
+            os_mock.fdopen = os.fdopen
+            os_mock.O_WRONLY = os.O_WRONLY
+            os_mock.O_CREAT = os.O_CREAT
+            os_mock.O_EXCL = os.O_EXCL
+            with self.assertRaisesRegex(RuntimeError, "rollback needs attention"):
+                manager.upgrade()
+
+        self.assertTrue(failed["services_install"])
+        self.assertFalse(any(call[0] == "bootstrap" for call in calls))
+        self.assertEqual(loaded, set())
+        self.assertTrue(list(f.base.glob(".pack-upgrade-*/previous/hub/python")))
+        self.assertTrue((f.app_path / "old-app.txt").is_file())
+
+    def test_app_bundle_rollback_failure_keeps_services_stopped(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl()
+        run, _ = f.fake_subprocess_run()
+        real_replace = os.replace
+        failed = {"new_app_install": False}
+
+        def guarded_replace(source, destination):
+            source = Path(source)
+            destination = Path(destination)
+            if (
+                destination == f.app_path
+                and ".Pack.app.upgrade-" in str(source)
+                and not failed["new_app_install"]
+            ):
+                failed["new_app_install"] = True
+                raise OSError("injected new App rename failure")
+            if (
+                destination == f.app_path
+                and ".Pack.app.previous-" in str(source)
+            ):
+                raise OSError("injected App rollback rename failure")
+            return real_replace(source, destination)
+
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=True),
+            patch.object(manager, "os") as os_mock,
+        ):
+            os_mock.replace.side_effect = guarded_replace
+            os_mock.umask.side_effect = os.umask
+            os_mock.environ = os.environ
+            os_mock.path = os.path
+            os_mock.name = os.name
+            os_mock.getuid = os.getuid
+            os_mock.open = os.open
+            os_mock.fdopen = os.fdopen
+            os_mock.O_WRONLY = os.O_WRONLY
+            os_mock.O_CREAT = os.O_CREAT
+            os_mock.O_EXCL = os.O_EXCL
+            with self.assertRaisesRegex(RuntimeError, "rollback needs attention"):
+                manager.upgrade()
+
+        self.assertTrue(failed["new_app_install"])
+        self.assertFalse(any(call[0] == "bootstrap" for call in calls))
+        self.assertEqual(loaded, set())
+        self.assertFalse(f.app_path.exists())
+        self.assertEqual(len(list(f.app_path.parent.glob(".Pack.app.previous-*"))), 1)
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
+
     def test_failed_restart_restores_previous_program_and_app(self):
         f = self.fixture
         ctl, calls, loaded = f.fake_ctl(fail_watch_once=True, mutate_db_on_hub_bootstrap=True)
