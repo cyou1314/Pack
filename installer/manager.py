@@ -682,12 +682,36 @@ def _acquire_install_lock():
 
 
 def _rollback_failed_install(agent_plists, owned_paths, agents_dir, agents_preexisting, base_dir, base_preexisting):
-    """Remove only destinations verified absent before this fresh install attempt."""
+    """Remove only attempt-owned paths after every started service is confirmed stopped."""
+    services_not_stopped = []
     for label in labels.values():
+        target = f"gui/{uid}/{label}"
         try:
-            ctl("bootout", f"gui/{uid}/{label}", check=False)
+            result = ctl("bootout", target, check=False)
+            if result.returncode != 0:
+                # A failed bootout is safe only when launchctl confirms the
+                # service is no longer loaded. Unknown state means preserve
+                # every file the process may still be using.
+                status = ctl("print", target, check=False)
+                if status.returncode == 0:
+                    services_not_stopped.append(label)
         except Exception:
-            pass
+            try:
+                status = ctl("print", target, check=False)
+                if status.returncode == 0:
+                    services_not_stopped.append(label)
+            except Exception:
+                services_not_stopped.append(label)
+
+    if services_not_stopped:
+        print(
+            "Pack installer rollback incomplete; could not confirm these services stopped: "
+            + ", ".join(services_not_stopped)
+            + ". Preserving LaunchAgent plists and install paths for manual recovery.",
+            file=sys.stderr,
+        )
+        return False
+
     for path in (*agent_plists, *owned_paths):
         try:
             remove_path(path)
@@ -703,6 +727,7 @@ def _rollback_failed_install(agent_plists, owned_paths, agents_dir, agents_preex
             pathlib.Path(base_dir).rmdir()
         except OSError:
             pass
+    return True
 
 
 def _install_unlocked():
