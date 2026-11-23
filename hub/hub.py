@@ -1505,6 +1505,7 @@ def build_server(context: HubContext | None = None):
         from .services.memory import read_memory as _read_memory
         from .services.memory import read_memory_versions as _read_memory_versions
         from .services.memory import write_memory as _write_memory
+        from .services.memory import rollback_memory as _rollback_memory
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1533,6 +1534,7 @@ def build_server(context: HubContext | None = None):
         from services.memory import read_memory as _read_memory
         from services.memory import read_memory_versions as _read_memory_versions
         from services.memory import write_memory as _write_memory
+        from services.memory import rollback_memory as _rollback_memory
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2957,43 +2959,19 @@ def build_server(context: HubContext | None = None):
         member 指定目标成员（private* 层）；room-shared 忽略 member。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            with _lock:
-                _mem_validate_scope_key(scope, key)
-                if me["role"] != "dispatcher":
-                    _mem_denied(conn, me, member or me["name"], scope, "rollback")
-                target = _mem_target(conn, me, scope, member)
-                v = conn.execute(
-                    "SELECT * FROM member_memory_versions "
-                    "WHERE id=? AND member=? AND scope=? AND key=?",
-                    (version_id, target, scope, key)).fetchone()
-                if not v:
-                    _mem_err("not_found",
-                             "该版本不属于这个 (成员, scope, key)，先用 memory_versions 核对",
-                             version_id=version_id)
-                refs = [{"type": "rollback_of", "id": version_id}]
-                vid, _size, _now = _mem_append_version(
-                    conn, target, scope, key, v["text"], "dispatcher", "dispatcher", refs)
-                audit(conn, me["name"], "memory_rollback",
-                      json.dumps({"member": target, "scope": scope, "key": key,
-                                  "restored_from": version_id, "new_version_id": vid},
-                                 ensure_ascii=False))
-                conn.commit()
-                return {"new_version_id": vid, "restored_from": version_id}
-        finally:
-            conn.close()
-
-    # ---------------- Skill 模组 S1（MODULES-DESIGN 第一节） ----------------
-
-    def _get_skill(conn, name):
-        # 与 skill_publish 的 name 归一口径一致（publish 建名时 strip，
-        # 读/指派/回滚都经此单点，同样 strip，避免带空白查不到）。
-        name = (name or "").strip()
-        s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
-        if not s:
-            raise ValueError(f"no such skill: {name}")
-        return s
+        return _rollback_memory(
+            context, me, scope, key, version_id, member,
+            validate_scope_key=_mem_validate_scope_key,
+            resolve_target=_mem_target,
+            denied=lambda conn, actor, target, scope, what: _mem_denied(
+                conn, actor, target, scope, what, context=context
+            ),
+            error=_mem_err,
+            append_version=lambda conn, target, scope, key, text, author, origin, refs:
+                _mem_append_version(
+                    conn, target, scope, key, text, author, origin, refs,
+                ),
+        )
 
     @mcp.tool
     def skill_publish(name: str, body: str, description: str = "") -> dict:

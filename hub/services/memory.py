@@ -206,3 +206,52 @@ def write_memory(context, actor: dict, scope: str, key: str,
             raise
         finally:
             conn.close()
+
+
+def rollback_memory(context, actor: dict, scope: str, key: str,
+                   version_id: int, member: str = "", *,
+                   validate_scope_key, resolve_target, denied, error,
+                   append_version) -> dict:
+    """Restore a historical value as a new immutable version."""
+    with context.lock:
+        conn = context.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            validate_scope_key(scope, key)
+            if actor["role"] != "dispatcher":
+                denied(conn, actor, member or actor["name"], scope, "rollback")
+            target = resolve_target(conn, actor, scope, member)
+            version = conn.execute(
+                "SELECT * FROM member_memory_versions "
+                "WHERE id=? AND member=? AND scope=? AND key=?",
+                (version_id, target, scope, key),
+            ).fetchone()
+            if not version:
+                error(
+                    "not_found",
+                    "该版本不属于这个 (成员, scope, key)，先用 memory_versions 核对",
+                    version_id=version_id,
+                )
+            refs = [{"type": "rollback_of", "id": version_id}]
+            new_version_id, _size, _ = append_version(
+                conn, target, scope, key, version["text"],
+                "dispatcher", "dispatcher", refs,
+            )
+            context.audit(
+                conn, actor["name"], "memory_rollback",
+                json.dumps({
+                    "member": target, "scope": scope, "key": key,
+                    "restored_from": version_id,
+                    "new_version_id": new_version_id,
+                }, ensure_ascii=False),
+            )
+            conn.commit()
+            return {
+                "new_version_id": new_version_id,
+                "restored_from": version_id,
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

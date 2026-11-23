@@ -385,3 +385,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 保持 private-core/room-shared UTF-8 字节限制、private 单篇字符限制、主题墓碑、external/self/dispatcher origin 规则、source_refs 结构、soft cap 只警告、错误 JSON 与返回值不变。
 - 新增 `hub/test_memory_write_service.py` 11 项隔离测试，覆盖版本与审计元数据、origin 防伪、source_refs/类型校验、字节/字符上限、room-shared 权限、删除墓碑、软上限告警、审计失败回滚及独立 HubContext 并发争用最后一个主题名额。接入 CI。
 - 不新增 SQLite 表或 MCP 工具；`memory_rollback` 暂留 Hub 入口，后续单独迁移。
+
+### Memory 回滚服务迁移（2026-11-23）
+
+- 将 `memory_rollback` 的权限判断、目标成员解析、历史版本归属校验、回滚新版本写入与审计迁入 `hub/services/memory.py:rollback_memory`；原 MCP 参数/返回形态不变，调度员专属门禁与 `_mem_denied` 审计口径复用。
+- 回滚开始时先取得 `BEGIN IMMEDIATE`，再读取目标版本并追加新版本，避免跨 Hub 进程读到旧状态后与并发写入交错；历史版本不修改、不删除，source_refs 继续记录 `rollback_of`。
+- 新增 `hub/test_memory_rollback_service.py` 6 项隔离测试，覆盖 dispatcher 回滚来源、成员拒绝审计、版本不归属、room-shared 目标规则、审计失败回滚和 scope/key 校验。接入 CI 与安装包 smoke。
+- Memory 的 read / versions / write / rollback 四个 MCP 接口现已全部迁入服务模块；不新增工具或表，不改变现有记忆格式与限额。
