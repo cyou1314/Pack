@@ -75,6 +75,7 @@ class DmgManifestTests(unittest.TestCase):
         source = (ROOT / "installer" / "mac-inventory.sh").read_text(encoding="utf-8")
         self.assertIn("launchctl print", source)
         self.assertIn("sqlite3 -readonly", source)
+        self.assertNotIn("-maxdepth", source)
         self.assertIn("EntryPointValidation=expected-basename", source)
         self.assertIn("EntryPointValidation=mismatch", source)
         self.assertNotIn("Print :ProgramArguments'", source)

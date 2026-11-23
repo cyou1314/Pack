@@ -139,12 +139,25 @@ if [[ -d "$HUB/attachments" && ! -L "$HUB/attachments" ]]; then
   line "AttachmentFileCount=${count:-unavailable}"
 fi
 if [[ -d "$HUB/backups" && ! -L "$HUB/backups" ]]; then
-  count="$(find "$HUB/backups" -maxdepth 1 -type f -name 'pack-*.db' -print 2>/dev/null | wc -l | tr -d '[:space:]')"
-  latest="$(ls -1t "$HUB"/backups/pack-*.db 2>/dev/null | head -n 1 | sed 's|.*/||' || true)"
-  line "DatabaseBackupCount=${count:-unavailable}"
+  count=0
+  latest=""
+  for candidate in "$HUB"/backups/pack-*.db; do
+    if [[ -f "$candidate" && ! -L "$candidate" ]]; then
+      count=$((count + 1))
+      if [[ -z "$latest" || "$candidate" -nt "$HUB/backups/$latest" ]]; then
+        latest="${candidate##*/}"
+      fi
+    fi
+  done
+  line "DatabaseBackupCount=$count"
   line "LatestDatabaseBackup=${latest:-none}"
-  upgrades="$(find "$HUB/backups" -maxdepth 1 -type d -name 'upgrade-*' -print 2>/dev/null | wc -l | tr -d '[:space:]')"
-  line "UpgradeBackupCount=${upgrades:-unavailable}"
+  upgrades=0
+  for candidate in "$HUB"/backups/upgrade-*; do
+    if [[ -d "$candidate" && ! -L "$candidate" ]]; then
+      upgrades=$((upgrades + 1))
+    fi
+  done
+  line "UpgradeBackupCount=$upgrades"
 fi
 
 section "Privacy"
