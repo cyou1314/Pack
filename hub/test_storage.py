@@ -2,10 +2,14 @@
 """Tests for the isolated SQLite storage primitives."""
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
+from core.context import HubContext
 from core.storage import connect, write_audit
+from hub import init as init_hub
 
 
 class StorageTests(unittest.TestCase):
@@ -15,9 +19,11 @@ class StorageTests(unittest.TestCase):
             connection = connect(path)
             try:
                 self.assertIs(connection.row_factory, sqlite3.Row)
+                # Opening a request connection must not attempt a persistent
+                # journal-mode transition; fresh SQLite databases stay in DELETE.
                 self.assertEqual(
                     connection.execute("PRAGMA journal_mode").fetchone()[0].lower(),
-                    "wal",
+                    "delete",
                 )
                 self.assertEqual(
                     connection.execute("PRAGMA busy_timeout").fetchone()[0],
@@ -29,6 +35,38 @@ class StorageTests(unittest.TestCase):
                 )
             finally:
                 connection.close()
+
+    def test_hub_init_enables_wal_and_request_connections_preserve_it(self):
+        with tempfile.TemporaryDirectory(prefix="pack-storage-init-test-") as directory:
+            root = Path(directory)
+            database = root / "hub.db"
+            context = HubContext(
+                base_dir=str(root),
+                db_path=str(database),
+                attachment_dir=str(root / "attachments"),
+                lock=threading.RLock(),
+                clock=time.time,
+            )
+
+            initial = connect(database)
+            try:
+                self.assertEqual(
+                    initial.execute("PRAGMA journal_mode").fetchone()[0].lower(),
+                    "delete",
+                )
+            finally:
+                initial.close()
+
+            init_hub(context)
+
+            request_connection = context.connect()
+            try:
+                self.assertEqual(
+                    request_connection.execute("PRAGMA journal_mode").fetchone()[0].lower(),
+                    "wal",
+                )
+            finally:
+                request_connection.close()
 
     def test_write_audit_uses_supplied_timestamp_and_does_not_commit(self):
         with tempfile.TemporaryDirectory(prefix="pack-storage-test-") as directory:

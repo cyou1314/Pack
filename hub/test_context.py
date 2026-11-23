@@ -25,9 +25,11 @@ class HubContextTests(unittest.TestCase):
             connection = context.connect()
             try:
                 self.assertTrue((root / "isolated.db").exists())
+                # A context connection is a request connection; persistent WAL
+                # mode is configured only by Hub initialization.
                 self.assertEqual(
                     connection.execute("PRAGMA journal_mode").fetchone()[0].lower(),
-                    "wal",
+                    "delete",
                 )
                 connection.execute(
                     "CREATE TABLE audit(ts REAL, actor TEXT, action TEXT, detail TEXT)"
@@ -64,6 +66,15 @@ class HubContextTests(unittest.TestCase):
             )
 
             hub.init(context)
+
+            initialized = sqlite3.connect(root / "isolated.db")
+            try:
+                self.assertEqual(
+                    initialized.execute("PRAGMA journal_mode").fetchone()[0].lower(),
+                    "wal",
+                )
+            finally:
+                initialized.close()
 
             self.assertTrue((root / "isolated.db").is_file())
             token_path = root / ".dispatcher_token"
