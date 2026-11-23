@@ -67,6 +67,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     "FROM agents ORDER BY legacy_member_id"
                 ).fetchall()
                 self.assertEqual(len(agents), 4)
+                provider_ids = {row[0] for row in connection.execute("SELECT provider_id FROM providers")}
+                self.assertNotIn("external", provider_ids)
                 self.assertEqual(
                     tuple(agents[0]),
                     ("legacy-member-1", "codex", 1, "codex-user", None,
