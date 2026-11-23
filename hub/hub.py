@@ -68,6 +68,7 @@ if __package__:
     from .core.schema import SCHEMA
     from .core.context import HubContext
     from .core.migrations import apply_migrations as _apply_hub_migrations
+    from .core.task_ids import audit_task_id as _audit_task_id
     from .core.task_ids import bounded_task_id as _bounded_task_id
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
@@ -84,6 +85,7 @@ else:
     from core.schema import SCHEMA
     from core.context import HubContext
     from core.migrations import apply_migrations as _apply_hub_migrations
+    from core.task_ids import audit_task_id as _audit_task_id
     from core.task_ids import bounded_task_id as _bounded_task_id
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
