@@ -90,7 +90,7 @@
 - [ ] Hub 按领域拆分为认证/成员、房间/消息、任务/运行、审批/规则、附件/备份、外部 Agent 等模块。
 - [ ] 保持现有 MCP tool 名称、参数、返回结构和鉴权语义兼容。
 - [ ] SwiftUI 按 Rooms、Agents、Tasks、Approvals、Settings、Computer 等 Feature 拆分。
-- [ ] 将 AppState 拆成连接、会话、房间、任务、审批等独立状态域。（Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat 行为已分批迁入 extension；`@Published` 状态仍由 AppState 托管，独立 Store 暂未引入。）
+- [ ] 将 AppState 拆成连接、会话、房间、任务、审批等独立状态域。（Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle 行为已分批迁入 extension；`@Published` 状态仍由 AppState 托管，独立 Store 暂未引入。）
 - [ ] 统一配置、日志、错误模型、网络客户端和设计 Token。
 - [ ] 建立依赖方向规则，避免 Feature 之间循环依赖。
 
@@ -197,3 +197,10 @@
 - @成员提示、问答回复、附件和聊天消息生命周期迁入 `AppState+Chat.swift`。
 - 这是声明边界迁移，不是状态架构重写：`@Published` 状态、依赖注入、actor 隔离、HubClient 与 UserDefaults 仍保持原有归属；不新增数据库迁移、MCP 工具、Swift Package target 或第三方依赖。
 - 后续继续评估 Refresh 主循环与 Settings 的职责边界；只有出现明确跨域状态所有权和测试收益时才引入独立 Store。
+
+
+## 12. Phase 4 追加记录（2026-11-23：AppState Lifecycle）
+
+- `start()`、`refresh()` 和任务分页读取已迁入 `AppState+Lifecycle.swift`；原轮询周期、地址发现、快照读取顺序、generation 守卫、失败重试与未读/通知处理均保持原实现。
+- `AppState.swift` 主要保留 `@Published` 状态所有权、少量应用级派发/派生状态和通用 action helper；尚未把状态属性拆成独立 Store。
+- 后续不以文件行数为目标继续拆分；优先检查 Settings/catalog 边界、跨域状态所有权和可测性，再决定是否引入更明确的 Coordinator/Store。

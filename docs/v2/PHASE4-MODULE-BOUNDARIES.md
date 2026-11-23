@@ -1,6 +1,6 @@
 # Pack Phase 4：模块边界与渐进拆分方案
 
-> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat 扩展；Refresh 主循环、Settings 与部分跨域状态仍待继续拆分。  
+> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle 扩展；Settings 与部分跨域状态仍待继续拆分。  
 > 原则：先冻结协议与数据契约，再按领域提取模块；不做大爆炸式重写。
 
 ## 1. 当前代码边界
@@ -10,7 +10,7 @@
 | 区域 | 当前文件 | 规模 | 现状 |
 |---|---|---:|---|
 | Hub 服务端 | `hub/hub.py` | 约 2,874 行 | 保留 FastMCP 入口、认证/工具注册与兼容 helper；多数成员、房间、任务、规则、附件、记忆、技能、桌面和配对业务已迁入 `hub/services/` |
-| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 385 行 | 启动入口已独立；Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat 方法已迁入领域扩展；Refresh 主循环与部分应用级状态仍集中在 AppState |
+| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 218 行 | 启动/刷新流程与 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat 方法已迁入领域扩展；AppState 主要保留状态属性与应用级协调 |
 | App 视图 | `Views.swift` + Feature Views | 233 + 430/448/285/64 行 | 主窗口、Chat、Tasks、Settings、TaskDetail 和 Components 已按声明边界拆分；本批仅移动声明，不改布局/行为 |
 | 网络客户端 | `HubClient.swift` / `Networking/HubTransport.swift` | 107 / 74 行 | HubClient 保留 MCP session、JSON-RPC、SSE 解析与会话恢复；HTTP 请求、Bearer Header、超时和同源重定向策略独立在 HubTransport |
 | 领域模型 | `app/Sources/PackApp/Models.swift` | 276 行 | 仍有 App 侧消息/任务/成员模型；PackCore 保持独立且不依赖 SwiftUI |
@@ -507,3 +507,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 本批只移动既有声明和 imports；所有 `@Published` 状态仍由同一个 `AppState` 托管，不新增 Store、Swift Package target 或依赖。仅将附件加载去重状态 `attachmentLoading` 从 private 调整为 PackApp module 内部可见，以供 Chat extension 使用。
 - 保持 Hub MCP tool 名称/参数、审批范围校验、决议消息文本、任务验收语义、ReplyCodec、附件数量/大小限制、UserDefaults 键、导航和 UI 行为不变。
 - 本批验收以 macOS Swift Build/Unit Tests/App Bundle CI 为准；真实 Mac 交互与 Keychain/LaunchAgent 验收仍未开始。
+
+
+### AppState 启动与刷新生命周期拆分（2026-11-23）
+
+- 新增 `AppState+Lifecycle.swift`，迁出 `start()`、`refresh()` 与任务分页读取 helper；AppState 主文件不再直接承载轮询和整轮 Hub 快照刷新流程。
+- 保持启动时配置加载、owner client 初始化、地址发现、刷新间隔下限、room/client generation 防串数据、任务分页上限、失败重试、通知快照、未读统计和延迟已读行为不变。
+- `pollTask`、`consecutiveRefreshFailures`、`taskListPageSize`、`taskListMaxPages` 仅从 private 调整为 PackApp module 内部可见，供同一 AppState 的 Lifecycle extension 访问；未暴露 public API。
+- 不新增 Store、actor、Swift Package target 或依赖；不修改 Hub API、MCP schema、SQLite schema、Keychain、配置路径和用户数据。
+- 本批以 Swift Build、Swift Unit Tests 和 App Bundle CI 验收；真实 Mac 启动/登录态与 LaunchAgent 验收仍后置。
