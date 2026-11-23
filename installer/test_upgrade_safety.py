@@ -193,7 +193,8 @@ class UpgradeFixture:
 
         return ctl, calls, loaded
 
-    def fake_subprocess_run(self, pgrep_returncode=1, backup_failure=False):
+    def fake_subprocess_run(self, pgrep_returncode=1, backup_failure=False,
+                            migration_failure=False):
         calls = []
 
         def run(args, **kwargs):
@@ -216,7 +217,15 @@ class UpgradeFixture:
             if args[0] == "/usr/bin/ditto":
                 shutil.copytree(Path(args[1]), Path(args[2]), symlinks=True)
                 return SimpleNamespace(returncode=0)
-            if args[0] in ("codesign", "plutil") or args[0].endswith("/python3"):
+            if args[0].endswith("/python3"):
+                if len(args) >= 3 and args[1:3] == ["hub.py", "init"]:
+                    staged_db = Path(kwargs["cwd"]) / "pack.db"
+                    if not staged_db.is_file():
+                        raise AssertionError("migration preflight did not receive a staged DB copy")
+                    if migration_failure:
+                        raise subprocess.CalledProcessError(1, args)
+                return SimpleNamespace(returncode=0)
+            if args[0] in ("codesign", "plutil"):
                 return SimpleNamespace(returncode=0)
             raise AssertionError(f"Unexpected subprocess call: {args}")
 
@@ -303,6 +312,28 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
 
+    def test_migration_preflight_failure_restarts_old_services_before_program_swap(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl()
+        run, subprocess_calls = f.fake_subprocess_run(migration_failure=True)
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_hub_ready", return_value=None),
+            patch.object(manager, "wait_for_port", return_value=None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "live database was left untouched"):
+                manager.upgrade()
+
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
+        self.assertTrue((f.app_path / "old-app.txt").is_file())
+        self.assertFalse((f.app_path / "new-app.txt").exists())
+        self.assertEqual(loaded, set(f.labels.values()))
+        self.assertTrue(any(args[1:3] == ["hub.py", "init"] for args in subprocess_calls))
+        self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
+
     def test_port_conflict_after_stop_does_not_rewind_live_database(self):
         f = self.fixture
         ctl, calls, loaded = f.fake_ctl(mutate_db_on_first_bootout=True)
@@ -364,6 +395,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         hub_ready.assert_called_once()
         self.assertEqual(loaded, set(f.labels.values()))
         self.assertTrue(any(args[0] == "/usr/bin/ditto" for args in subprocess_calls))
+        self.assertTrue(any(args[1:3] == ["hub.py", "init"] for args in subprocess_calls))
         self.assertTrue(any(call[0] == "bootout" for call in calls))
         self.assertTrue(any(call[0] == "bootstrap" for call in calls))
 
