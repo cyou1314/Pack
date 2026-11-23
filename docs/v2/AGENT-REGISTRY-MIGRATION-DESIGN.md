@@ -98,7 +98,7 @@ Provider 目录描述厂商，不代表该厂商的所有连接方式均已支�
 
 1. 仅选取 `members.role='member'`；排除 owner/dispatcher。
 2. 每行保留原 member ID 映射；旧名字、展示名、创建时间和 provider 原始标签按白名单复制。
-3. `kind='external'` 可映射为 `external_agent`；其他旧成员一律标记 `legacy_unclassified`，不根据 provider='muse' 或 login_state 推断 native/local/API。
+3. `kind='external'` 只映射连接模式 `external_agent`，不得覆盖厂商身份；Provider 按显式白名单独立映射。其他旧成员一律标记 `legacy_unclassified`，不根据 provider='muse' 或 login_state 推断 native/local/API。
 4. `removed_at IS NOT NULL` 的行映射为 removed；不激活、不重新配对。
 5. 首轮不自动创建 agent_connections 或 agent_sessions。旧 token hash、私有记忆、原生会话和凭据均留在旧系统/本机。
 6. `bound_room_id` / `joined_msg_id` 暂时仍由 members 外部成员 gate 使用；不自动推导新的多房间 room_agents 关系。
@@ -145,10 +145,12 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 
 ## 8. M1a 实施记录（候选 PR，2026-11-23）
 
-- 新增 `hub/core/migrations.py`：版本号 + SHA-256 checksum migration ledger；所有 DDL/DML 在 `BEGIN IMMEDIATE` 中执行，失败整体 rollback；重复执行验证 checksum 后跳过。
+- 新增 `hub/core/migrations.py`：版本号 + SHA-256 checksum migration ledger；checksum 同时覆盖 DDL、Provider 映射表及数据回填函数 AST；所有 DDL/DML 在 `BEGIN IMMEDIATE` 中执行，失败整体 rollback；重复执行验证 checksum 后跳过。
 - 新增 providers / agents / agent_connections / agent_sessions 表与外键、唯一索引、查询索引。首版不生成 connection/session 行，不复制凭据或私人记忆。
-- 对现有 `members.role='member'` 逐行建立稳定 ID `legacy-member-{id}` 映射；dispatcher/owner 不映射。已软删除成员标记 removed；external kind 映射为 external_agent；其他连接模式保持未分类。Provider 使用显式白名单映射，未知值归入 legacy 并保留原始标签。
+- 对现有 `members.role='member'` 逐行建立稳定 ID `legacy-member-{id}` 映射；dispatcher/owner 不映射。已软删除成员标记 removed；external kind 只映射为 external_agent 连接模式，不覆盖 codex/gemini 等厂商身份。Provider 使用显式白名单映射，未知值归入 legacy 并保留原始标签。
 - `hub/core/storage.py` 每个连接启用 `PRAGMA foreign_keys=ON`；现有旧表不添加/重写外键，旧 token、任务、消息、记忆和房间绑定不改。
 - `hub.init()` 在既有兼容列迁移提交后运行独立版本化迁移；不由 DMG 安装器执行，不读取 Keychain，不触碰 Provider 账号。
 - 新增迁移单测覆盖 legacy 映射、重复执行、外键拒绝非法引用和失败回滚；CI 增加该测试，SQLite fresh/legacy snapshots 更新。
 - **M1a 验收仍需 CI 与代码审查通过。** M1b shadow read、差异报告和并发 init 专项测试尚未实施；此阶段没有启用新读路径。
+
+- Codex 审查修正：Provider 身份与 external connection mode 独立归一；迁移 checksum 已纳入回填逻辑 AST 与 Provider 映射表，防止数据迁移规则变化却复用旧 checksum。
