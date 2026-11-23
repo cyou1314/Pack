@@ -1563,10 +1563,12 @@ def build_server(context: HubContext | None = None):
         from .services.members import list_members as _list_members
         from .services.members import register_member as _register_member
         from .services.members import heartbeat as _heartbeat
+        from .services.members import set_member_avatar as _set_member_avatar
     else:
         from services.members import list_members as _list_members
         from services.members import register_member as _register_member
         from services.members import heartbeat as _heartbeat
+        from services.members import set_member_avatar as _set_member_avatar
     if __package__:
         from .services.members import set_login_state as _set_login_state
         from .services.members import set_access_mode as _set_access_mode
@@ -1764,49 +1766,14 @@ def build_server(context: HubContext | None = None):
         返回 {"name", "avatar"}。"""
         me = authenticate()
         require(me, "dispatcher")
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute("SELECT * FROM members WHERE name=?",
-                                   (name,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such member: {name}")
-                if row["removed_at"] is not None:
-                    raise ValueError(f"member removed: {name}")
-                try:
-                    want = json.loads(avatar_combo)
-                except Exception:
-                    raise ValueError("avatar_combo: not valid JSON")
-                if not isinstance(want, dict):
-                    raise ValueError("avatar_combo: must be a JSON object")
-                pick = {}
-                for key, allowed in (("species", AVATAR_SPECIES),
-                                     ("palette", AVATAR_PALETTES),
-                                     ("accessory", AVATAR_ACCESSORIES),
-                                     ("bg", AVATAR_BGS)):
-                    v = want.get(key)
-                    if v is None:
-                        raise ValueError(f"avatar_combo: missing {key}")
-                    if v not in allowed:
-                        raise ValueError(f"avatar_combo: bad {key}: {v}")
-                    pick[key] = v
-                combo = (f"{pick['species']}|{pick['palette']}|"
-                         f"{pick['accessory']}|{pick['bg']}")
-                try:
-                    cur = json.loads(row["avatar"]) if row["avatar"] else {}
-                except Exception:
-                    cur = {}
-                if combo in _used_combos(conn) and cur.get("combo") != combo:
-                    raise ValueError(f"avatar_combo: combo already taken: {combo}")
-                cur.update(pick)
-                cur["combo"] = combo
-                conn.execute("UPDATE members SET avatar=? WHERE id=?",
-                             (json.dumps(cur), row["id"]))
-                audit(conn, me["name"], "member_avatar_set", name)
-                conn.commit()
-                return {"name": name, "avatar": cur}
-            finally:
-                conn.close()
+        return _set_member_avatar(
+            context, me, name, avatar_combo,
+            avatar_species=AVATAR_SPECIES,
+            avatar_palettes=AVATAR_PALETTES,
+            avatar_accessories=AVATAR_ACCESSORIES,
+            avatar_bgs=AVATAR_BGS,
+            used_combos=_used_combos,
+        )
 
     @mcp.tool
     def member_quota_set(member_name: str, week_used_pct: float = None,

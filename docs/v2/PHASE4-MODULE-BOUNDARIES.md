@@ -423,3 +423,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 保持 removed name 永久保留、avatar_combo 局部覆盖/自动补全、provider 初始 pending、profile/provider 长度限制与原 IntegrityError 映射。heartbeat 仍只更新时间戳、不额外写审计。
 - 新增 `hub/test_member_registration_service.py` 9 项隔离测试，覆盖 token hash、provider 状态、自定义头像组合、JSON/字段拒绝、重复组合、名字保留、字段限额、审计失败回滚、跨 HubContext 头像组合竞争和心跳更新时间。接入 CI。
 - 不新增 MCP 工具或 SQLite 表；pair redemption HTTP 路由保持原实现，后续单独审计。
+
+### 成员头像更换服务化（2026-11-23）
+
+- 将 `member_avatar_set` 迁入 `hub/services/members.py`；Hub 层保留 dispatcher 鉴权，头像枚举与当前在册组合通过显式参数注入。
+- 在检查组合占用之前执行 `BEGIN IMMEDIATE`，跨 Hub 进程保证全员 avatar combo 唯一；允许成员保持自己的当前组合，保留 glyph/渐变色，只更新 species/palette/accessory/bg/combo。
+- 新增 `hub/test_member_avatar_service.py` 7 项隔离测试，覆盖换头像、本人组合幂等、JSON/字段校验、重复组合、成员状态、审计失败回滚与独立 HubContext 并发抢占。接入 CI。
+- 不新增表或工具，member_register 与 member_avatar_set 共用同一成员服务模块。

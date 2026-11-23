@@ -460,3 +460,66 @@ def heartbeat(context, actor) -> dict:
     finally:
         conn.close()
     return {"ok": True, "member": actor["name"]}
+
+
+def set_member_avatar(context, actor, name: str, avatar_combo_json: str, *,
+                      avatar_species, avatar_palettes, avatar_accessories,
+                      avatar_bgs, used_combos) -> dict:
+    """Replace one active member's unique avatar combination atomically."""
+    with context.lock:
+        conn = context.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM members WHERE name=?", (name,),
+            ).fetchone()
+            if not row:
+                raise ValueError(f"no such member: {name}")
+            if row["removed_at"] is not None:
+                raise ValueError(f"member removed: {name}")
+            try:
+                requested = json.loads(avatar_combo_json)
+            except Exception:
+                raise ValueError("avatar_combo: not valid JSON")
+            if not isinstance(requested, dict):
+                raise ValueError("avatar_combo: must be a JSON object")
+            selected = {}
+            for key, allowed in (
+                ("species", avatar_species),
+                ("palette", avatar_palettes),
+                ("accessory", avatar_accessories),
+                ("bg", avatar_bgs),
+            ):
+                value = requested.get(key)
+                if value is None:
+                    raise ValueError(f"avatar_combo: missing {key}")
+                if value not in allowed:
+                    raise ValueError(f"avatar_combo: bad {key}: {value}")
+                selected[key] = value
+
+            combo = (
+                f"{selected['species']}|{selected['palette']}|"
+                f"{selected['accessory']}|{selected['bg']}"
+            )
+            try:
+                current = json.loads(row["avatar"]) if row["avatar"] else {}
+            except Exception:
+                current = {}
+            if combo in used_combos(conn) and current.get("combo") != combo:
+                raise ValueError(f"avatar_combo: combo already taken: {combo}")
+            current.update(selected)
+            current["combo"] = combo
+            conn.execute(
+                "UPDATE members SET avatar=? WHERE id=?",
+                (json.dumps(current), row["id"]),
+            )
+            context.audit(
+                conn, actor["name"], "member_avatar_set", name,
+            )
+            conn.commit()
+            return {"name": name, "avatar": current}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
