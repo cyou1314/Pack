@@ -140,3 +140,58 @@ def delete_egress_rule(context, actor: dict, rule_id: int) -> dict:
         return {"deleted": rule_id}
 
     return _write(context, operation)
+
+
+def check_egress(context, member: dict, url: str, task_id: int = 0,
+                 *, decide, rate_limit: int, rate_error) -> dict:
+    """Evaluate egress policy, recording one auditable serialized decision.
+
+    External request limits are computed from the same SQLite writer
+    reservation as the decision's audit insert. Unlike a process-local
+    mutex alone, BEGIN IMMEDIATE protects concurrent Hub processes too.
+    """
+    with context.lock:
+        conn = context.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if (member.get("kind") or "") == "external":
+                prefix = f"member={member['name']} "
+                count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM audit WHERE actor='egress'"
+                    " AND action='egress_check' AND ts>=?"
+                    " AND substr(detail,1,?)=?",
+                    (context.clock() - 60, len(prefix), prefix),
+                ).fetchone()["n"]
+                if count >= rate_limit:
+                    context.audit(
+                        conn, member["name"], "external_egress_throttled",
+                        f"count={count} window=60s",
+                    )
+                    conn.commit()
+                    raise rate_error(60)
+            # The full URL may contain bearer tokens or signed query params.
+            safe_url = (url or "").split("?")[0].split("#")[0][:200]
+            try:
+                host, decision, source = decide(conn, url, task_id)
+            except ValueError as error:
+                context.audit(
+                    conn, "egress", "egress_check",
+                    f"member={member['name']} decision=reject reason={error} url={safe_url}",
+                )
+                conn.commit()
+                raise
+            context.audit(
+                conn, "egress", "egress_check",
+                f"member={member['name']} host={host} decision={decision}"
+                f" source={source} url={safe_url}",
+            )
+            conn.commit()
+            return {
+                "decision": decision, "host": host,
+                "source": source, "task_id": task_id,
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

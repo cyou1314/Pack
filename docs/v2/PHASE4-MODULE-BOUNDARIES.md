@@ -355,3 +355,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 写入和审计使用共享 `HubContext.lock` 与 SQLite `BEGIN IMMEDIATE`，保证同一规则的跨进程增删/更新互斥；事务失败显式 rollback 且统一关闭连接。域名归一使用已有 `egress_pattern` 策略，未复制实现。
 - 新增 `hub/test_rules_service.py` 13 项隔离测试，覆盖列表、key 标准化、重复 upsert、停用规则重启用、参数拒绝、删除/不存在、审计失败导致的增删回滚，以及两个独立 HubContext 同键并发更新。接入 CI 和复制运行时 smoke。
 - 这批未修改 `egress_check` 的调用频率和判定逻辑，后续应单独加强外部 Agent 高并发出口频控；不改变 75 MCP tools / 24 SQLite tables、Mac 安装/登录/真实用户数据。
+
+### 出口决策工具跨进程限流（2026-11-23）
+
+- `egress_check` 鉴权后的查询、external 最近 60 秒审计次数检查、站点决策、允许/拒绝审计整体迁至 `hub/services/rules.py:check_egress`；原 MCP 签名/说明/返回格式不变。`hub._egress_decide` 仍承接现有规则优先级、任务正文点名与畸形 URL 判定，避免修改判定语义。
+- `BEGIN IMMEDIATE` + 进程内 lock 确保多个 Hub 进程在同一 DB 上的频控判断与审计插入原子串行；不会让并发请求同时通过 `EXT_EGRESS_PER_MIN=60` 审计计数。被限流的错误 JSON、60 秒 retry_after 和审计动作保持不变。
+- `hub/test_egress_check_service.py` 12 项隔离测试验证默认 ask、规则 allow/ask 优先于任务点名、成员自写任务不能自授权、畸形 URL 审计不泄露查询 token、缺失任务、external 限流、内部成员豁免、审计失败、两个独立 HubContext 竞争一个许可名额。已接入 CI。
+- 不新增 MCP 工具或 SQLite 表、不改变出口 allow/ask 决策策略；CLI/Hub 现有安装接口保持不变，真实 Mac 不部署。

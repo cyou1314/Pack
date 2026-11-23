@@ -1500,6 +1500,7 @@ def build_server(context: HubContext | None = None):
         from .services.rules import list_egress_rules as _list_egress_rules
         from .services.rules import upsert_egress_rule as _upsert_egress_rule
         from .services.rules import delete_egress_rule as _delete_egress_rule
+        from .services.rules import check_egress as _check_egress
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1523,6 +1524,7 @@ def build_server(context: HubContext | None = None):
         from services.rules import list_egress_rules as _list_egress_rules
         from services.rules import upsert_egress_rule as _upsert_egress_rule
         from services.rules import delete_egress_rule as _delete_egress_rule
+        from services.rules import check_egress as _check_egress
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2833,40 +2835,12 @@ def build_server(context: HubContext | None = None):
         （actor='egress'）。返回 decision / host / source（命中来源）。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            if _is_external(me):
-                # 件二：egress_check 对 external 加通用频控 ≤60 次/分钟
-                # （按其 egress_check 审计行窗口计数），防审计表被刷爆。
-                prefix = f"member={me['name']} "
-                n = conn.execute(
-                    "SELECT COUNT(*) AS n FROM audit WHERE actor='egress'"
-                    " AND action='egress_check' AND ts>=?"
-                    " AND substr(detail,1,?)=?",
-                    (context.clock() - 60, len(prefix), prefix)).fetchone()["n"]
-                if n >= EXT_EGRESS_PER_MIN:
-                    audit(conn, me["name"], "external_egress_throttled",
-                          f"count={n} window=60s")
-                    conn.commit()
-                    raise _ext_rate_error(60)
-            # 审计只记去查询串/片段的 URL：查询串常带签名 token，成员提交的
-            # URL 是不可信输入，不许把其查询串原样落进审计（staging14 复检 C8）。
-            safe_url = (url or "").split("?")[0].split("#")[0][:200]
-            try:
-                host, decision, source = _egress_decide(conn, url, task_id)
-            except ValueError as e:
-                audit(conn, "egress", "egress_check",
-                      f"member={me['name']} decision=reject reason={e} url={safe_url}")
-                conn.commit()
-                raise
-            audit(conn, "egress", "egress_check",
-                  f"member={me['name']} host={host} decision={decision} "
-                  f"source={source} url={safe_url}")
-            conn.commit()
-            return {"decision": decision, "host": host, "source": source,
-                    "task_id": task_id}
-        finally:
-            conn.close()
+        return _check_egress(
+            context, me, url, task_id,
+            decide=_egress_decide,
+            rate_limit=EXT_EGRESS_PER_MIN,
+            rate_error=_ext_rate_error,
+        )
 
     @mcp.tool
     def review_file(task_id: int, target_url: str, owner_quote: str,
