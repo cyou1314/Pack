@@ -222,9 +222,12 @@ export class CodexAppServerAdapter {
       throw new Error("codex_approval_decision_unavailable");
     }
 
+    // Keep the approval pending until the response is actually written.
+    // If stdin has closed or the write fails, callers can retry while the
+    // timeout remains armed; deleting first would orphan the server request.
+    this.#write({id: approval.id, result: decision});
     clearTimeout(approval.timer);
     this.#pendingApprovals.delete(String(requestId));
-    this.#write({id: approval.id, result: decision});
     return {requestId: String(requestId), decision};
   }
 
