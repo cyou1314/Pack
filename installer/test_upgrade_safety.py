@@ -316,19 +316,8 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "ctl", side_effect=ctl),
             patch.object(manager.subprocess, "run", side_effect=run),
             patch.object(manager, "available", return_value=True),
-            patch.object(manager, "os") as os_mock,
+            patch.object(manager.os, "replace", side_effect=guarded_replace),
         ):
-            os_mock.replace.side_effect = guarded_replace
-            os_mock.umask.side_effect = os.umask
-            os_mock.environ = os.environ
-            os_mock.path = os.path
-            os_mock.name = os.name
-            os_mock.getuid = os.getuid
-            os_mock.open = os.open
-            os_mock.fdopen = os.fdopen
-            os_mock.O_WRONLY = os.O_WRONLY
-            os_mock.O_CREAT = os.O_CREAT
-            os_mock.O_EXCL = os.O_EXCL
             with self.assertRaisesRegex(RuntimeError, "rollback needs attention"):
                 manager.upgrade()
 
@@ -366,19 +355,8 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "ctl", side_effect=ctl),
             patch.object(manager.subprocess, "run", side_effect=run),
             patch.object(manager, "available", return_value=True),
-            patch.object(manager, "os") as os_mock,
+            patch.object(manager.os, "replace", side_effect=guarded_replace),
         ):
-            os_mock.replace.side_effect = guarded_replace
-            os_mock.umask.side_effect = os.umask
-            os_mock.environ = os.environ
-            os_mock.path = os.path
-            os_mock.name = os.name
-            os_mock.getuid = os.getuid
-            os_mock.open = os.open
-            os_mock.fdopen = os.fdopen
-            os_mock.O_WRONLY = os.O_WRONLY
-            os_mock.O_CREAT = os.O_CREAT
-            os_mock.O_EXCL = os.O_EXCL
             with self.assertRaisesRegex(RuntimeError, "rollback needs attention"):
                 manager.upgrade()
 
