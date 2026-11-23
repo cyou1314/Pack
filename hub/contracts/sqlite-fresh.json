@@ -93,7 +93,7 @@
           "name": "idx_agent_connections_one_active",
           "origin": "c",
           "partial": true,
-          "sql": "CREATE UNIQUE INDEX idx_agent_connections_one_active ON agent_connections(agent_id) WHERE status IN ('pending','connected')",
+          "sql": "CREATE UNIQUE INDEX idx_agent_connections_one_active\n            ON agent_connections(agent_id)\n            WHERE status IN ('pending','connected')",
           "unique": true
         },
         {
