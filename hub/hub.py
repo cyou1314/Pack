@@ -1491,6 +1491,8 @@ def build_server(context: HubContext | None = None):
         from .services.messages import send_inbox_message as _send_inbox_message
         from .services.messages import pull_inbox_messages as _pull_inbox_messages
         from .services.messages import mark_inbox_read as _mark_inbox_read
+        from .services.attachments import get_attachment as _get_attachment
+        from .services.attachments import list_attachments as _list_attachments
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1505,6 +1507,8 @@ def build_server(context: HubContext | None = None):
         from services.messages import send_inbox_message as _send_inbox_message
         from services.messages import pull_inbox_messages as _pull_inbox_messages
         from services.messages import mark_inbox_read as _mark_inbox_read
+        from services.attachments import get_attachment as _get_attachment
+        from services.attachments import list_attachments as _list_attachments
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2358,70 +2362,17 @@ def build_server(context: HubContext | None = None):
         成员级隔离，与消息读取同口径）；不存在或文件丢失时报错。"""
         me = authenticate()
         require(me)
-        conn = db()
-        row = conn.execute("SELECT * FROM attachments WHERE id=?",
-                           (attachment_id,)).fetchone()
-        if not row:
-            conn.close()
-            raise ValueError(f"no such attachment: {attachment_id}")
-        if _is_external(me):
-            # 件二：attachment_get 入参无房间，必须按 attachments.room_id
-            # == bound_room_id 校验；并叠加水位截断——拒绝读取入群时刻
-            # 之前已存在的附件。
-            if row["room_id"] != me["bound_room_id"]:
-                conn.close()
-                raise ValueError(
-                    "forbidden: attachment is outside the bound room")
-            if row["created_at"] < me["created_at"]:
-                conn.close()
-                raise ValueError(
-                    "forbidden: attachment predates external member join")
-        path = _attach_path(row["sha256"], row["mime"])
-        if not os.path.exists(path):
-            conn.close()
-            raise ValueError("attachment file missing")
-        with open(path, "rb") as f:
-            data = f.read()
-        audit(conn, me["name"], "attachment_get", f"attachment {attachment_id}")
-        conn.commit()
-        conn.close()
-        return {"attachment_id": attachment_id, "mime": row["mime"],
-                "size": row["size"], "filename": row["original_name"],
-                "data_base64": base64.b64encode(data).decode()}
+        return _get_attachment(
+            context, me, attachment_id,
+            attach_path=_attach_path, max_bytes=ATTACH_MAX_BYTES,
+        )
 
     @mcp.tool
     def attachment_list(room: str, message_id: int = 0) -> dict:
         """列房间附件元数据（不含本体）；message_id>0 时只列该消息的。"""
         me = authenticate()
         require(me)
-        conn = db()
-        r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-        if not r:
-            conn.close()
-            raise ValueError(f"no such room: {room}")
-        if _is_external(me) and r["id"] != me["bound_room_id"]:
-            conn.close()
-            raise ValueError(
-                "forbidden: external members may only list their bound room")
-        q = ("SELECT a.id, a.message_id, a.mime, a.size, a.original_name, "
-             "a.created_at, mb.name AS uploader FROM attachments a "
-             "JOIN members mb ON mb.id=a.uploader_id WHERE a.room_id=?")
-        args = [r["id"]]
-        if _is_external(me):
-            # 水位截断：入群时刻之前的附件不出现在 external 的列表里。
-            q += " AND a.created_at>=?"
-            args.append(me["created_at"])
-        if message_id:
-            q += " AND a.message_id=?"
-            args.append(message_id)
-        q += " ORDER BY a.id ASC"
-        rows = conn.execute(q, args).fetchall()
-        conn.close()
-        return {"attachments": [
-            {"id": x["id"], "message_id": x["message_id"], "mime": x["mime"],
-             "size": x["size"], "filename": x["original_name"],
-             "uploader": x["uploader"], "created_at": x["created_at"]}
-            for x in rows]}
+        return _list_attachments(context, me, room, message_id)
 
     @mcp.tool
     def message_delete(message_id: int) -> dict:

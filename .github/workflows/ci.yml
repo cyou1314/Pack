@@ -69,6 +69,7 @@ jobs:
           python hub/test_room_post_service.py
           python hub/test_inbox_atomic.py
           python hub/test_inbox_read.py
+          python hub/test_attachment_read.py
           python hub/test_packaging.py
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots

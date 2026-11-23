@@ -322,3 +322,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 标已读以 SQLite `BEGIN IMMEDIATE` 串行化「读取现有游标→房间最大 ID →写入」，UPSERT 再以 `MAX` 保证同一成员/房间游标只进不退，避免多个 Hub 进程的竞态覆盖；只允许标到本房已存在的最大消息 ID。
 - 新增 `hub/test_inbox_read.py` 八项隔离回归，涵盖心跳/内容/审计、回看与频繁拉取、external 水位、时间窗口分页、单调标已读、审计失败回滚和双线程竞争。纳入 CI 和复制运行时 FastMCP 工具注册断言。
 - 本批未改 SQLite schema、75 工具契约、Mac 安装/服务/数据路径；真实 Mac 验收继续后置。
+
+
+### 附件读取与列表服务迁移（2026-11-23）
+
+- `attachment_get`、`attachment_list` 的逻辑迁入 `hub/services/attachments.py`；原 FastMCP 名称、参数、docstring、authentication/访问模式入口及成功响应结构不变。附件上传链路暂不迁移。
+- external 的绑定房、入群时间水位继续由数据层实施。附件本体读取在文件打开前核验成员权限、文件路径边界和 symlink；读取后核对 SQLite 记录的 size 与 SHA-256，拒绝内容损坏或被替换文件；失败路径统一关闭连接、不提交成功审计。
+- 新增 `hub/test_attachment_read.py` 八项隔离测试，覆盖成功读与审计、external 越权/水位、缺失或损坏文件、软链接路径逃逸、审计异常、列表房间边界和消息过滤；CI 与复制安装运行包 smoke test 同步接入。
+- 不更改 SQLite schema、75 MCP 工具契约或 Mac 部署路径/服务标签；本批未修改已有附件数据或安装器，完整 staging/macOS 验收以 GitHub Actions 为准。
