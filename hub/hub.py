@@ -127,8 +127,6 @@ CREATE TABLE IF NOT EXISTS messages(
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_approval_task
   ON messages(task_id, id DESC) WHERE kind='approval_request';
-CREATE INDEX IF NOT EXISTS idx_messages_approval_legacy
-  ON messages(id DESC) WHERE kind='approval_request' AND task_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_dispatch_decisions
   ON messages(author_id, id) WHERE kind IN ('chat','decision');
 CREATE TABLE IF NOT EXISTS tasks(
