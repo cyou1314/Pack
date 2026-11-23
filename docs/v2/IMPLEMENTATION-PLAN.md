@@ -46,7 +46,7 @@
 - 新建增量迁移。
 - 为旧成员生成兼容映射，不改变原 token。
 - 影子读取比对旧成员与新 Agent 视图。
-- M1a 增量 schema/legacy backfill 已通过 PR #21 合入；M1b 只读 Shadow CLI 通过 PR #22 合入，PR #23 补齐并发迁移和 CLI 只读/敏感字段测试。CLI 仅手动读取指定数据库，尚未对用户 Mac 数据库执行。
+- M1a 增量 schema/legacy backfill 已通过 PR #21 合入；M1b 只读 Shadow CLI 通过 PR #22 合入，PR #23 补齐并发迁移和 CLI 只读/敏感字段测试，PR #24 补齐 SQLite 完整性与 FK 预检。CLI 仅手动读取指定数据库，尚未对用户 Mac 数据库执行。
 
 回滚：关闭新读路径，保留新增表，不删除旧数据。
 
@@ -176,7 +176,7 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 ## 8. 2026-11-23 实施状态校准
 
 - **M0 Agent Core Foundation：** Descriptor / Registry / Event Envelope / Context Package / Codex App Server Adapter 与 mock contract tests 已存在；这只代表基础骨架完成，不代表已装配到生产 Runtime。
-- **M1 Agent Registry：** M1a/M1b 已合入 v2 Foundation（PR #21/#22/#23）；并发迁移、只读 CLI 和敏感字段输出测试通过 CI。PR #24 正将 SQLite quick_check / foreign_key_check 加入 Shadow readiness。真实 Mac 数据库尚未检查，M1c API 尚未开放。
+- **M1 Agent Registry：** M1a/M1b 与完整性预检已合入 v2 Foundation（PR #21/#22/#23/#24）；并发迁移、只读 CLI、敏感字段输出、quick_check 和 foreign_key_check 测试通过 CI。真实 Mac 数据库尚未检查，M1c API 尚未开放。
 - **M2 Runtime / Event Gateway：** 尚未实施。当前 `runtime/runtime.mjs` 仍是 Muse ego v1 主循环；AgentAdapterRegistry/Codex Adapter 未进入生产入口，事件仍为进程内回调，没有 durable Inbox/Outbox、游标恢复和 Hub/App 审批闭环。
 - **M3 Provider Adapter：** Codex Adapter 有 mock 测试，但真实 Mac App Server 登录、Session/Turn、断线恢复和审批闭环未验收；ChatGPT、Doubao 等 Adapter 仍按 Provider Matrix 单独验证。
 - **安全门槛：** 在 M2 Event Gateway、Hub Permission/Approval/Audit 与 SwiftUI 人工审批闭环完成前，不开放 Codex command/file 高风险工具自动执行。
@@ -189,7 +189,7 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 - 已实现 providers / agents / connections / sessions 表、外键与索引。
 - 已实现旧 member 稳定映射；保留原 members 行、token hash、任务/消息引用与私有记忆。
 - 已启用逐连接 SQLite foreign key enforcement，并加入测试和 schema contract snapshot。
-- M1a 已合入 v2 Foundation（PR #21）；M1b shadow CLI 已合入（PR #22），并发迁移/只读 CLI 安全测试已通过 PR #23。PR #24 补充 SQLite 完整性与 FK 预检；尚未在用户 Mac 执行。
+- M1a 已合入 v2 Foundation（PR #21）；M1b shadow CLI 已合入（PR #22），并发迁移/只读 CLI 安全测试已通过 PR #23；PR #24 的 SQLite 完整性与 FK 预检也已合入。尚未在用户 Mac 执行。
 
 
 ### M1a/M1b 已合入 / M1b 完整性预检补强
