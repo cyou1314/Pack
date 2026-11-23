@@ -235,7 +235,9 @@ extension AppState {
             }
             scheduleMarkRoomRead(room, generation: generation)
         } catch {
-            guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
+            guard room == currentRoom, generation == roomGeneration,
+                  currentClientGeneration == clientGeneration,
+                  messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
             roomLoading = false
             connected = false
             connectionFailed = true
