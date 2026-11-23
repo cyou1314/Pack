@@ -9,3 +9,9 @@
 套件编号与中枢增量一一对应（staging38 = week_done、staging39 = 附件通道、staging43 = kind 白名单…），细节见各目录的 REVIEW 文档。
 运行器预期 `skills/` 与其同级（staging23 读技能正本）；生产机上该目录是指向 repo-mirror/skills 的符号链接。
 套件目录只放源码，不放运行时状态（pack.db、token、日志由运行器在副本里生成）。
+
+## 当前生产增量专项回归
+
+- staging56（成员访问模式 + 旧库迁移）使用独立脚本：`PY=python ./tests/hub-staging56/run_tests.sh`。
+- GitHub Actions 在默认历史回归之后单独执行 staging56，确保当前生产增量不会被旧套件列表遗漏。
+- 脚本优先使用环境变量 `PY`，并将同一解释器传给迁移测试；未指定时回退到仓库虚拟环境，虚拟环境不存在则使用系统 Python。
