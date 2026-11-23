@@ -161,6 +161,6 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 ## 9. M1b 影子读取实施边界
 
 - `hub/services/agent_registry_shadow.py` 提供只读比较：按 legacy member ID 比对稳定 Agent ID、Provider、展示名、connection mode、状态、原始 Provider 标签和创建时间。
-- 报告只输出计数、legacy member ID 与 mismatch 字段名；不读取或输出 token hash、profile、消息正文、任务正文或私有记忆。
+- 报告只输出计数、legacy member ID 与 mismatch 字段名；不读取或输出 token hash、profile、消息正文、任务正文或私有记忆。发现未知 migration version 或 checksum 不匹配时必须返回 not-ready，不能给出可通过的报告。
 - `python -m services.agent_registry_shadow` 是手动诊断 CLI（从已安装 Hub 目录执行），通过 SQLite URI `mode=ro` 与 `PRAGMA query_only=ON` 打开数据库；不加入 Hub MCP 工具、不在启动时自动执行、不自动修复数据。
 - M1b 的目的仅是验证 M1a backfill 的一致性；只有人工检查报告全部为零差异，才评估后续 read-only API。旧 `members` 仍是唯一读写事实来源。
