@@ -180,6 +180,7 @@ def validate_upgrade_installation():
     require_real_directory(socket_dir, "handoff socket directory")
     require_real_directory(hub / "attachments", "Hub attachments directory")
     require_real_directory(engine / "data", "Engine data directory")
+    require_real_directory(engine / "data" / "local", "Engine local data directory")
     require_regular_file(config, "App config")
     require_regular_file(hub / "pack.db", "Hub database")
     require_regular_file(hub / ".dispatcher_token", "Hub dispatcher token")

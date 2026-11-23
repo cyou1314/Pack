@@ -232,6 +232,22 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "bootout" for call in calls))
         self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
 
+    def test_symlinked_engine_local_data_is_rejected_before_backup_or_service_stop(self):
+        f = self.fixture
+        local_data = f.engine / "data" / "local"
+        external = f.base / "external-engine-data"
+        external.mkdir()
+        shutil.rmtree(local_data)
+        local_data.symlink_to(external, target_is_directory=True)
+
+        ctl, calls, _ = f.fake_ctl()
+        with patch.object(manager, "ctl", side_effect=ctl):
+            with self.assertRaisesRegex(SystemExit, "symlinked Engine local data directory"):
+                manager.upgrade()
+
+        self.assertFalse(any(call[0] == "bootout" for call in calls))
+        self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
+
     def test_running_app_is_rejected_before_backup_or_service_stop(self):
         f = self.fixture
         ctl, calls, _ = f.fake_ctl()
