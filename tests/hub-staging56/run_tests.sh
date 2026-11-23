@@ -7,12 +7,51 @@
 # 74 -> 75 (same precedent as staging52's copy of test_staging51).
 set -u
 cd "$(dirname "$0")"
-PY=~/workspace/pack/hub/.venv/bin/python
+PY="${PY:-$HOME/workspace/pack/hub/.venv/bin/python}"
+if [[ "$PY" != */* ]]; then
+  PY="$(command -v "$PY" || true)"
+fi
+if [[ ! -x "$PY" ]]; then
+  PY="$(command -v python3 || command -v python || true)"
+fi
+if [[ -z "$PY" || ! -x "$PY" ]]; then
+  echo "ERROR: no usable Python interpreter found; set PY=/path/to/python" >&2
+  exit 2
+fi
+export PACK_TEST_PY="$PY"
+
+port_ready() {
+  "$PY" - "$1" <<'PY'
+import socket, sys
+s = socket.socket()
+s.settimeout(0.25)
+try:
+    raise SystemExit(0 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)
+finally:
+    s.close()
+PY
+}
 
 kill_port() {
-  local pid
-  pid=$(ss -ltnp 2>/dev/null | grep ":$1 " | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
-  if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null; sleep 1; fi
+  local port="$1"
+  local pids=""
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  fi
+  if [[ -z "$pids" ]] && command -v ss >/dev/null 2>&1; then
+    pids="$(ss -ltnp 2>/dev/null | grep ":$port " | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u || true)"
+  fi
+  for pid in $pids; do
+    kill "$pid" 2>/dev/null || true
+  done
+  if [[ -n "$pids" ]]; then
+    for _ in $(seq 1 20); do
+      port_ready "$port" || return 0
+      sleep 0.1
+    done
+    echo "ERROR: listener on port $port did not stop" >&2
+    return 1
+  fi
 }
 
 fresh_db() {
@@ -23,8 +62,25 @@ fresh_db() {
 }
 
 start_hub() {
-  PACK_HUB_PORT=18798 nohup $PY hub.py serve > "server-$1.log" 2>&1 &
-  for i in $(seq 1 60); do ss -ltn 2>/dev/null | grep -q ':18798 ' && break; sleep 0.3; done
+  PACK_HUB_PORT=18798 nohup "$PY" hub.py serve > "server-$1.log" 2>&1 &
+  for i in $(seq 1 60); do
+    port_ready 18798 && break
+    sleep 0.3
+  done
+  if ! port_ready 18798; then
+    echo "SERVER_START_FAILED segment=$1 port=18798" >&2
+    cat "server-$1.log" >&2 || true
+    exit 70
+  fi
+  for i in $(seq 1 30); do
+    [[ -s .dispatcher_token ]] && break
+    sleep 0.1
+  done
+  if [[ ! -s .dispatcher_token ]]; then
+    echo "DISPATCHER_TOKEN_NOT_CREATED segment=$1" >&2
+    cat "server-$1.log" >&2 || true
+    exit 71
+  fi
 }
 
 # ---- segment 1: staging56 new suite ----
