@@ -30,10 +30,21 @@ class MemberRegistrationServiceTests(unittest.TestCase):
             "VALUES('reserved','member','old-hash',12000,12400)"
         )
         self.db.commit()
-        self.combo = json.dumps({
-            "species": "fox", "palette": "ocean",
-            "accessory": "cap", "bg": "peach",
-        })
+        used = hub._used_combos(self.db)
+        available = next(
+            ({
+                "species": species, "palette": palette,
+                "accessory": accessory, "bg": background,
+            }
+             for species in hub.AVATAR_SPECIES
+             for palette in hub.AVATAR_PALETTES
+             for accessory in hub.AVATAR_ACCESSORIES
+             for background in hub.AVATAR_BGS
+             if f"{species}|{palette}|{accessory}|{background}" not in used),
+            None,
+        )
+        self.assertIsNotNone(available)
+        self.combo = json.dumps(available)
 
     def tearDown(self):
         self.db.close()
