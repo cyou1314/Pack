@@ -451,3 +451,9 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 将 dispatcher-only `run_list` 的只读查询迁入 `hub/services/tasks.py:list_runs`；Hub 入口继续认证和角色校验，原筛选/倒序/limit 参数及返回字段保持不变。
 - 新增 `hub/test_runs_service.py` 4 项隔离测试，覆盖全量倒序、成员名 join、task_id 过滤、limit 和空结果；接入 CI/安装包 smoke。
 - Hub MCP 工具入口目前不再直接执行数据库查询；`_holder` 是 Desktop 服务注入的共享校验 helper，不是 MCP 工具主体。
+
+### macOS Views.swift 按功能拆分（2026-11-23）
+
+- 将原 `Views.swift`（约 1,618 行）按声明边界拆为 `Components.swift`、`Views.swift`（主窗口/侧栏）、`ChatFeatureViews.swift`、`TaskFeatureViews.swift`、`SettingsFeatureViews.swift`、`TaskDetailViews.swift`。
+- 仅移动现有 SwiftUI 声明与 imports；为跨文件复用移除顶层 view/component 的 `private`（仍为 PackApp module 内部可见），不改属性、body、状态流、导航、布局或事件逻辑。
+- SwiftPM target 递归包含 `Sources/PackApp` 下的 Swift 文件，不新增 target/dependency；本批以 Swift build/test 与 app bundle 检查作为验收。
