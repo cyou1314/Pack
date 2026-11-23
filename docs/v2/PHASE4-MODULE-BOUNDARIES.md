@@ -463,3 +463,9 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 将 `@MainActor AppState`（约 1,340 行）从 `PackApp.swift` 移入独立 `AppState.swift`；`PackApp.swift` 仅保留 `RoomItem` 与 `@main PackApp` 启动入口。
 - 不改变 `AppState` 属性、方法、actor 隔离、依赖初始化、Keychain、HubClient 调用或状态发布；两个文件沿用原 imports，保持同一 PackApp target。
 - 本批仅做声明边界拆分，为后续按 Connection/Rooms/Tasks/Members/Approvals/Settings 提取 Store 或 extension 建立入口；不提前引入新的状态管理框架。
+
+### AppState 成员域扩展拆分（2026-11-23）
+
+- 将成员选择、成员任务/技能加载、头像编辑、登录状态、引擎状态检查/交接、成员注册/移除等约 220 行方法迁入 `AppState+Members.swift` 的 `@MainActor extension AppState`。
+- 仅将被扩展访问的 `client` 从 private 调整为 PackApp module 内部可见；不改成员状态属性、异步任务、Keychain、Hub tool 调用和错误处理。
+- 不新增 Store、actor 或状态框架；先按领域逐块迁移，待依赖稳定后再评估独立 Store。
