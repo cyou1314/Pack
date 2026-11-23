@@ -680,6 +680,10 @@ def _used_combos(conn) -> set:
 def init(context: HubContext | None = None):
     context = context or _DEFAULT_CONTEXT
     conn = context.connect()
+    # WAL is persistent database state. Configure it once during initialization,
+    # not on every request connection where journal-mode checks can contend
+    # with concurrent readers/writers.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
     conn.execute(
         "INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)",
