@@ -25,5 +25,5 @@
 
 ## 本次整改与未来工作
 
-- 本次只更改 Hub Python 代码、隔离测试、CI 和文档；**安装器、LaunchAgent、Keychain 与现有数据不变**。
+- 本轮只修改仓库中的 Hub Python 服务/模块、SwiftUI App 内部结构、自动化测试、CI 与文档；不执行本机安装/升级，不修改安装器、LaunchAgent、Keychain service/account、用户配置格式和现有数据库、附件及登录态数据。
 - 需要后续单独完成的事项：已有安装差异升级与回滚机制、升级前只读预检、Mac 沙盒/隔离机器验收；不能把这些事项当作已经验证通过。
