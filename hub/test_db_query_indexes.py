@@ -117,7 +117,7 @@ def main():
         check("legacy audit table receives task_id column", "task_id" in audit_cols)
         legacy_audit = {
             r["id"]: r["task_id"]
-            for r in conn.execute("SELECT id, task_id FROM audit WHERE id <= 4")
+            for r in conn.execute("SELECT id, task_id FROM audit WHERE id <= 6")
         }
         check("legacy audit rows backfilled by exact task prefix",
               legacy_audit == {1: 1, 2: 12, 3: None, 4: None, 5: None, 6: None},
