@@ -1,6 +1,6 @@
 # Pack Phase 4：模块边界与渐进拆分方案
 
-> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Members/Rooms/Tasks 扩展；Connection/Refresh、Chat/Approval、Settings 等状态逻辑仍待继续拆分。  
+> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks 扩展；Refresh 主循环、Chat/Approval、Settings 等状态逻辑仍待继续拆分。  
 > 原则：先冻结协议与数据契约，再按领域提取模块；不做大爆炸式重写。
 
 ## 1. 当前代码边界
@@ -10,7 +10,7 @@
 | 区域 | 当前文件 | 规模 | 现状 |
 |---|---|---:|---|
 | Hub 服务端 | `hub/hub.py` | 约 2,874 行 | 保留 FastMCP 入口、认证/工具注册与兼容 helper；多数成员、房间、任务、规则、附件、记忆、技能、桌面和配对业务已迁入 `hub/services/` |
-| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 897 行 | 启动入口已独立；Members/Rooms/Tasks 方法已分别迁入扩展文件，连接、刷新及其余跨域状态仍集中在 AppState |
+| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 786 行 | 启动入口已独立；Connection/Members/Rooms/Tasks 方法已分别迁入扩展文件；Refresh 主循环与其余状态仍集中在 AppState |
 | App 视图 | `Views.swift` + Feature Views | 233 + 430/448/285/64 行 | 主窗口、Chat、Tasks、Settings、TaskDetail 和 Components 已按声明边界拆分；本批仅移动声明，不改布局/行为 |
 | 网络客户端 | `HubClient.swift` / `Networking/HubTransport.swift` | 107 / 74 行 | HubClient 保留 MCP session、JSON-RPC、SSE 解析与会话恢复；HTTP 请求、Bearer Header、超时和同源重定向策略独立在 HubTransport |
 | 领域模型 | `app/Sources/PackApp/Models.swift` | 276 行 | 仍有 App 侧消息/任务/成员模型；PackCore 保持独立且不依赖 SwiftUI |
@@ -479,3 +479,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - `AppState.swift` 从约 1,129 行缩至约 897 行。仅将跨文件扩展需要访问的 `roomGeneration`、`decisionRooms`、`act` 和 `createTaskFromDraft` 调整为 PackApp module 内部可见；没有新增 Swift Package target/dependency。
 - 不修改 Keychain service/account、`~/.pack` 配置、Hub URL 发现、LaunchAgent、MCP schema、SQLite schema 或真实用户数据。
 - CI 证据：Run [#45099614364](https://github.com/cyou1314/Pack/actions/runs/45099614364)（Transport + Rooms）三个 Job 全部通过；Run [#45099953048](https://github.com/cyou1314/Pack/actions/runs/45099953048) 的 Runtime、macOS Build/Unit Tests/App Bundle、Hub 单测及契约快照通过，Default staging regression 截至记录时仍在运行。未将 staging 标记为通过。
+
+
+### AppState 连接、凭证与 Hub 地址发现拆分（2026-11-23）
+
+- 新增 `AppState+Connection.swift`，迁出地址源 Keychain 状态/保存、手动 Hub URL 保存、原子配置更新、HubClient 重建、私有地址源与公开 fallback URL 发现。
+- 保持原有 `HubEndpoint.validatedURL` 校验、HTTPS/loopback 规则、配置临时文件 0600 与原子 replace、Keychain service/account、client generation 防竞态、发现超时和手动 URL 优先级。
+- `AppState.swift` 从上一批约 897 行缩至约 786 行。跨文件访问所需的 `ownerClient`、Hub URL 状态、generation 和 discovery interval/timeout 调整为 PackApp module 内部可见；`persistHubURL`、`installHubClients`、`rebuildHubClients` 仍限制在 Connection extension 内部。
+- 不新增 Swift Package target/dependency，不改变配置格式、Keychain、LaunchAgent、Hub API、SQLite schema 或用户数据。
+- CI 证据：Run [#45100628949](https://github.com/cyou1314/Pack/actions/runs/45100628949) 的 Runtime、Swift Build、Swift Unit Tests 和 App Bundle 已通过；Hub 单测及契约快照通过，Default staging regression 截至记录时仍在运行。未将完整 Run 标记为全绿。
