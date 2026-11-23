@@ -76,6 +76,7 @@ jobs:
           python hub/test_egress_check_service.py
           python hub/test_reviews_service.py
           python hub/test_memory_read_service.py
+          python hub/test_memory_write_service.py
           python hub/test_packaging.py
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots

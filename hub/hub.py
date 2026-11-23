@@ -1504,6 +1504,7 @@ def build_server(context: HubContext | None = None):
         from .services.reviews import record_review as _record_review
         from .services.memory import read_memory as _read_memory
         from .services.memory import read_memory_versions as _read_memory_versions
+        from .services.memory import write_memory as _write_memory
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1531,6 +1532,7 @@ def build_server(context: HubContext | None = None):
         from services.reviews import record_review as _record_review
         from services.memory import read_memory as _read_memory
         from services.memory import read_memory_versions as _read_memory_versions
+        from services.memory import write_memory as _write_memory
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2903,80 +2905,30 @@ def build_server(context: HubContext | None = None):
         source_refs 只存引用（{type: task|message|room_msg|rollback_of, id}），不存正文。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            # 写路径的「检查限额 → 落版 → 审计」是读-改-写，须走 _lock 串行化：
-            # 否则主题数 COUNT 检查与落版之间无锁，并发写可突破主题上限
-            # （staging14 复检 C1：31 预置 + 6 并发新主题 = 37 > 32）。
-            with _lock:
-                _mem_validate_scope_key(scope, key)
-                target = _mem_target(conn, me, scope, member)
-                if scope == "room-shared" and me["role"] != "dispatcher":
-                    _mem_denied(conn, me, target, scope, "write-room-shared")
-                eff_origin = _mem_origin(me, origin)
-                refs = _mem_validate_refs(source_refs)
-                if text is None:
-                    if scope != "private":
-                        _mem_err("invalid_argument",
-                                 "text=null（删主题）只对 scope=private 有效；"
-                                 "private-core / room-shared 请写空串或改写全文")
-                    refs = refs + [{"type": "delete"}]
-                    vid, size, _now = _mem_append_version(
-                        conn, target, scope, key, "", me["name"], eff_origin, refs)
-                    audit(conn, me["name"], "memory_write",
-                          json.dumps({"member": target, "scope": scope, "key": key,
-                                      "version_id": vid, "origin": eff_origin,
-                                      "size": 0, "deleted": True}, ensure_ascii=False))
-                    conn.commit()
-                    return {"version_id": vid, "size": 0,
-                            "limit": MEM_L1_LIMIT_CHARS, "deleted": True}
-                if not isinstance(text, str):
-                    _mem_err("invalid_argument", "text 必须是字符串（或删主题时传 null）")
-                size = _mem_measure(scope, text)
-                if scope in ("private-core", "room-shared"):
-                    limit = (MEM_CORE_LIMIT_BYTES if scope == "private-core"
-                             else MEM_SHARED_LIMIT_BYTES)
-                    if size > limit:
-                        _mem_err("memory_limit_exceeded", _MEM_HINT_LIMIT, scope=scope,
-                                 limit_bytes=limit, current_bytes=size)
-                else:
-                    if size > MEM_L1_LIMIT_CHARS:
-                        _mem_err("memory_limit_exceeded",
-                                 "拆分主题或删旧段落后重试", scope=scope,
-                                 limit_chars=MEM_L1_LIMIT_CHARS, current_chars=size)
-                    cur = _mem_current(conn, target, scope, key)
-                    is_new_topic = not (cur and cur["text"] != "")
-                    if is_new_topic and text != "":
-                        cnt = conn.execute(
-                            "SELECT COUNT(*) AS c FROM member_memory "
-                            "WHERE member=? AND scope='private' AND text != ''",
-                            (target,)).fetchone()["c"]
-                        if cnt >= MEM_L1_MAX_TOPICS:
-                            _mem_err("memory_topic_limit",
-                                     "合并或删除一个旧主题（删除 = memory_write 同 key 传 text=null）",
-                                     limit_topics=MEM_L1_MAX_TOPICS)
-                vid, size, _now = _mem_append_version(
-                    conn, target, scope, key, text, me["name"], eff_origin, refs)
-                audit(conn, me["name"], "memory_write",
-                      json.dumps({"member": target, "scope": scope, "key": key,
-                                  "version_id": vid, "origin": eff_origin,
-                                  "size": size}, ensure_ascii=False))
-                if scope == "private":
-                    total = conn.execute(
-                        "SELECT COALESCE(SUM(LENGTH(text)),0) AS s FROM member_memory "
-                        "WHERE member=? AND scope='private'", (target,)).fetchone()["s"]
-                    if total > MEM_L1_SOFT_CAP_CHARS:
-                        audit(conn, "system", "memory_soft_cap",
-                              json.dumps({"member": target, "total_chars": total,
-                                          "soft_cap": MEM_L1_SOFT_CAP_CHARS},
-                                         ensure_ascii=False))
-                conn.commit()
-                limit_out = (MEM_CORE_LIMIT_BYTES if scope == "private-core"
-                             else MEM_SHARED_LIMIT_BYTES if scope == "room-shared"
-                             else MEM_L1_LIMIT_CHARS)
-                return {"version_id": vid, "size": size, "limit": limit_out}
-        finally:
-            conn.close()
+        return _write_memory(
+            context, me, scope, key, text, source_refs, origin, member,
+            validate_scope_key=_mem_validate_scope_key,
+            resolve_target=_mem_target,
+            denied=lambda conn, actor, target, scope, what: _mem_denied(
+                conn, actor, target, scope, what, context=context
+            ),
+            normalize_origin=_mem_origin,
+            validate_refs=_mem_validate_refs,
+            error=_mem_err,
+            measure=_mem_measure,
+            current_value=_mem_current,
+            append_version=lambda conn, target, scope, key, text, author, origin, refs:
+                _mem_append_version(
+                    conn, target, scope, key, text, author, origin, refs,
+                    context=context,
+                ),
+            core_limit_bytes=MEM_CORE_LIMIT_BYTES,
+            shared_limit_bytes=MEM_SHARED_LIMIT_BYTES,
+            topic_limit_chars=MEM_L1_LIMIT_CHARS,
+            max_topics=MEM_L1_MAX_TOPICS,
+            soft_cap_chars=MEM_L1_SOFT_CAP_CHARS,
+            limit_hint=_MEM_HINT_LIMIT,
+        )
 
     @mcp.tool
     def memory_versions(scope: str, key: str = "", limit: int = 20,

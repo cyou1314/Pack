@@ -377,3 +377,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 保持返回字段、空值形态、版本倒序、before_id 游标、limit 1–100 限制、source_refs JSON 解析和仅调度员可读历史全文等语义不变。读路径不引入新锁或写事务；拒绝审计仍由原 helper 提交。
 - 新增 `hub/test_memory_read_service.py` 9 项隔离测试，覆盖当前值/origin、空值、room-shared 目标、调度员代查、跨成员拒绝审计、版本排序/游标/limit、include_text 权限和 scope/key 校验。接入 CI 与安装包 smoke。
 - 本次只迁移只读接口；memory_write 与 memory_rollback 的限额、并发、版本写入事务保持原实现，留待单独批次迁移。无 DB schema/MCP contract 变化。
+
+### Memory 写入服务与跨进程主题限额（2026-11-23）
+
+- 将 `memory_write` 的 scope/target/origin/source_refs 校验、分层大小限制、版本追加、当前值更新、软上限告警与审计迁入 `hub/services/memory.py:write_memory`；MCP 层保留身份认证，既有 helper 作为显式依赖注入，避免复制策略。
+- 在主题数量 COUNT 前使用 `BEGIN IMMEDIATE`，把「主题数检查 → 版本插入 → 当前值 upsert → 审计」放入一个 SQLite 写事务，补足原 `HubContext.lock` 只能保护单进程的问题；多个 Hub 进程共享同一 DB 时，private 主题硬上限 32 不会被并发穿透。
+- 保持 private-core/room-shared UTF-8 字节限制、private 单篇字符限制、主题墓碑、external/self/dispatcher origin 规则、source_refs 结构、soft cap 只警告、错误 JSON 与返回值不变。
+- 新增 `hub/test_memory_write_service.py` 11 项隔离测试，覆盖版本与审计元数据、origin 防伪、source_refs/类型校验、字节/字符上限、room-shared 权限、删除墓碑、软上限告警、审计失败回滚及独立 HubContext 并发争用最后一个主题名额。接入 CI。
+- 不新增 SQLite 表或 MCP 工具；`memory_rollback` 暂留 Hub 入口，后续单独迁移。
