@@ -222,6 +222,48 @@ class InstallRollbackTests(unittest.TestCase):
 
 
 
+    def test_rollback_preserves_paths_when_service_stop_cannot_be_confirmed(self):
+        with tempfile.TemporaryDirectory(prefix="pack-install-stop-failure-") as directory:
+            root = Path(directory)
+            base = root / "pack"
+            hub = base / "local-hub"
+            engine = base / "local-engine"
+            config = base / "config.json"
+            socket_dir = base / "handoff-socket"
+            agents = root / "LaunchAgents"
+            for path in (hub, engine, socket_dir, agents):
+                path.mkdir(parents=True, exist_ok=True)
+                (path / "keep-running").write_text("preserve", encoding="utf-8")
+            config.write_text("private config", encoding="utf-8")
+            plist = agents / "com.pack.installer-test-hub.plist"
+            plist.write_text("service definition", encoding="utf-8")
+
+            def failed_bootout_still_loaded(*args, **kwargs):
+                if args[0] == "bootout":
+                    return type("CtlResult", (), {"returncode": 1})()
+                return type("CtlResult", (), {"returncode": 0})()
+
+            with patch.multiple(
+                manager,
+                labels={"hub": "com.pack.installer-test-hub"},
+                uid=501,
+            ), patch.object(manager, "ctl", side_effect=failed_bootout_still_loaded):
+                rolled_back = manager._rollback_failed_install(
+                    [plist],
+                    (config, socket_dir, engine, hub),
+                    agents,
+                    True,
+                    base,
+                    True,
+                )
+
+            self.assertFalse(rolled_back)
+            for path in (hub, engine, config, socket_dir, plist):
+                self.assertTrue(path.exists(), f"must preserve path still used by service: {path}")
+            self.assertTrue((hub / "keep-running").is_file())
+            self.assertTrue(agents.is_dir())
+
+
 class InstallerLockTests(unittest.TestCase):
     def test_concurrent_install_attempt_is_rejected_until_lock_released(self):
         with tempfile.TemporaryDirectory(prefix="pack-install-lock-") as directory:
