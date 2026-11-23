@@ -33,7 +33,7 @@ class Hub {
   async discover() { let addrToken=''; try { addrToken=readFileSync(ADDR_TOKEN,'utf8').trim(); } catch {} const url=await discoverPublishedHub({addrToken, onSource:(domain,status)=>log(`hub source ${domain} HTTP ${status}`)}); if(this.url!==url){this.url=url;this.sid=null;log('hub address updated');} }
   async rpc(method, params, notification = false) {
     const req = { jsonrpc: '2.0', method, params }; if (!notification) req.id = ++this.id;
-    const r = await fetch(this.url, { method: 'POST', signal: AbortSignal.timeout(15000), headers: {
+    const r = await fetch(this.url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000), headers: {
       'content-type':'application/json', accept:'application/json, text/event-stream', authorization:'Bearer ' + this.token,
       ...(this.sid ? { 'mcp-session-id': this.sid } : {}) }, body: JSON.stringify(req) });
     this.sid = r.headers.get('mcp-session-id') || this.sid;
@@ -89,7 +89,7 @@ function envelopeFor(active) {
 class Muse {
   constructor(key) { this.key = key; }
   async request(endpoint, method='GET', body, idem) {
-    const r = await fetch(LOCAL + endpoint, { method, signal:AbortSignal.timeout(30000), headers: {
+    const r = await fetch(LOCAL + endpoint, { method, redirect:'error', signal:AbortSignal.timeout(30000), headers: {
       authorization:'Bearer ' + this.key, ...(body ? {'content-type':'application/json'} : {}), ...(idem ? {'idempotency-key':idem} : {})
     }, ...(body ? {body:JSON.stringify(body)} : {}) });
     if (!r.ok) throw Error('muse_http_' + r.status);
@@ -102,7 +102,7 @@ class Muse {
     const ext = {'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}[out.mime];
     const dir = path.join(DIR, 'images'); mkdirSync(dir, {recursive:true, mode:0o700});
     const dest = path.join(dir, `task-${id}-${String(out.asset_id).replace(/[^A-Za-z0-9_-]/g,'_')}.${ext}`), tmp = dest + '.part';
-    const res = await fetch(LOCAL + '/v1/assets/' + encodeURIComponent(out.asset_id) + '/content', { headers:{authorization:'Bearer ' + this.key}, signal:AbortSignal.timeout(120000) });
+    const res = await fetch(LOCAL + '/v1/assets/' + encodeURIComponent(out.asset_id) + '/content', { redirect:'error', headers:{authorization:'Bearer ' + this.key}, signal:AbortSignal.timeout(120000) });
     if (!res.ok || !res.body) throw Error('image_download_failed');
     let size = 0; const hash = createHash('sha256');
     const reader = async function* () { for await (const chunk of Readable.fromWeb(res.body)) { size += chunk.length; if (size > MAX_IMAGE) throw Error('image_too_large'); hash.update(chunk); yield chunk; } };

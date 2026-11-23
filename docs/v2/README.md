@@ -6,6 +6,10 @@
 - ARCHITECTURE.md：控制平面、执行平面、事件和安全架构。
 - PROVIDER-MATRIX.md：各 Provider 的已知能力、待验证事项和限制。
 - IMPLEMENTATION-PLAN.md：迁移策略、实施批次、任务优先级和架构决策。
+- REMEDIATION-ROADMAP.md：仓库级安全、部署、打包与验收整改路线。
+- PHASE4-MODULE-BOUNDARIES.md：Hub 与 macOS App 的模块边界和拆分进度。
+- MAC-MINIMAL-CHANGE-DEPLOYMENT.md：Mac 既有安装保护、升级/回滚和隔离验收要求。
+- PIBOT-REFERENCE-ASSESSMENT.md：PiBot 源码级参考评估、可借鉴模式与不引入边界。
 
 文档优先级：
 1. v2 产品方向以 PRD 和架构决策为准。

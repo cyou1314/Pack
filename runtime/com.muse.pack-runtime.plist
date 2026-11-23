@@ -11,6 +11,7 @@
   <key>WorkingDirectory</key><string>/Users/cyou/pack-runtime</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>Umask</key><integer>63</integer>
   <key>StandardOutPath</key><string>/Users/cyou/pack-runtime/runtime.log</string>
   <key>StandardErrorPath</key><string>/Users/cyou/pack-runtime/runtime.log</string>
 </dict>

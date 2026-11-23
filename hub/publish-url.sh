@@ -12,7 +12,7 @@ URL=$(journalctl -u pack-tunnel.service --no-pager -n 200 2>/dev/null | grep -oE
 FULL="$URL/mcp"
 STATE=$HUB_DIR/.published_url_addr
 [ "$FULL" = "$(cat "$STATE" 2>/dev/null || true)" ] && exit 0
-export GIT_SSH_COMMAND="ssh -i /home/hatch/.ssh/pack_addr_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+export GIT_SSH_COMMAND="ssh -i /home/hatch/.ssh/pack_addr_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/hatch/.ssh/pack_addr_known_hosts -o BatchMode=yes"
 [ -d "$ADDR_MIRROR/.git" ] || git clone -q git@github.com:cyou1314/pack-addr.git "$ADDR_MIRROR" || exit 1
 git -C "$ADDR_MIRROR" fetch -q origin || exit 1
 git -C "$ADDR_MIRROR" checkout -q main || exit 1

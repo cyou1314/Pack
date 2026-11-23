@@ -1,96 +1,5 @@
 import Foundation
-import Security
-
-struct PackConfig {
-    var hubUrl: String
-    var token: String
-    var ownerToken: String?
-
-    struct LoadResult {
-        let config: PackConfig?
-        let credentialStatus: String
-    }
-
-    static var configurationURL: URL {
-        if let override = ProcessInfo.processInfo.environment["PACK_CONFIG_PATH"], override.hasPrefix("/") {
-            return URL(fileURLWithPath: override)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pack/config.json")
-    }
-
-    static func load() -> LoadResult {
-        return load(path: configurationURL, service: Bundle.main.bundleIdentifier ?? "com.cyou.pack")
-    }
-
-    static func load(path: URL, service: String) -> LoadResult {
-        guard let data = try? Data(contentsOf: path),
-              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let url = object["hubUrl"] as? String else {
-            return LoadResult(config: nil, credentialStatus: "无法读取本机配置。")
-        }
-        var values: [String: String] = [:]
-        var failure: String?
-        var migratedFields: [String] = []
-        for (field, account) in [("token", "dispatcher"), ("ownerToken", "owner")] {
-            let fileValue = (object[field] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                        kSecAttrService as String: service,
-                                        kSecAttrAccount as String: account]
-            var readQuery = query
-            readQuery[kSecReturnData as String] = true
-            readQuery[kSecMatchLimit as String] = kSecMatchLimitOne
-            var result: CFTypeRef?
-            let readStatus = SecItemCopyMatching(readQuery as CFDictionary, &result)
-            if readStatus == errSecSuccess {
-                guard let bytes = result as? Data, let stored = String(data: bytes, encoding: .utf8), !stored.isEmpty else {
-                    failure = "钥匙串凭证无法读取，配置文件保持原样。"
-                    if let fileValue { values[account] = fileValue }
-                    continue
-                }
-                if let fileValue, fileValue != stored {
-                    failure = "钥匙串与配置文件中的凭证不一致，配置文件保持原样。"
-                    values[account] = fileValue
-                } else {
-                    values[account] = stored
-                    if fileValue != nil { migratedFields.append(field) }
-                }
-            } else if readStatus == errSecItemNotFound, let fileValue {
-                var addQuery = query
-                addQuery[kSecValueData as String] = Data(fileValue.utf8)
-                let added = SecItemAdd(addQuery as CFDictionary, nil)
-                var verified: CFTypeRef?
-                let check = added == errSecSuccess ? SecItemCopyMatching(readQuery as CFDictionary, &verified) : added
-                if check == errSecSuccess, let bytes = verified as? Data, bytes == Data(fileValue.utf8) {
-                    values[account] = fileValue
-                    migratedFields.append(field)
-                } else {
-                    values[account] = fileValue
-                    failure = "钥匙串写入或回读校验失败，配置文件保持原样。"
-                }
-            } else if readStatus != errSecItemNotFound {
-                if let fileValue { values[account] = fileValue }
-                failure = "钥匙串读取失败，配置文件保持原样。"
-            }
-        }
-        if failure == nil && !migratedFields.isEmpty {
-            do {
-                guard try Data(contentsOf: path) == data else { throw CocoaError(.fileWriteUnknown) }
-                for field in migratedFields { object.removeValue(forKey: field) }
-                let updated = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-                let temporary = path.deletingLastPathComponent().appendingPathComponent(".config-\(UUID().uuidString).tmp")
-                guard FileManager.default.createFile(atPath: temporary.path, contents: updated, attributes: [.posixPermissions: 0o600]) else { throw CocoaError(.fileWriteUnknown) }
-                defer { try? FileManager.default.removeItem(at: temporary) }
-                _ = try FileManager.default.replaceItemAt(path, withItemAt: temporary)
-            } catch { failure = "凭证已写入钥匙串，但配置文件清理失败；原配置已保留。" }
-        }
-        guard let token = values["dispatcher"] else {
-            return LoadResult(config: nil, credentialStatus: failure ?? "未找到调度员凭证。")
-        }
-        return LoadResult(config: PackConfig(hubUrl: url, token: token, ownerToken: values["owner"]),
-                          credentialStatus: failure ?? "凭证已存入钥匙串。")
-    }
-
-}
+import PackCore
 
 enum HubError: Error {
     case badResponse(String)
@@ -102,6 +11,7 @@ enum HubError: Error {
 /// actor, session re-initialized transparently when the hub forgets it,
 /// and the App coordinates URL discovery and client replacement.
 actor HubClient {
+    private let transport = HubTransport()
     private var cfg: PackConfig
     private var sessionId: String?
     private var rpcId = 0
@@ -113,21 +23,12 @@ actor HubClient {
     func discoverBeforeSending() async { }
 
     private func post(body: [String: Any], isNotification: Bool) async throws -> (Data, HTTPURLResponse) {
-        guard let url = URL(string: cfg.hubUrl) else { throw HubError.badResponse("bad hub url") }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 20
-        req.setValue("close", forHTTPHeaderField: "Connection")
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(cfg.token)", forHTTPHeaderField: "Authorization")
-        if let sid = sessionId { req.setValue(sid, forHTTPHeaderField: "mcp-session-id") }
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw HubError.badResponse("no http response") }
-        if isNotification { return (data, http) }
-        if http.statusCode != 200 { throw HubError.badResponse("http \(http.statusCode)") }
-        return (data, http)
+        try await transport.post(
+            config: cfg,
+            sessionID: sessionId,
+            body: body,
+            isNotification: isNotification
+        )
     }
 
     private func rpc(method: String, params: [String: Any]) async throws -> [String: Any] {
@@ -187,7 +88,17 @@ actor HubClient {
                 sessionId = nil
                 return try await callOnce(name: name, args: args)
             }
-            NSLog("Pack App hub call %@ failed: %@", name, String(describing: error))
+            let category: String
+            if let hubError = error as? HubError {
+                switch hubError {
+                case .badResponse: category = "bad_response"
+                case .toolError: category = "tool_error"
+                }
+            } else {
+                category = "network_or_io"
+            }
+            // Server error text can contain user data; keep logs to stable categories.
+            NSLog("Pack App hub call %@ failed (%@)", name, category)
             throw error
         }
     }

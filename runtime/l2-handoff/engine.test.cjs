@@ -31,6 +31,23 @@ test('socket rejects unencrypted engine before any account or keychain use', asy
   stop();
 });
 
+test('socket rejects JSON primitives without crashing the handoff server', async () => {
+  const deps = { repo: { listAccounts: () => [] } };
+  const stop = await startHandoff(deps);
+  const request = (payload) => new Promise((resolve, reject) => {
+    const c = net.createConnection(path.join(temp, 'handoff.sock')); let output = '';
+    c.on('connect', () => c.end(payload + '\n'));
+    c.on('data', chunk => { output += chunk; });
+    c.on('end', () => resolve(JSON.parse(output)));
+    c.on('error', reject);
+  });
+  try {
+    assert.deepEqual(await request('null'), { ok: false, error: 'invalid request' });
+    assert.deepEqual(await request('[]'), { ok: false, error: 'invalid request' });
+    assert.deepEqual(await request(JSON.stringify({ op: 'status', member: 'missing' })), { ok: true, state: 'not_found' });
+  } finally { stop(); }
+});
+
 test('socket responds after client half-closes while asynchronous work continues', async () => {
   let accounts = [{id:'half-close-test', alias:'temporary', state:'ready'}];
   const deps = {sessionData:temp, repo:{listAccounts:()=>accounts}, coord:{leases:new Map(),pageRunsOn:()=>0,removeAccount:async()=>{accounts=[];return {removed:true};}}};

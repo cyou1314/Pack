@@ -191,6 +191,30 @@ test("Codex adapter can be registered in the shared registry", async () => {
   await adapter.disconnect();
 });
 
+test("failed approval response write keeps the request pending for retry", async () => {
+  const child = new FakeCodexProcess({approvalOnTurn: true});
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+    approvalTimeoutMs: 5000,
+  });
+  await adapter.connect();
+  await adapter.createSession();
+  const approvalEvent = waitForEvent(adapter, "approval.requested");
+  await adapter.sendMessage({sessionId: "thr-new", text: "Run a command"});
+  const event = await approvalEvent;
+
+  child.stdin.destroy();
+  await assert.rejects(
+    () => adapter.respondToApproval({requestId: event.payload.requestId, decision: "accept"}),
+    /codex_app_server_stdin_unavailable/,
+  );
+  assert.equal(adapter.getHealth().pendingApprovals, 1);
+
+  await adapter.disconnect();
+  assert.equal(adapter.getHealth().pendingApprovals, 0);
+});
+
 test("Codex approval never upgrades to a persistent session grant", async () => {
   const child = new FakeCodexProcess({approvalOnTurn: true, approvalDecisions: ["acceptForSession"]});
   const adapter = new CodexAppServerAdapter({

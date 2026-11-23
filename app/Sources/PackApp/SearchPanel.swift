@@ -68,14 +68,14 @@ struct SearchPanel: View {
                             }
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                }.onChange(of: model.selectedIndex) { index in
+                }.onChange(of: model.selectedIndex) { _, index in
                     if results.indices.contains(index) { proxy.scrollTo(results[index].id, anchor: .center) }
                 }
             }
             Text("↑↓ 选择 · 回车打开 · Esc 关闭").font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
         }.padding(DesignTokens.searchInset).frame(width: DesignTokens.searchWidth, height: DesignTokens.searchHeight)
             .onAppear { searchFocused = true }
-            .onChange(of: model.query) { _ in model.selectedIndex = 0 }
+            .onChange(of: model.query) { model.selectedIndex = 0 }
             .onMoveCommand { direction in
                 guard !results.isEmpty else { return }
                 if direction == .down { moveSelection(1) }

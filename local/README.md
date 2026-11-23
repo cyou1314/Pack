@@ -2,6 +2,8 @@
 
 `install-local.sh` deploys the repository's unchanged hub, watcher and backup scripts to `~/.pack/local-hub`, creates a private venv using Python 3.10 or newer, installs `fastmcp==4.1.8`, initializes the database and starts three user LaunchAgents. Set `PACK_PYTHON` to an absolute Python executable if `python3` is too old. The listener is restricted to `127.0.0.1:8794`; the watcher uses that address and the local `.dispatcher_token` file. The local directory is mode 0700 and the token is mode 0600. Existing database without its token is refused rather than recreated.
 
+`install-local.sh` is a fresh-install developer script and intentionally refuses an existing service directory. It is not the packaged upgrade path. For a DMG-installed Pack, use the DMG root's `upgrade.command`; do not run the local script or uninstall/reinstall to update a production installation.
+
 ```sh
 PACK_PYTHON=/path/to/python3 ./local/install-local.sh
 launchctl print gui/$(id -u)/com.pack.local-hub

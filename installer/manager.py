@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Install the packaged local stack; PACK_INSTALL_TEST_ROOT isolates acceptance."""
-import asyncio, json, os, pathlib, plistlib, shutil, socket, subprocess, sys, time
+import asyncio, fcntl, json, os, pathlib, plistlib, shutil, socket, stat, subprocess, sys, tempfile, time
 
 BUNDLE = pathlib.Path(__file__).resolve().parent
 HOME = pathlib.Path.home()
@@ -28,6 +28,46 @@ uid = os.getuid()
 
 def ctl(*args, check=True):
     return subprocess.run(['/bin/launchctl', *args], check=check, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def require_real_directory(path, description):
+    path = pathlib.Path(path)
+    if path.is_symlink():
+        raise SystemExit(f'Refusing symlinked {description}: {path}')
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f'{description} is not a directory: {path}')
+
+
+def require_absent(path, description):
+    path = pathlib.Path(path)
+    if path.exists() or path.is_symlink():
+        raise SystemExit(f'Existing {description}; refusing to overwrite: {path}')
+
+
+def read_owned_agent_plist(kind, path):
+    path = pathlib.Path(path)
+    if path.is_symlink():
+        raise SystemExit(f'Refusing symlinked LaunchAgent plist: {path}')
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise SystemExit(f'LaunchAgent plist is not a regular file: {path}')
+    try:
+        with path.open('rb') as stream:
+            document = plistlib.load(stream)
+    except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+        raise SystemExit(f'Cannot validate LaunchAgent plist: {path}') from exc
+    if not isinstance(document, dict) or document.get('Label') != labels[kind]:
+        raise SystemExit(f'LaunchAgent label does not belong to this installer: {path}')
+    expected_arguments = {
+        'hub': [str(hub/'python/bin/python3'), str(hub/'hub.py'), 'serve'],
+        'watch': [str(hub/'python/bin/python3'), str(hub/'room_watch.py')],
+        'backup': ['/bin/bash', str(hub/'backup-db.sh')],
+        'engine': [str(engine/'Electron.app/Contents/MacOS/Electron'), str(engine/'app')],
+    }[kind]
+    if document.get('ProgramArguments') != expected_arguments:
+        raise SystemExit(f'LaunchAgent program path is outside the Pack service directory or does not match its entry point: {path}')
+    return document
 
 def write_private(path, content):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -59,20 +99,676 @@ async def setup_owner():
     write_private(hub/'.owner_token',owner)
     write_private(config,json.dumps({'hubUrl':f'http://127.0.0.1:{hp}/mcp','token':token,'ownerToken':owner}))
 
-def install():
-    if hub.exists() or engine.exists() or config.exists(): raise SystemExit('Existing service data or App config found; refusing to overwrite.')
-    if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
-    for label in labels.values():
-        if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0: raise SystemExit('A service label is already in use.')
-    if socket_dir.exists(): raise SystemExit('Existing handoff socket directory; refusing to overwrite.')
-    os.umask(0o077); hub.mkdir(parents=True,mode=0o700); engine.mkdir(parents=True,mode=0o700); agents.mkdir(parents=True,exist_ok=True)
-    shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
-    for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
-    shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
-    subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
-    (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
-    py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
+
+APP_INSTALLER_MARKER = "com.cyou.pack.installer.v1"
+HUB_PROGRAM_DIRS = ("python", "core", "services")
+HUB_PROGRAM_FILES = ("hub.py", "room_watch.py", "backup-db.sh", "verify-backup.sh")
+ENGINE_PROGRAM_DIRS = ("app", "Electron.app")
+
+
+def require_regular_file(path, description):
+    path = pathlib.Path(path)
+    if path.is_symlink():
+        raise SystemExit(f"Refusing symlinked {description}: {path}")
+    if not path.is_file():
+        raise SystemExit(f"Missing or invalid {description}: {path}")
+
+
+def require_private_mode(path, description):
+    path = pathlib.Path(path)
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        raise SystemExit(
+            f"{description} has group/other permissions; expected a private mode: "
+            f"{oct(mode)} ({path})"
+        )
+
+
+def remove_path(path):
+    path = pathlib.Path(path)
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def copy_path(source, destination):
+    source = pathlib.Path(source)
+    destination = pathlib.Path(destination)
+    if source.is_symlink():
+        raise SystemExit(f"Refusing symlinked program path: {source}")
+    if source.is_dir():
+        shutil.copytree(source, destination, symlinks=True)
+    elif source.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shutil.copy2(source, destination)
+    else:
+        raise SystemExit(f"Missing upgrade payload: {source}")
+
+
+def read_pack_app_info(path):
+    path = pathlib.Path(path)
+    require_real_directory(path, "Pack App bundle")
+    info_path = path / "Contents" / "Info.plist"
+    require_regular_file(info_path, "Pack App Info.plist")
     try:
+        with info_path.open("rb") as stream:
+            info = plistlib.load(stream)
+    except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+        raise SystemExit(f"Cannot validate Pack App bundle: {path}") from exc
+    if not isinstance(info, dict) or info.get("CFBundleIdentifier") != "com.cyou.pack":
+        raise SystemExit(f"Pack App bundle identifier mismatch: {path}")
+    if info.get("PackInstallerMarker") != APP_INSTALLER_MARKER:
+        raise SystemExit(f"Pack App installer marker missing: {path}")
+    if not isinstance(info.get("CFBundleExecutable"), str) or not info["CFBundleExecutable"]:
+        raise SystemExit(f"Pack App executable metadata missing: {path}")
+    return info
+
+
+def require_pack_app_closed(info):
+    try:
+        result = subprocess.run(
+            ["/usr/bin/pgrep", "-x", info["CFBundleExecutable"]],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise SystemExit("Cannot verify whether Pack is running; quit Pack and retry.") from exc
+    if result.returncode == 0:
+        raise SystemExit("Pack is running; quit Pack.app before upgrading.")
+    if result.returncode != 1:
+        raise SystemExit("Cannot verify whether Pack is running; refusing to upgrade.")
+
+
+def validate_upgrade_installation():
+    require_real_directory(base, "Pack data root")
+    require_real_directory(HOME / "Library", "Library directory")
+    require_real_directory(agents, "LaunchAgents directory")
+    require_real_directory(hub, "local Hub directory")
+    require_real_directory(engine, "local Engine directory")
+    require_real_directory(socket_dir, "handoff socket directory")
+    require_real_directory(hub / "attachments", "Hub attachments directory")
+    require_real_directory(engine / "data", "Engine data directory")
+    require_real_directory(engine / "data" / "local", "Engine local data directory")
+    for path, description in (
+        (base, "Pack data root"),
+        (hub, "local Hub directory"),
+        (engine, "local Engine directory"),
+        (socket_dir, "handoff socket directory"),
+        (hub / "attachments", "Hub attachments directory"),
+        (engine / "data", "Engine data directory"),
+        (engine / "data" / "local", "Engine local data directory"),
+    ):
+        require_private_mode(path, description)
+    require_regular_file(config, "App config")
+    require_regular_file(hub / "pack.db", "Hub database")
+    require_regular_file(hub / ".dispatcher_token", "Hub dispatcher token")
+    for path, description in (
+        (config, "App config"),
+        (hub / "pack.db", "Hub database"),
+        (hub / ".dispatcher_token", "Hub dispatcher token"),
+    ):
+        require_private_mode(path, description)
+    owner_token = hub / ".owner_token"
+    if owner_token.exists() or owner_token.is_symlink():
+        require_regular_file(owner_token, "Hub owner token")
+        require_private_mode(owner_token, "Hub owner token")
+    require_regular_file(hub / "backup-db.sh", "installed database backup script")
+    require_regular_file(hub / "verify-backup.sh", "installed backup verification script")
+    try:
+        config_value = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SystemExit("App config is unreadable or invalid; refusing to upgrade.") from exc
+    if not isinstance(config_value, dict):
+        raise SystemExit("App config root must be an object; refusing to upgrade.")
+
+    for name in HUB_PROGRAM_DIRS:
+        require_real_directory(hub / name, f"installed Hub program directory {name}")
+    for name in HUB_PROGRAM_FILES:
+        require_regular_file(hub / name, f"installed Hub program file {name}")
+    for name in ENGINE_PROGRAM_DIRS:
+        require_real_directory(engine / name, f"installed Engine program directory {name}")
+
+    for kind, label in labels.items():
+        document = read_owned_agent_plist(kind, agents / (label + ".plist"))
+        if document is None:
+            raise SystemExit(f"Missing Pack LaunchAgent plist; refusing partial upgrade: {label}")
+        if document.get("Umask") != 0o077:
+            raise SystemExit(f"LaunchAgent umask is not private; refusing upgrade: {label}")
+        require_private_mode(agents / (label + ".plist"), f"LaunchAgent plist {label}")
+
+    for name in HUB_PROGRAM_DIRS:
+        require_real_directory(BUNDLE / "python" if name == "python" else BUNDLE / "hub" / name,
+                               f"bundled Hub program directory {name}")
+    for name in HUB_PROGRAM_FILES:
+        require_regular_file(BUNDLE / "hub" / name, f"bundled Hub program file {name}")
+    for name in ENGINE_PROGRAM_DIRS:
+        require_real_directory(BUNDLE / "engine" / name, f"bundled Engine program directory {name}")
+    require_real_directory(BUNDLE / "Pack.app", "bundled Pack App")
+    require_real_directory(app_path.parent, "Applications directory")
+
+    installed_info = read_pack_app_info(app_path)
+    bundled_info = read_pack_app_info(BUNDLE / "Pack.app")
+    if installed_info["CFBundleIdentifier"] != bundled_info["CFBundleIdentifier"]:
+        raise SystemExit("Installed and bundled App identities differ; refusing upgrade.")
+    require_pack_app_closed(installed_info)
+
+
+def create_upgrade_backup():
+    backup_parent = hub / "backups"
+    if backup_parent.is_symlink():
+        raise SystemExit(f"Refusing symlinked backup directory: {backup_parent}")
+    if backup_parent.exists() and not backup_parent.is_dir():
+        raise SystemExit(f"Backup path is not a directory: {backup_parent}")
+    backup_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    backup_parent.chmod(0o700)
+    backup_root = pathlib.Path(tempfile.mkdtemp(prefix="upgrade-", dir=str(backup_parent)))
+    backup_root.chmod(0o700)
+    return backup_root
+
+
+def populate_upgrade_backup(backup_root):
+    database_backup = backup_root / "database"
+    database_backup.mkdir(mode=0o700)
+    env = {
+        **os.environ,
+        "PACK_HUB_DIR": str(hub),
+        "PACK_BACKUP_DIR": str(database_backup),
+        "PACK_BACKUP_KEEP": "1",
+    }
+    subprocess.run(["/bin/bash", str(hub / "backup-db.sh")], cwd=str(hub), env=env, check=True)
+    subprocess.run(["/bin/bash", str(hub / "verify-backup.sh")], cwd=str(hub), env=env, check=True)
+
+    state_root = backup_root / "state"
+    state_root.mkdir(mode=0o700)
+    for source in (config, hub / ".dispatcher_token", hub / ".owner_token"):
+        if source.exists() or source.is_symlink():
+            copy_path(source, state_root / source.name)
+            (state_root / source.name).chmod(0o600)
+
+    code_root = backup_root / "code"
+    hub_snapshot = code_root / "hub"
+    engine_snapshot = code_root / "engine"
+    hub_snapshot.mkdir(parents=True, mode=0o700)
+    engine_snapshot.mkdir(parents=True, mode=0o700)
+    for name in (*HUB_PROGRAM_DIRS, *HUB_PROGRAM_FILES):
+        copy_path(hub / name, hub_snapshot / name)
+    for name in ENGINE_PROGRAM_DIRS:
+        copy_path(engine / name, engine_snapshot / name)
+
+    agents_snapshot = state_root / "LaunchAgents"
+    agents_snapshot.mkdir(mode=0o700)
+    for label in labels.values():
+        copy_path(agents / (label + ".plist"), agents_snapshot / (label + ".plist"))
+        (agents_snapshot / (label + ".plist")).chmod(0o600)
+
+    subprocess.run(["/usr/bin/ditto", str(app_path), str(backup_root / "Pack.app")], check=True)
+
+
+def preflight_upgrade_migration(stage_hub, backup_root):
+    """Run the candidate Hub's init against a copy of the verified, post-stop DB backup."""
+    database_dir = backup_root / "database"
+    snapshots = sorted(database_dir.glob("pack-*.db"))
+    if len(snapshots) != 1:
+        raise RuntimeError(
+            f"Expected exactly one verified SQLite snapshot in {database_dir}; found {len(snapshots)}"
+        )
+
+    staged_db = stage_hub / "pack.db"
+    copy_path(snapshots[0], staged_db)
+    staged_db.chmod(0o600)
+    staged_token = stage_hub / ".dispatcher_token"
+    copy_path(hub / ".dispatcher_token", staged_token)
+    staged_token.chmod(0o600)
+
+    python = stage_hub / "python" / "bin" / "python3"
+    env = {
+        **os.environ,
+        "PYTHONNOUSERSITE": "1",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "no_proxy": "127.0.0.1,localhost",
+    }
+    subprocess.run(
+        [str(python), "hub.py", "init"],
+        cwd=str(stage_hub),
+        env=env,
+        check=True,
+        timeout=120,
+    )
+    integrity_check = (
+        "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); "
+        "result=db.execute('PRAGMA integrity_check').fetchone(); "
+        "assert result and result[0]=='ok', result; db.close()"
+    )
+    subprocess.run(
+        [str(python), "-c", integrity_check, str(staged_db)],
+        cwd=str(stage_hub),
+        env=env,
+        check=True,
+        timeout=30,
+    )
+
+
+def stage_upgrade_payload():
+    stage_root = pathlib.Path(tempfile.mkdtemp(prefix=".pack-upgrade-", dir=str(base)))
+    stage_root.chmod(0o700)
+    app_stage = None
+    try:
+        stage_hub = stage_root / "hub"
+        stage_engine = stage_root / "engine"
+        stage_hub.mkdir(mode=0o700)
+        stage_engine.mkdir(mode=0o700)
+
+        copy_path(BUNDLE / "python", stage_hub / "python")
+        for name in HUB_PROGRAM_FILES:
+            copy_path(BUNDLE / "hub" / name, stage_hub / name)
+        for name in ("core", "services"):
+            copy_path(BUNDLE / "hub" / name, stage_hub / name)
+        copy_path(BUNDLE / "engine" / "app", stage_engine / "app")
+        subprocess.run([
+            "/usr/bin/ditto",
+            str(BUNDLE / "engine" / "Electron.app"),
+            str(stage_engine / "Electron.app"),
+        ], check=True)
+
+        smoke = (
+            "import asyncio,inspect,hub; tools=hub.build_server().list_tools(); "
+            "tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; "
+            "names={tool.name for tool in tools}; "
+            "assert {'room_list','member_list','task_audit'}.issubset(names), names"
+        )
+        subprocess.run(
+            [str(stage_hub / "python" / "bin" / "python3"), "-c", smoke],
+            cwd=str(stage_hub),
+            env={**os.environ, "PYTHONNOUSERSITE": "1", "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
+            check=True,
+        )
+
+        app_stage = app_path.parent / f".Pack.app.upgrade-{time.time_ns()}"
+        subprocess.run(["/usr/bin/ditto", str(BUNDLE / "Pack.app"), str(app_stage)], check=True)
+        read_pack_app_info(app_stage)
+        subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app_stage)], check=True)
+        subprocess.run(["plutil", "-lint", str(app_stage / "Contents" / "Info.plist")],
+                       check=True, stdout=subprocess.DEVNULL)
+        return stage_root, stage_hub, stage_engine, app_stage
+    except Exception:
+        if app_stage is not None:
+            try:
+                remove_path(app_stage)
+            except OSError:
+                pass
+        try:
+            remove_path(stage_root)
+        except OSError:
+            pass
+        raise
+
+
+def rollback_program_paths(swaps):
+    errors = []
+    for target, previous in reversed(swaps):
+        try:
+            remove_path(target)
+            if previous.exists() or previous.is_symlink():
+                os.replace(previous, target)
+        except Exception as exc:
+            errors.append(f"{target}: {type(exc).__name__}: {exc}")
+    return errors
+
+
+def replace_program_paths(stage_root, stage_hub, stage_engine, swaps):
+    """Swap staged program paths and record each mutation for caller-owned rollback."""
+    previous_root = stage_root / "previous"
+    previous_root.mkdir(mode=0o700)
+    specs = []
+    for name in (*HUB_PROGRAM_DIRS, *HUB_PROGRAM_FILES):
+        specs.append((hub / name, stage_hub / name, previous_root / "hub" / name))
+    for name in ENGINE_PROGRAM_DIRS:
+        specs.append((engine / name, stage_engine / name, previous_root / "engine" / name))
+
+    for target, staged, previous in specs:
+        previous.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if target.exists() or target.is_symlink():
+            os.replace(target, previous)
+        # Record before installing the staged path: if the next rename fails,
+        # the outer transaction still knows where the original path lives.
+        swaps.append((target, previous))
+        os.replace(staged, target)
+
+
+def swap_app_bundle(app_stage, previous_paths):
+    previous = app_path.parent / f".Pack.app.previous-{time.time_ns()}"
+    if previous.exists() or previous.is_symlink():
+        raise RuntimeError(f"App rollback path already exists: {previous}")
+    os.replace(app_path, previous)
+    # Record the moved bundle before the replacement rename so the caller can
+    # recover it even when the second rename itself fails.
+    previous_paths.append(previous)
+    os.replace(app_stage, app_path)
+    return previous
+
+
+def rollback_app_bundle(previous):
+    if previous is None or not (previous.exists() or previous.is_symlink()):
+        return []
+    try:
+        remove_path(app_path)
+        os.replace(previous, app_path)
+        return []
+    except Exception as exc:
+        return [f"{app_path}: {type(exc).__name__}: {exc}"]
+
+
+
+
+def wait_for_port(port, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                return
+        except OSError:
+            time.sleep(0.25)
+    raise RuntimeError(f"Pack service did not become ready on 127.0.0.1:{port}")
+
+
+def wait_for_hub_ready(timeout=30):
+    """Require an authenticated, read-only MCP call; a listening port alone is insufficient."""
+    script = f"""
+import asyncio
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+
+async def main():
+    token = open(".dispatcher_token", encoding="utf-8").read().strip()
+    url = "http://127.0.0.1:{hp}/mcp"
+    deadline = asyncio.get_running_loop().time() + {timeout}
+    last_error = None
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            async with Client(StreamableHttpTransport(
+                url, headers={{"Authorization": "Bearer " + token}}
+            )) as client:
+                result = await client.call_tool("room_list", {{}})
+                if getattr(result, "is_error", False):
+                    raise RuntimeError("Hub room_list returned an error")
+                return
+        except Exception as exc:
+            last_error = exc
+            await asyncio.sleep(0.5)
+    raise RuntimeError("Hub authenticated MCP readiness check failed: " + str(last_error))
+
+asyncio.run(main())
+"""
+    subprocess.run(
+        [str(hub / "python" / "bin" / "python3"), "-c", script],
+        cwd=str(hub),
+        env={**os.environ, "PYTHONNOUSERSITE": "1"},
+        check=True,
+        timeout=timeout + 10,
+    )
+
+
+def bootstrap_upgrade_agents():
+    for kind in ("hub", "watch", "backup", "engine"):
+        label = labels[kind]
+        target = f"gui/{uid}/{label}"
+        if ctl("print", target, check=False).returncode != 0:
+            ctl("bootstrap", f"gui/{uid}", str(agents / (label + ".plist")))
+    wait_for_hub_ready()
+    wait_for_port(ep)
+
+
+def upgrade():
+    previous_umask = os.umask(0o077)
+    backup_root = None
+    stage_root = None
+    app_stage = None
+    app_previous = None
+    app_swap_state = []
+    swaps = []
+    services_stopped = False
+    backup_verified = False
+    new_services_started = False
+    upgrade_committed = False
+    try:
+        validate_upgrade_installation()
+        # Stage and smoke-test the new payload before taking services offline.
+        # The backup is created only after every Pack writer has stopped, so it
+        # includes writes accepted while staging and cannot rewind them on abort.
+        stage_root, stage_hub, stage_engine, app_stage = stage_upgrade_payload()
+
+        services_stopped = True
+        for label in labels.values():
+            ctl("bootout", f"gui/{uid}/{label}", check=False)
+        for label in labels.values():
+            if ctl("print", f"gui/{uid}/{label}", check=False).returncode == 0:
+                raise RuntimeError(f"Pack LaunchAgent did not stop: {label}")
+        if not available(hp) or not available(ep):
+            raise RuntimeError("A Pack service port is still occupied after stopping LaunchAgents.")
+
+        backup_root = create_upgrade_backup()
+        populate_upgrade_backup(backup_root)
+        backup_verified = True
+        # serve() calls init() against the live DB. First run the same candidate
+        # migration on the verified backup copy so failures occur before code swap.
+        preflight_upgrade_migration(stage_hub, backup_root)
+
+        replace_program_paths(stage_root, stage_hub, stage_engine, swaps)
+        app_previous = swap_app_bundle(app_stage, app_swap_state)
+        app_stage = None
+        new_services_started = True
+        bootstrap_upgrade_agents()
+        # From this point the new services passed readiness. Never roll back
+        # after old program snapshots have begun to be discarded.
+        upgrade_committed = True
+
+        try:
+            remove_path(app_previous)
+        except OSError:
+            print(f"Warning: previous App bundle retained at {app_previous}")
+        app_previous = None
+        try:
+            remove_path(stage_root)
+        except OSError:
+            print(f"Warning: upgrade staging retained at {stage_root}")
+        stage_root = None
+        print(f"UPGRADE OK: Pack program files updated; user data preserved. Backup: {backup_root}")
+    except Exception as exc:
+        if upgrade_committed:
+            raise RuntimeError(
+                f"Upgrade completed and new services are healthy, but final reporting failed. "
+                f"Verified backup retained at {backup_root}: {type(exc).__name__}: {exc}"
+            ) from exc
+        rollback_errors = []
+        if services_stopped:
+            stop_errors = []
+            for label in labels.values():
+                try:
+                    ctl("bootout", f"gui/{uid}/{label}", check=False)
+                except Exception as stop_error:
+                    stop_errors.append(f"stop {label}: {stop_error}")
+
+            still_loaded = []
+            for label in labels.values():
+                try:
+                    if ctl("print", f"gui/{uid}/{label}", check=False).returncode == 0:
+                        still_loaded.append(label)
+                except Exception as verify_error:
+                    still_loaded.append(label)
+                    stop_errors.append(f"verify stopped {label}: {verify_error}")
+
+            for port, service in ((hp, "Hub"), (ep, "Engine")):
+                if not available(port):
+                    still_loaded.append(f"{service} port {port} remains occupied")
+
+            if still_loaded:
+                # Never swap files while a Pack writer may still be running
+                # or a service port remains occupied.
+                # Preserve the current code, backup and previous-version
+                # snapshots for manual recovery.
+                rollback_errors.extend(stop_errors)
+                rollback_errors.extend(f"Pack service still active: {service}" for service in still_loaded)
+            else:
+                if app_previous is None and app_swap_state:
+                    app_previous = app_swap_state[-1]
+                rollback_errors.extend(rollback_app_bundle(app_previous))
+                rollback_errors.extend(rollback_program_paths(swaps))
+                # Keep live DB and attachments: the new Hub may have accepted writes
+                # before another service's readiness check failed. The verified
+                # pre-upgrade snapshot remains available for explicit manual recovery.
+                if not rollback_errors:
+                    try:
+                        bootstrap_upgrade_agents()
+                    except Exception as restart_error:
+                        rollback_errors.append(f"restart previous services: {restart_error}")
+        if app_stage is not None:
+            try:
+                remove_path(app_stage)
+            except Exception as cleanup_error:
+                rollback_errors.append(f"remove staged App: {cleanup_error}")
+        if stage_root is not None and not rollback_errors:
+            try:
+                remove_path(stage_root)
+            except Exception as cleanup_error:
+                rollback_errors.append(f"remove staging: {cleanup_error}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"Upgrade failed and rollback needs attention. Backup: {backup_root}; "
+                f"staging: {stage_root}; details: {'; '.join(rollback_errors)}"
+            ) from exc
+        if backup_root is not None and not backup_verified:
+            raise RuntimeError(
+                f"Upgrade aborted before program replacement; previous services were restarted and existing data was left unchanged. "
+                f"Partial backup retained at {backup_root}: {type(exc).__name__}: {exc}"
+            ) from exc
+        if backup_root is not None and not new_services_started:
+            raise RuntimeError(
+                f"Upgrade failed before new services started; previous program files were restored and live database was left untouched. "
+                f"Verified backup retained at {backup_root}: {type(exc).__name__}: {exc}"
+            ) from exc
+        if backup_root is not None:
+            raise RuntimeError(
+                f"Upgrade failed; previous program files were restored and live user data was preserved. "
+                f"Live DB/attachments were not overwritten; verified pre-upgrade backup retained at "
+                f"{backup_root} for manual recovery: {type(exc).__name__}: {exc}"
+            ) from exc
+        raise
+    finally:
+        os.umask(previous_umask)
+
+
+def _acquire_install_lock():
+    """Serialize fresh installs before preflight so rollback cannot delete another attempt's paths."""
+    lock_path = HOME / ".pack-install.lock"
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise SystemExit(f"Cannot safely open Pack installer lock: {lock_path}") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or (info.st_mode & 0o077):
+            raise SystemExit(f"Pack installer lock must be a private regular file owned by this user: {lock_path}")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SystemExit("Another Pack installation is already running; wait for it to finish.") from exc
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _rollback_failed_install(agent_plists, owned_paths, agents_dir, agents_preexisting, base_dir, base_preexisting):
+    """Remove only attempt-owned paths after every started service is confirmed stopped."""
+    services_not_stopped = []
+    for label in labels.values():
+        target = f"gui/{uid}/{label}"
+        try:
+            ctl("bootout", target, check=False)
+            # Verify after bootout even when launchctl reports success: do not
+            # unlink files until the job is no longer loaded. A query failure
+            # is an unknown state and therefore keeps all paths intact.
+            status = ctl("print", target, check=False)
+            if status.returncode == 0:
+                services_not_stopped.append(label)
+        except Exception:
+            services_not_stopped.append(label)
+
+    if services_not_stopped:
+        print(
+            "Pack installer rollback incomplete; could not confirm these services stopped: "
+            + ", ".join(services_not_stopped)
+            + ". Preserving LaunchAgent plists and install paths for manual recovery.",
+            file=sys.stderr,
+        )
+        return False
+
+    for path in (*agent_plists, *owned_paths):
+        try:
+            remove_path(path)
+        except OSError:
+            pass
+    if not agents_preexisting:
+        try:
+            pathlib.Path(agents_dir).rmdir()
+        except OSError:
+            pass
+    if not base_preexisting:
+        try:
+            pathlib.Path(base_dir).rmdir()
+        except OSError:
+            pass
+    return True
+
+
+def _install_unlocked():
+    require_real_directory(base, 'Pack data root')
+    require_real_directory(HOME/'Library', 'Library directory')
+    require_real_directory(agents, 'LaunchAgents directory')
+    for path, description in (
+        (hub, 'local Hub directory'),
+        (engine, 'local Engine directory'),
+        (config, 'App config'),
+        (socket_dir, 'handoff socket directory'),
+    ):
+        require_absent(path, description)
+    if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
+    agent_plists = []
+    for kind, label in labels.items():
+        plist = agents/(label+'.plist')
+        require_absent(plist, f'LaunchAgent plist {label}')
+        agent_plists.append(plist)
+        if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0:
+            raise SystemExit(f'LaunchAgent label is already in use: {label}')
+
+    base_preexisting = base.exists()
+    agents_preexisting = agents.exists()
+    previous_umask = os.umask(0o077)
+    try:
+        base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        base.chmod(0o700)
+        hub.mkdir(mode=0o700)
+        engine.mkdir(mode=0o700)
+        agents.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
+        for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
+        shutil.copytree(BUNDLE/'hub'/'core',hub/'core',symlinks=True)
+        shutil.copytree(BUNDLE/'hub'/'services',hub/'services',symlinks=True)
+        shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
+        subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
+        (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
+        py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
+        smoke = (
+            'import asyncio,inspect,hub; tools=hub.build_server().list_tools(); '
+            'tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; '
+            'names={tool.name for tool in tools}; '
+            'assert {"room_list","member_list"}.issubset(names), names'
+        )
+        subprocess.run([str(py), '-c', smoke], cwd=hub, check=True,
+                       env={**os.environ, 'PYTHONNOUSERSITE':'1'})
         write_agent('hub',[py,hub/'hub.py','serve'],{**common,'PACK_HUB_HOST':'127.0.0.1','PACK_HUB_PORT':str(hp)},True)
         for _ in range(120):
             try:
@@ -91,19 +787,52 @@ def install():
                 with socket.create_connection(('127.0.0.1',ep),timeout=.3): break
             except OSError: time.sleep(.25)
         else: raise RuntimeError('Local engine did not start')
-    except Exception:
-        for label in labels.values(): ctl('bootout',f'gui/{uid}/{label}',check=False)
+    except BaseException:
+        _rollback_failed_install(
+            agent_plists,
+            (config, socket_dir, engine, hub),
+            agents,
+            agents_preexisting,
+            base,
+            base_preexisting,
+        )
         raise
+    finally:
+        os.umask(previous_umask)
     print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
     print('Open Pack to migrate the private local credentials into Keychain.')
 
+
+def install():
+    lock_fd = _acquire_install_lock()
+    try:
+        _install_unlocked()
+    finally:
+        os.close(lock_fd)
+
 def uninstall():
-    for label in labels.values():
+    require_real_directory(base, 'Pack data root')
+    require_real_directory(HOME/'Library', 'Library directory')
+    require_real_directory(agents, 'LaunchAgents directory')
+    require_real_directory(hub, 'local Hub directory')
+    require_real_directory(engine, 'local Engine directory')
+
+    owned_plists = {}
+    for kind, label in labels.items():
+        plist = agents/(label+'.plist')
+        document = read_owned_agent_plist(kind, plist)
+        loaded = ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0
+        if document is None and loaded:
+            raise SystemExit(f'Loaded LaunchAgent has no verifiable Pack plist; refusing to stop it: {label}')
+        owned_plists[kind] = document is not None
+
+    # Validate every service before stopping any of them.
+    for kind, label in labels.items():
         ctl('bootout',f'gui/{uid}/{label}',check=False)
-        plist=agents/(label+'.plist')
-        if plist.is_file(): plist.unlink()
+        if owned_plists[kind]:
+            (agents/(label+'.plist')).unlink()
     # Program files only. Database, tokens, config, attachments and engine data stay.
-    for name in ('python','hub.py','room_watch.py','backup-db.sh','verify-backup.sh'):
+    for name in ('python','hub.py','core','services','room_watch.py','backup-db.sh','verify-backup.sh'):
         p=hub/name
         if p.is_symlink(): p.unlink()
         elif p.is_dir(): shutil.rmtree(p)
@@ -121,6 +850,9 @@ def uninstall():
     print(f'Data preserved: {hub}, {engine}/data, {config}')
 
 if __name__ == '__main__':
-    if len(sys.argv)!=2 or sys.argv[1] not in ('install','uninstall'): raise SystemExit('Use install or uninstall')
-    try: install() if sys.argv[1]=='install' else uninstall()
+    if len(sys.argv)!=2 or sys.argv[1] not in ('install','upgrade','uninstall'): raise SystemExit('Use install, upgrade or uninstall')
+    try:
+        if sys.argv[1]=='install': install()
+        elif sys.argv[1]=='upgrade': upgrade()
+        else: uninstall()
     except Exception as exc: raise SystemExit(f'Operation failed: {type(exc).__name__}: {exc}')
