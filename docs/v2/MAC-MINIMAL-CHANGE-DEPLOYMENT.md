@@ -26,4 +26,4 @@
 ## 本次整改与未来工作
 
 - 本轮修改仓库中的 Hub Python 服务/模块、SwiftUI App 内部结构、DMG 安装器的非破坏式 upgrade 命令、自动化测试、CI 与文档；不执行真实 Mac 安装/升级，不改动用户 Mac 上的 LaunchAgent、Keychain service/account、配置、数据库、附件及登录态数据。
-- 需要后续单独完成的事项：在隔离 Mac 验证升级前预检、停机后在线备份、程序文件替换、服务健康检查、失败回滚及 Keychain/登录态保留；仓库测试不能替代真实 Mac 验收。备份在所有 Pack 写服务停止后生成，以包含 staging 期间已接受的写入；仅新服务启动失败才恢复该快照，失败版本的 DB/WAL/SHM 保留在备份目录。
+- 部署前先运行 `bash installer/mac-inventory.sh` 生成脱敏只读盘点；报告不包含 Token/Keychain 值，也不启停服务或写入 Pack 数据。随后在隔离 Mac 验证升级前预检、停机后在线备份、程序文件替换、认证 Hub/Engine 健康检查、失败回滚及 Keychain/登录态保留；仓库测试不能替代真实 Mac 验收。备份在所有 Pack 写服务停止后生成，以包含 staging 期间已接受的写入；仅新服务启动失败才恢复该快照，失败版本的 DB/WAL/SHM 保留在备份目录。

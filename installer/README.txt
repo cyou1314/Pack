@@ -12,6 +12,11 @@ Pack 本地版（Apple Silicon / macOS 14 或更新）
 安装会在 ~/.pack/local-hub 和 ~/.pack/local-engine 建立服务与数据，在用户 LaunchAgents 安装后台服务。若已有 Pack 配置、服务目录、占用的端口或交接通道，安装会停止并保留原状，不覆盖现有部署。不要同时在已有 Pack 服务的机器上直接运行默认安装。
 
 
+Mac 部署前只读盘点：
+1. 在 Pack 仓库目录运行 `bash installer/mac-inventory.sh`。
+2. 报告默认写入 `~/commander-work/pack-mac-inventory-*.txt`，权限为 0600；只记录系统/App 版本、LaunchAgent 入口与状态、端口监听进程名、路径权限、SQLite quick_check、附件/备份数量。
+3. 不读取或输出配置值、Token、Keychain 内容；不启动/停止服务、不修改数据库或安装目录。先检查报告，再决定是否进入隔离升级验收。
+
 已有安装升级：
 1. 先退出 Pack.app，打开新版本 DMG 根目录的「upgrade.command」。
 2. 升级器先验证安装目录、Pack LaunchAgent 身份/权限、数据库、配置和 App 标记；新版 Hub、Engine 与 Pack.app 先复制到暂存位置并做工具注册/签名 smoke test。

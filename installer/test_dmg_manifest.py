@@ -71,6 +71,17 @@ class DmgManifestTests(unittest.TestCase):
         self.assertTrue(os.access(ROOT / "installer" / "upgrade.command", os.X_OK))
         self.assertTrue(os.access(ROOT / "installer" / "build-dmg.sh", os.X_OK))
 
+    def test_mac_inventory_is_read_only_and_does_not_emit_secret_values(self):
+        source = (ROOT / "installer" / "mac-inventory.sh").read_text(encoding="utf-8")
+        self.assertIn("launchctl print", source)
+        self.assertIn("sqlite3 -readonly", source)
+        self.assertIn("ProgramArguments", source)
+        self.assertIn("Keychain=not queried", source)
+        self.assertNotIn("security find-generic-password", source)
+        self.assertNotIn('cat "$CONFIG"', source)
+        self.assertNotIn('cat "$HUB/.dispatcher_token"', source)
+        self.assertTrue(os.access(ROOT / "installer" / "mac-inventory.sh", os.X_OK))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

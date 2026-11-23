@@ -33,6 +33,7 @@ jobs:
           bash -n run-all-suites.sh
           bash -n installer/build-dmg.sh
           bash -n installer/upgrade.command
+          bash -n installer/mac-inventory.sh
           bash -n app/make-bundle.sh
           bash -n local/install-local.sh
           bash -n local/uninstall-local.sh
