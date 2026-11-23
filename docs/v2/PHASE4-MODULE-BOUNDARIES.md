@@ -513,6 +513,6 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 
 - 新增 `AppState+Lifecycle.swift`，迁出 `start()`、`refresh()` 与任务分页读取 helper；AppState 主文件不再直接承载轮询和整轮 Hub 快照刷新流程。
 - 保持启动时配置加载、owner client 初始化、地址发现、刷新间隔下限、room/client generation 防串数据、任务分页上限、失败重试、通知快照、未读统计和延迟已读行为不变。
-- `pollTask`、`consecutiveRefreshFailures`、`taskListPageSize`、`taskListMaxPages` 仅从 private 调整为 PackApp module 内部可见，供同一 AppState 的 Lifecycle extension 访问；未暴露 public API。
+- `pollTask`、`unreadTask`、`consecutiveRefreshFailures`、`taskListPageSize`、`taskListMaxPages` 仅从 private 调整为 PackApp module 内部可见，供同一 AppState 的 Lifecycle extension 访问；未暴露 public API。
 - 不新增 Store、actor、Swift Package target 或依赖；不修改 Hub API、MCP schema、SQLite schema、Keychain、配置路径和用户数据。
 - 本批以 Swift Build、Swift Unit Tests 和 App Bundle CI 验收；真实 Mac 启动/登录态与 LaunchAgent 验收仍后置。

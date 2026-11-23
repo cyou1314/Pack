@@ -171,7 +171,7 @@ final class AppState: ObservableObject {
     let taskListPageSize = 100
     let taskListMaxPages = 10
     var roomGeneration = 0
-    private var unreadTask: Task<Void, Never>?
+    var unreadTask: Task<Void, Never>?
     var notificationDiff = NotificationDiff()
     var decisionRooms: [Int: String] = [:]
     var pendingNotification: (kind: String, room: String, id: Int?, member: String?)?
