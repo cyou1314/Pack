@@ -25,7 +25,11 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 provider TEXT,
                 display_name TEXT,
                 kind TEXT,
-                login_state TEXT
+                login_state TEXT,
+                token_hash TEXT NOT NULL DEFAULT '',
+                profile TEXT,
+                bound_room_id INTEGER,
+                joined_msg_id INTEGER
             );
             CREATE TABLE rooms(
                 id INTEGER PRIMARY KEY,
@@ -57,7 +61,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
             connection = self._database(directory)
             try:
                 before = connection.execute(
-                    "SELECT id,name,role,created_at,removed_at,provider,display_name,kind,login_state "
+                    "SELECT id,name,role,created_at,removed_at,provider,display_name,kind,login_state,"
+                    "token_hash,profile,bound_room_id,joined_msg_id "
                     "FROM members ORDER BY id"
                 ).fetchall()
                 apply_migrations(connection, clock=lambda: 100.0)
@@ -193,6 +198,128 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 )
             finally:
                 verify.close()
+
+
+    def test_migration_preserves_legacy_references_and_private_memory(self):
+        with tempfile.TemporaryDirectory(prefix="pack-agent-registry-history-") as directory:
+            connection = self._database(directory)
+            try:
+                connection.execute(
+                    "UPDATE members SET token_hash=?,profile=?,bound_room_id=?,joined_msg_id=? "
+                    "WHERE id=1",
+                    ("sha256-token-hash-sentinel", "legacy-profile-sentinel", 1, 41),
+                )
+                connection.executescript(
+                    """
+                    CREATE TABLE messages(
+                        id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
+                        author_id INTEGER NOT NULL, kind TEXT NOT NULL,
+                        body TEXT NOT NULL, created_at REAL NOT NULL
+                    );
+                    CREATE TABLE tasks(
+                        id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
+                        title TEXT NOT NULL, body TEXT NOT NULL,
+                        created_by INTEGER NOT NULL, assignee INTEGER,
+                        status TEXT NOT NULL, created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE TABLE runs(
+                        id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL,
+                        member_id INTEGER NOT NULL, fence INTEGER NOT NULL,
+                        status TEXT NOT NULL
+                    );
+                    CREATE TABLE member_memory(
+                        member TEXT NOT NULL, scope TEXT NOT NULL, key TEXT NOT NULL,
+                        text TEXT NOT NULL, version_id INTEGER NOT NULL,
+                        updated_at REAL NOT NULL,
+                        PRIMARY KEY(member,scope,key)
+                    );
+                    CREATE TABLE member_memory_versions(
+                        id INTEGER PRIMARY KEY, member TEXT NOT NULL,
+                        scope TEXT NOT NULL, key TEXT NOT NULL,
+                        text TEXT NOT NULL, author TEXT NOT NULL,
+                        origin TEXT NOT NULL, source_refs TEXT NOT NULL,
+                        size INTEGER NOT NULL, created_at REAL NOT NULL
+                    );
+                    CREATE TABLE member_skills(
+                        member_id INTEGER NOT NULL, skill_id INTEGER NOT NULL,
+                        enabled INTEGER NOT NULL
+                    );
+                    CREATE TABLE member_read_cursors(
+                        member_id INTEGER NOT NULL, room_id INTEGER NOT NULL,
+                        cursor_id INTEGER NOT NULL
+                    );
+                    CREATE TABLE message_op_keys(
+                        member_id INTEGER NOT NULL, op_key TEXT NOT NULL,
+                        message_id INTEGER, created_at REAL NOT NULL
+                    );
+                    INSERT INTO messages VALUES(
+                        41,1,1,'chat','legacy-message-sentinel',11
+                    );
+                    INSERT INTO tasks VALUES(
+                        51,1,'legacy-task-sentinel','task-body-sentinel',
+                        1,1,'working',12,13
+                    );
+                    INSERT INTO runs VALUES(61,51,1,1,'running');
+                    INSERT INTO member_memory VALUES(
+                        'codex-user','private','notes',
+                        'private-memory-sentinel',1,14
+                    );
+                    INSERT INTO member_memory_versions VALUES(
+                        71,'codex-user','private','notes',
+                        'private-memory-version-sentinel','codex-user',
+                        'manual','[]',29,14
+                    );
+                    INSERT INTO member_skills VALUES(1,81,1);
+                    INSERT INTO member_read_cursors VALUES(1,1,41);
+                    INSERT INTO message_op_keys VALUES(1,'operation-sentinel',41,15);
+                    """
+                )
+                connection.commit()
+
+                legacy_tables = (
+                    "members", "rooms", "messages", "tasks", "runs",
+                    "member_memory", "member_memory_versions", "member_skills",
+                    "member_read_cursors", "message_op_keys",
+                )
+
+                def snapshot():
+                    result = {}
+                    for table in legacy_tables:
+                        schema = connection.execute(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                            (table,),
+                        ).fetchone()[0]
+                        rows = [
+                            tuple(row)
+                            for row in connection.execute(
+                                f'SELECT * FROM "{table}" ORDER BY rowid'
+                            ).fetchall()
+                        ]
+                        result[table] = {"schema": schema, "rows": rows}
+                    return result
+
+                before = snapshot()
+                apply_migrations(connection, clock=lambda: 100.0)
+                after = snapshot()
+
+                self.assertEqual(after, before)
+                agent_columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(agents)")
+                }
+                self.assertNotIn("token_hash", agent_columns)
+                self.assertNotIn("profile", agent_columns)
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM agent_connections").fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM agent_sessions").fetchone()[0],
+                    0,
+                )
+            finally:
+                connection.close()
 
     def test_failed_migration_rolls_back_schema_and_ledger(self):
         with tempfile.TemporaryDirectory(prefix="pack-agent-registry-") as directory:
