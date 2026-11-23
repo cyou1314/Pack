@@ -26,7 +26,7 @@
 ## 本次整改与未来工作
 
 - 本轮修改仓库中的 Hub Python 服务/模块、SwiftUI App 内部结构、DMG 安装器的非破坏式 upgrade 命令、自动化测试、CI 与文档；不执行真实 Mac 安装/升级，不改动用户 Mac 上的 LaunchAgent、Keychain service/account、配置、数据库、附件及登录态数据。
-- 部署前先运行 `bash installer/mac-inventory.sh` 生成脱敏只读盘点；报告不包含 Token/Keychain 值，也不启停服务或写入 Pack 数据。随后在隔离 Mac 验证升级前预检、停机后在线备份、程序文件替换、认证 Hub/Engine 健康检查、失败回滚及 Keychain/登录态保留；仓库测试不能替代真实 Mac 验收。备份在所有 Pack 写服务停止后生成，以包含 staging 期间已接受的写入。若新服务启动失败，只回滚程序文件/App；live DB/attachments 保持当前内容，避免覆盖启动窗口内可能已接受的新写入，已验证快照保留供人工恢复。当前升级不执行 SQLite schema migration；未来若需改表，必须先设计独立、可逆的版本化迁移流程。
+- 部署前先运行 `bash installer/mac-inventory.sh` 生成脱敏只读盘点；报告不包含 Token/Keychain 值，也不启停服务或写入 Pack 数据。随后在隔离 Mac 验证升级前预检、停机后在线备份、程序文件替换、认证 Hub/Engine 健康检查、失败回滚及 Keychain/登录态保留；仓库测试不能替代真实 Mac 验收。备份在所有 Pack 写服务停止后生成，以包含 staging 期间已接受的写入。若新服务启动失败，只回滚程序文件/App；live DB/attachments 保持当前内容，避免覆盖启动窗口内可能已接受的新写入，已验证快照保留供人工恢复。升级会在停止所有写服务并完成 SQLite/附件备份后，将经验证的数据库快照复制到私有 staging 目录，使用候选 Hub 执行 `hub.py init` 做迁移预检；只有预检通过才替换程序。新 Hub 首次 `serve` 仍会对 live DB 执行同一幂等 `init`，因此 schema migration 属于升级流程的一部分。若预检失败，旧服务恢复、live DB 不变；若 live 启动阶段失败，只回滚程序/App，不覆盖 live DB/attachments，保留已验证备份供人工恢复。未来新增非加法或破坏性迁移仍须独立版本化、可逆并增加专门回滚验收。
 
 
 ## 隔离 Mac 验收操作
