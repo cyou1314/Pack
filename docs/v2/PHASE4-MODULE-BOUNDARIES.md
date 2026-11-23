@@ -438,3 +438,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 保持无效码统一错误、全局 429、external gate 403、按码锁定、token 只存哈希、审计不记录 code/token、reclaim 只轮换 token/provider 且不改 room/joined_msg/read cursor。
 - 新增 `hub/test_pairing_service.py` 8 项隔离测试，覆盖成功建号与游标、缺失/未知/重复码、external gate/全局限流、reclaim、内部名字冲突、过期/吊销/锁定、审计失败回滚及独立 HubContext 并发兑换。接入 CI 与安装包 smoke。
 - 配对码的创建/查询/吊销 MCP 工具仍留在 Hub 入口，下一步继续迁入同一 pairing 服务并补充与兑换的并发测试。
+
+### Pairing 管理工具服务化（2026-11-23）
+
+- `pair_code_create/list/revoke` 与 `external_gate` 现迁入 `hub/services/pairing.py`，与公开 `POST /pair` 兑换共用服务模块；MCP 层仍负责 dispatcher 鉴权，工具名称/参数/返回结构不变。
+- pair_code_create/revoke 与 external_gate 写操作均使用 `BEGIN IMMEDIATE`，使发码时的名字/房间/reclaim 检查、吊销与兑换之间跨进程串行，减少「已吊销码仍被并发兑换」或「为已占用名字发出多个码」窗口。
+- 扩展 `hub/test_pairing_service.py`，覆盖一次性明文/哈希、身份/provider/room/reclaim 校验、gate、状态台账、吊销、审计失败回滚；与 redemption 的跨进程并发测试共同构成 pairing 领域回归。
+- pairing 服务覆盖公开兑换和三个管理工具；无新增工具/表，保持原 75-tool / 24-table 契约。

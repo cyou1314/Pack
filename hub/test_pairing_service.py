@@ -8,7 +8,10 @@ from pathlib import Path
 
 import hub
 from core.context import HubContext
-from services.pairing import redeem_pair
+from services.pairing import (
+    create_pair_code, list_pair_codes, redeem_pair, revoke_pair_code,
+    set_external_gate,
+)
 
 
 class PairResponse(dict):
@@ -247,6 +250,173 @@ class PairingServiceTests(unittest.TestCase):
         self.assertEqual(self.count("members", "WHERE name='alice'"), 1)
         self.assertEqual(self.count("audit", "WHERE action='pair_redeem'"), 1)
         self.assertEqual(self.count("pair_attempts", "WHERE success=1"), 1)
+
+
+    def issue_code(self, name="new-external", provider="generic",
+                   room="pack-main", display_name="", reclaim=False):
+        return create_pair_code(
+            self.context, self.dispatcher, name, provider, room,
+            display_name, reclaim,
+            pair_providers=hub.PAIR_PROVIDERS,
+            code_ttl=hub.PAIR_CODE_TTL,
+            token_factory=lambda: f"pk-pair-{name}",
+            hash_token=hub.hash_token,
+            external_enabled=hub._external_enabled,
+        )
+
+    def test_create_pair_code_returns_one_time_plaintext_and_stores_hash(self):
+        result = self.issue_code(display_name="Display")
+        self.assertEqual(result["pair_code"], "pk-pair-new-external")
+        self.assertEqual(result["member_name"], "new-external")
+        self.assertEqual(result["display_name"], "Display")
+        row = self.db.execute(
+            "SELECT code_hash,member_name,provider,expires_at FROM pair_codes "
+            "WHERE id=?", (result["code_id"],),
+        ).fetchone()
+        self.assertEqual(row["code_hash"], hub.hash_token("pk-pair-new-external"))
+        self.assertNotEqual(row["code_hash"], "pk-pair-generated")
+        self.assertEqual(row["member_name"], "new-external")
+        self.assertEqual(row["expires_at"], 12500.0 + hub.PAIR_CODE_TTL)
+
+    def test_create_pair_code_validates_identity_provider_room_and_display(self):
+        for name, provider, room, display, expected in (
+            ("bad name", "generic", "pack-main", "", "member_name"),
+            ("ok", "invalid", "pack-main", "", "provider must"),
+            ("ok", "generic", "missing-room", "", "no such room"),
+            ("ok", "generic", "pack-main", "x" * 81, "display_name too long"),
+        ):
+            with self.assertRaisesRegex(ValueError, expected):
+                self.issue_code(name, provider, room, display)
+        self.assertEqual(self.count("pair_codes"), 0)
+
+    def test_create_pair_code_enforces_reclaim_target_and_room(self):
+        with self.assertRaisesRegex(ValueError, "reclaim target"):
+            self.issue_code(name="missing-reclaim", reclaim=True)
+        self.db.execute(
+            "INSERT INTO members(name,role,token_hash,created_at,kind,bound_room_id) "
+            "VALUES('internal','member','h',12000,'internal',1)"
+        )
+        self.db.execute(
+            "INSERT INTO members(name,role,token_hash,created_at,kind,bound_room_id) "
+            "VALUES('external','member','h2',12000,'external',1)"
+        )
+        self.db.execute(
+            "INSERT INTO rooms(name,created_at) VALUES('other-room',12000)"
+        )
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, "internal member"):
+            self.issue_code(name="internal")
+        with self.assertRaisesRegex(ValueError, "use reclaim=True"):
+            self.issue_code(name="external")
+        self.assertEqual(self.issue_code(
+            name="external", reclaim=True,
+        )["reclaim"], True)
+        with self.assertRaisesRegex(ValueError, "reclaim room mismatch"):
+            self.issue_code(
+                name="external", room="other-room", reclaim=True,
+            )
+
+    def test_create_pair_code_respects_external_gate_and_audits(self):
+        self.db.execute(
+            "INSERT INTO hub_settings(key,value) VALUES('external_enabled','0') "
+            "ON CONFLICT(key) DO UPDATE SET value='0'"
+        )
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, "external access is disabled"):
+            self.issue_code()
+        self.assertEqual(self.count("pair_codes"), 0)
+        self.assertEqual(self.count("audit", "WHERE action='pair_code_gate_blocked'"), 1)
+
+    def test_pair_code_list_reports_status_without_hash_or_plaintext(self):
+        result = self.issue_code()
+        rows = list_pair_codes(self.context)["pair_codes"]
+        row = next(x for x in rows if x["code_id"] == result["code_id"])
+        self.assertEqual(row["status"], "unused")
+        self.assertNotIn("code_hash", row)
+        self.assertNotIn("pair_code", row)
+        self.db.execute(
+            "UPDATE pair_codes SET locked_at=12499 WHERE id=?",
+            (result["code_id"],),
+        )
+        self.db.commit()
+        self.assertEqual(
+            next(x for x in list_pair_codes(self.context)["pair_codes"]
+                 if x["code_id"] == result["code_id"])["status"],
+            "locked",
+        )
+
+    def test_revoke_pair_code_and_reject_repeated_or_redeemed(self):
+        result = self.issue_code()
+        self.assertEqual(
+            revoke_pair_code(self.context, self.dispatcher, result["code_id"]),
+            {"code_id": result["code_id"], "revoked": True},
+        )
+        with self.assertRaisesRegex(ValueError, "already revoked"):
+            revoke_pair_code(self.context, self.dispatcher, result["code_id"])
+        second = self.issue_code(name="second")
+        self.db.execute(
+            "UPDATE pair_codes SET redeemed_at=12499 WHERE id=?",
+            (second["code_id"],),
+        )
+        self.db.commit()
+        with self.assertRaisesRegex(ValueError, "already redeemed"):
+            revoke_pair_code(self.context, self.dispatcher, second["code_id"])
+        with self.assertRaisesRegex(ValueError, "no such pair code"):
+            revoke_pair_code(self.context, self.dispatcher, 999999)
+
+    def test_external_gate_read_toggle_and_audit(self):
+        self.assertEqual(
+            set_external_gate(
+                self.context, self.dispatcher, None, "",
+                external_enabled=hub._external_enabled,
+            ),
+            {"external_enabled": True},
+        )
+        self.assertEqual(
+            set_external_gate(
+                self.context, self.dispatcher, False, "incident",
+                external_enabled=hub._external_enabled,
+            ),
+            {"external_enabled": False},
+        )
+        self.assertEqual(
+            set_external_gate(
+                self.context, self.dispatcher, None, "",
+                external_enabled=hub._external_enabled,
+            ),
+            {"external_enabled": False},
+        )
+        set_external_gate(
+            self.context, self.dispatcher, True, "resolved",
+            external_enabled=hub._external_enabled,
+        )
+        self.assertEqual(self.count("audit", "WHERE action='external_gate_set'"), 2)
+
+    def test_pair_code_create_audit_failure_rolls_back_code(self):
+        self.db.execute(
+            "CREATE TRIGGER reject_pair_code_create BEFORE INSERT ON audit "
+            "WHEN NEW.action='pair_code_create' BEGIN "
+            "SELECT RAISE(ABORT,'pair code audit rejected'); END"
+        )
+        self.db.commit()
+        with self.assertRaisesRegex(Exception, "pair code audit rejected"):
+            self.issue_code()
+        self.assertEqual(self.count("pair_codes"), 0)
+
+    def test_pair_code_revoke_audit_failure_preserves_unused_code(self):
+        result = self.issue_code()
+        self.db.execute(
+            "CREATE TRIGGER reject_pair_code_revoke BEFORE INSERT ON audit "
+            "WHEN NEW.action='pair_code_revoke' BEGIN "
+            "SELECT RAISE(ABORT,'pair revoke audit rejected'); END"
+        )
+        self.db.commit()
+        with self.assertRaisesRegex(Exception, "pair revoke audit rejected"):
+            revoke_pair_code(self.context, self.dispatcher, result["code_id"])
+        self.assertIsNone(self.db.execute(
+            "SELECT revoked_at FROM pair_codes WHERE id=?",
+            (result["code_id"],),
+        ).fetchone()[0])
 
 
 if __name__ == "__main__":

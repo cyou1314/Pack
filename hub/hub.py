@@ -1519,6 +1519,10 @@ def build_server(context: HubContext | None = None):
         from .services.templates import delete_template as _delete_template
         from .services.templates import fire_template as _fire_template
         from .services.pairing import redeem_pair as _redeem_pair
+        from .services.pairing import create_pair_code as _create_pair_code
+        from .services.pairing import list_pair_codes as _list_pair_codes
+        from .services.pairing import revoke_pair_code as _revoke_pair_code
+        from .services.pairing import set_external_gate as _set_external_gate
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1561,6 +1565,10 @@ def build_server(context: HubContext | None = None):
         from services.templates import delete_template as _delete_template
         from services.templates import fire_template as _fire_template
         from services.pairing import redeem_pair as _redeem_pair
+        from services.pairing import create_pair_code as _create_pair_code
+        from services.pairing import list_pair_codes as _list_pair_codes
+        from services.pairing import revoke_pair_code as _revoke_pair_code
+        from services.pairing import set_external_gate as _set_external_gate
     if __package__:
         from .services.members import list_members as _list_members
         from .services.members import register_member as _register_member
@@ -1840,81 +1848,14 @@ def build_server(context: HubContext | None = None):
         reclaim 码可覆盖（普通码拒）。external_gate 关闭时同步拒绝。"""
         me = authenticate()
         require(me, "dispatcher")
-        name = (member_name or "").strip()
-        if not name or len(name) > 64 or any(ch.isspace() for ch in name) \
-                or "/" in name or "\\" in name or "@" in name or "＠" in name:
-            raise ValueError(
-                "member_name must be a short id (no whitespace/slashes/@)")
-        if provider not in PAIR_PROVIDERS:
-            raise ValueError(f"provider must be one of {list(PAIR_PROVIDERS)}")
-        if len(display_name or "") > 80:
-            raise ValueError("display_name too long: > 80 chars")
-        code = "pk-pair-" + secrets.token_urlsafe(32)
-        now = context.clock()
-        exp = now + PAIR_CODE_TTL
-        with _lock:
-            conn = db()
-            try:
-                if not _external_enabled(conn):
-                    audit(conn, me["name"], "pair_code_gate_blocked",
-                          f"member={name}")
-                    conn.commit()
-                    raise ValueError(
-                        "external access is disabled (external_gate off)")
-                r = conn.execute("SELECT id FROM rooms WHERE name=?",
-                                 (room,)).fetchone()
-                if not r:
-                    raise ValueError(f"no such room: {room}")
-                old = conn.execute(
-                    "SELECT removed_at, kind, bound_room_id"
-                    " FROM members WHERE name=?",
-                    (name,)).fetchone()
-                if reclaim and old is None:
-                    # staging51 红队修复：reclaim 是给在册 external 换
-                    # token 的通道，目标不存在时发码即拒——否则兑换
-                    # 端会把 reclaim 码当新成员通道静默建号，掩盖
-                    # 调度员笔误。
-                    raise ValueError(
-                        f"reclaim target is not an existing external"
-                        f" member: {name}")
-                if old is not None:
-                    if old["removed_at"] is not None:
-                        raise ValueError(
-                            f"member name reserved by removed member: {name}")
-                    if (old["kind"] or "") != "external":
-                        raise ValueError(
-                            f"member name taken by an internal member: {name}")
-                    if not reclaim:
-                        raise ValueError(
-                            f"member {name} is an active external member;"
-                            " use reclaim=True to rotate its token")
-                    if old["bound_room_id"] != r["id"]:
-                        # staging51 红队修复：reclaim 只换 token、不
-                        # 改绑房间；发码时传入房间与成员现绑定不一致
-                        # 直接拒，免得兑换端静默保留旧 bound_room_id
-                        # 造成「以为换了房」的误解。
-                        raise ValueError(
-                            f"reclaim room mismatch: member {name} is"
-                            f" bound to room_id {old['bound_room_id']},"
-                            f" not room {room}")
-                cur = conn.execute(
-                    "INSERT INTO pair_codes(code_hash,member_name,provider,"
-                    "bound_room_id,display_name,reclaim,created_by,created_at,"
-                    "expires_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (hash_token(code), name, provider, r["id"],
-                     display_name or None, 1 if reclaim else 0,
-                     me["name"], now, exp))
-                cid = cur.lastrowid
-                audit(conn, me["name"], "pair_code_create",
-                      f"code_id={cid} member={name} provider={provider}"
-                      f" room_id={r['id']} reclaim={1 if reclaim else 0}")
-                conn.commit()
-            finally:
-                conn.close()
-        return {"pair_code": code, "code_id": cid, "member_name": name,
-                "provider": provider, "room": room,
-                "display_name": display_name or name,
-                "reclaim": bool(reclaim), "expires_at": exp}
+        return _create_pair_code(
+            context, me, member_name, provider, room, display_name, reclaim,
+            pair_providers=PAIR_PROVIDERS,
+            code_ttl=PAIR_CODE_TTL,
+            token_factory=lambda: "pk-pair-" + secrets.token_urlsafe(32),
+            hash_token=hash_token,
+            external_enabled=_external_enabled,
+        )
 
     @mcp.tool
     def pair_code_list() -> dict:
@@ -1922,70 +1863,14 @@ def build_server(context: HubContext | None = None):
         revoked / locked；只回元数据，码的明文与哈希永不回读。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        try:
-            rows = conn.execute(
-                "SELECT c.*, r.name AS room_name FROM pair_codes c"
-                " JOIN rooms r ON r.id=c.bound_room_id"
-                " ORDER BY c.id DESC LIMIT 200").fetchall()
-        finally:
-            conn.close()
-        now = context.clock()
-        out = []
-        for x in rows:
-            if x["revoked_at"]:
-                st = "revoked"
-            elif x["redeemed_at"]:
-                st = "redeemed"
-            elif x["locked_at"]:
-                st = "locked"
-            elif x["expires_at"] <= now:
-                st = "expired"
-            else:
-                st = "unused"
-            out.append({
-                "code_id": x["id"], "member_name": x["member_name"],
-                "provider": x["provider"], "room": x["room_name"],
-                "room_id": x["bound_room_id"],
-                "display_name": x["display_name"],
-                "reclaim": bool(x["reclaim"]), "status": st,
-                "created_by": x["created_by"], "created_at": x["created_at"],
-                "expires_at": x["expires_at"],
-                "redeemed_member_id": x["redeemed_member_id"],
-                "redeemed_at": x["redeemed_at"],
-                "revoked_at": x["revoked_at"],
-                "fail_count": x["fail_count"], "locked_at": x["locked_at"]})
-        return {"pair_codes": out}
+        return _list_pair_codes(context)
 
     @mcp.tool
     def pair_code_revoke(code_id: int) -> dict:
         """调度员吊销一个未兑换的配对码（件一）；已兑换/已吊销的拒绝。"""
         me = authenticate()
         require(me, "dispatcher")
-        with _lock:
-            conn = db()
-            try:
-                row = conn.execute("SELECT * FROM pair_codes WHERE id=?",
-                                   (code_id,)).fetchone()
-                if not row:
-                    raise ValueError(f"no such pair code: {code_id}")
-                if row["redeemed_at"]:
-                    raise ValueError(f"pair code {code_id} already redeemed")
-                if row["revoked_at"]:
-                    raise ValueError(f"pair code {code_id} already revoked")
-                cur = conn.execute(
-                    "UPDATE pair_codes SET revoked_at=? WHERE id=?"
-                    " AND revoked_at IS NULL AND redeemed_at IS NULL",
-                    (context.clock(), code_id))
-                if cur.rowcount != 1:
-                    raise ValueError(
-                        f"pair code {code_id} cannot be revoked now")
-                audit(conn, me["name"], "pair_code_revoke",
-                      f"code_id={code_id} member={row['member_name']}")
-                conn.commit()
-            finally:
-                conn.close()
-        return {"code_id": code_id, "revoked": True}
+        return _revoke_pair_code(context, me, code_id)
 
     @mcp.tool
     def member_token_rotate(name: str) -> dict:
@@ -2022,24 +1907,10 @@ def build_server(context: HubContext | None = None):
         成员完全不受影响；可逆止血，不必逐个移除成员。"""
         me = authenticate()
         require(me, "dispatcher")
-        with _lock:
-            conn = db()
-            try:
-                cur = _external_enabled(conn)
-                if enabled is None:
-                    return {"external_enabled": cur}
-                conn.execute(
-                    "INSERT INTO hub_settings(key,value)"
-                    " VALUES('external_enabled',?)"
-                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    ("1" if enabled else "0",))
-                audit(conn, me["name"], "external_gate_set",
-                      f"enabled={1 if enabled else 0}"
-                      + (f" reason={reason}" if reason else ""))
-                conn.commit()
-                return {"external_enabled": bool(enabled)}
-            finally:
-                conn.close()
+        return _set_external_gate(
+            context, me, enabled, reason,
+            external_enabled=_external_enabled,
+        )
 
     @mcp.tool
     def member_rename(name: str, display_name: str) -> dict:
