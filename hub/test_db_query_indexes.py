@@ -344,13 +344,6 @@ def main():
              """SELECT 1 FROM audit WHERE task_id=?
                 AND action='task_unclaimed_escalate' AND detail LIKE ? LIMIT 1""",
              (1, "task 1 assignee_id=2 %"), "idx_audit_task"),
-        ]
-        for name, sql, args, index in plans:
-            used, detail = plan_uses(conn, sql, args, index)
-            if name == "active queue rank scan":
-                used = used and "USE TEMP B-TREE FOR ORDER BY" not in detail
-            check(f"query plan uses {index}", used, f"{name}: {detail}")
-
             ("approval request lookup",
              """SELECT * FROM messages WHERE kind='approval_request' AND task_id=?
                 ORDER BY id DESC LIMIT 1""", (1,), "idx_messages_approval_task"),
@@ -370,6 +363,8 @@ def main():
         ]
         for name, sql, args, index in plans:
             used, detail = plan_uses(conn, sql, args, index)
+            if name == "active queue rank scan":
+                used = used and "USE TEMP B-TREE FOR ORDER BY" not in detail
             check(f"query plan uses {index}", used, f"{name}: {detail}")
 
         conn.commit()
