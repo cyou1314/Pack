@@ -10,7 +10,9 @@ if TEST:
     allowed = (HOME / 'commander-work').resolve()
     if base == allowed or allowed not in base.parents: raise SystemExit('Test root must be inside ~/commander-work')
     hub, engine, config = base/'local-hub', base/'local-engine', base/'config.json'
-    agents = HOME/'Library/LaunchAgents'
+    # Keep test LaunchAgents inside the isolated test root. The test mode
+    # must not write plists into the user's real ~/Library/LaunchAgents.
+    agents = base/'LaunchAgents'
     prefix = 'com.pack.installer-test'
     hp, ep = 18795, 47822
     app_path = base/'Applications/Pack.app'
