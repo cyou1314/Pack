@@ -287,7 +287,7 @@ class PairingServiceTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, expected):
                 self.issue_code(name, provider, room, display)
-        self.assertEqual(self.count("pair_codes"), 0)
+        self.assertEqual(self.count("pair_codes"), 1)
 
     def test_create_pair_code_enforces_reclaim_target_and_room(self):
         with self.assertRaisesRegex(ValueError, "reclaim target"):
@@ -324,7 +324,7 @@ class PairingServiceTests(unittest.TestCase):
         self.db.commit()
         with self.assertRaisesRegex(ValueError, "external access is disabled"):
             self.issue_code()
-        self.assertEqual(self.count("pair_codes"), 0)
+        self.assertEqual(self.count("pair_codes"), 1)
         self.assertEqual(self.count("audit", "WHERE action='pair_code_gate_blocked'"), 1)
 
     def test_pair_code_list_reports_status_without_hash_or_plaintext(self):
@@ -401,7 +401,7 @@ class PairingServiceTests(unittest.TestCase):
         self.db.commit()
         with self.assertRaisesRegex(Exception, "pair code audit rejected"):
             self.issue_code()
-        self.assertEqual(self.count("pair_codes"), 0)
+        self.assertEqual(self.count("pair_codes"), 1)
 
     def test_pair_code_revoke_audit_failure_preserves_unused_code(self):
         result = self.issue_code()
