@@ -216,12 +216,18 @@ def _read_sqlite_contract(db_path: Path, include_migration_assertions: bool) -> 
             room = conn.execute(
                 "SELECT name,archived_at FROM rooms WHERE name='legacy-room'"
             ).fetchone()
-            if not all((member, task, transfer, message, room)):
+            agent = conn.execute(
+                "SELECT agent_id,provider_id,legacy_member_id,status FROM agents "
+                "WHERE legacy_member_id=(SELECT id FROM members WHERE name='legacy-member')"
+            ).fetchone()
+            if not all((member, task, transfer, message, room, agent)):
                 raise RuntimeError("legacy migration fixture rows were not preserved")
             if member["token_hash"] != "legacy-token-hash" or not member["avatar"]:
                 raise RuntimeError("legacy member token was changed or avatar was not backfilled")
             if transfer["status"] != "accepted":
                 raise RuntimeError("legacy transfer status was not backfilled to accepted")
+            if tuple(agent) != ("legacy-member-1", "legacy", 1, "legacy_unclassified"):
+                raise RuntimeError("legacy member was not mapped to the expected unclassified Agent")
             if task["title"] != "legacy task" or message["body"] != "legacy message":
                 raise RuntimeError("legacy task/message data was not preserved")
             result["migration_assertions"] = {
@@ -232,6 +238,7 @@ def _read_sqlite_contract(db_path: Path, include_migration_assertions: bool) -> 
                 "legacy_message_preserved": True,
                 "legacy_transfer_status_backfilled": transfer["status"],
                 "legacy_room_preserved": True,
+                "legacy_agent_mapping_preserved": True,
             }
         return result
     finally:
