@@ -7,6 +7,7 @@ public struct MessageRefreshState: Equatable {
     public private(set) var lastFullSnapshotUptime: TimeInterval?
     public private(set) var lastClientGeneration = -1
     public private(set) var lastRoomGeneration = -1
+    public private(set) var refreshRequestGeneration = 0
 
     public init() {}
 
@@ -27,6 +28,21 @@ public struct MessageRefreshState: Equatable {
             return true
         }
         return false
+    }
+
+    public mutating func invalidateSnapshot() {
+        lastFullSnapshotUptime = nil
+        lastClientGeneration = -1
+        lastRoomGeneration = -1
+    }
+
+    public mutating func beginRefresh() -> Int {
+        refreshRequestGeneration += 1
+        return refreshRequestGeneration
+    }
+
+    public func isCurrentRefresh(_ generation: Int) -> Bool {
+        refreshRequestGeneration == generation
     }
 
     public mutating func recordFullSnapshot(
