@@ -274,15 +274,15 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "wait_for_hub_ready", return_value=None),
             patch.object(manager, "wait_for_port", return_value=None),
         ):
-            with self.assertRaisesRegex(RuntimeError, "service port is still occupied"):
+            with self.assertRaisesRegex(RuntimeError, "rollback needs attention"):
                 manager.upgrade()
 
         self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "written-before-backup")
         self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
-        self.assertEqual(loaded, set(f.labels.values()))
-        self.assertTrue(any(call[0] == "bootstrap" for call in calls))
+        self.assertEqual(loaded, set())
+        self.assertFalse(any(call[0] == "bootstrap" for call in calls))
         self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
-        self.assertEqual(list(f.base.glob(".pack-upgrade-*")), [])
+        self.assertTrue(list(f.base.glob(".pack-upgrade-*")))
 
     def test_successful_upgrade_preserves_data_and_retains_verified_backup(self):
         f = self.fixture
@@ -430,6 +430,32 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual(live_db.read_text(encoding="utf-8"), "original-db")
         self.assertFalse(list(state.glob("pack.db.failed-*")))
         self.assertFalse(list(f.hub.glob(".pack.db.rollback-*")))
+
+    def test_rollback_refuses_to_swap_files_while_service_port_remains_occupied(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl(
+            fail_watch_once=True,
+            mutate_db_on_hub_bootstrap=True,
+        )
+        run, _ = f.fake_subprocess_run()
+        availability = iter([True, True, False, True])
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", side_effect=lambda port: next(availability)),
+            patch.object(manager, "wait_for_hub_ready", return_value=None),
+            patch.object(manager, "wait_for_port", return_value=None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "rollback needs attention"):
+                manager.upgrade()
+
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "new-hub")
+        self.assertTrue((f.app_path / "new-app.txt").is_file())
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "mutated-by-new-hub")
+        self.assertEqual(loaded, set())
+        self.assertEqual(sum(call[0] == "bootstrap" for call in calls), 2)
+        self.assertTrue(list(f.base.glob(".pack-upgrade-*/previous/hub/hub.py")))
+        self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
 
     def test_rollback_refuses_to_swap_files_while_new_hub_is_still_loaded(self):
         f = self.fixture

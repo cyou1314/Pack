@@ -588,12 +588,17 @@ def upgrade():
                     still_loaded.append(label)
                     stop_errors.append(f"verify stopped {label}: {verify_error}")
 
+            for port, service in ((hp, "Hub"), (ep, "Engine")):
+                if not available(port):
+                    still_loaded.append(f"{service} port {port} remains occupied")
+
             if still_loaded:
                 # Never swap files or restore SQLite while a Pack writer may
-                # still be running. Preserve the current code, backup and
-                # previous-version snapshots for manual recovery.
+                # still be running or a service port remains occupied.
+                # Preserve the current code, backup and previous-version
+                # snapshots for manual recovery.
                 rollback_errors.extend(stop_errors)
-                rollback_errors.extend(f"Pack LaunchAgent still loaded: {label}" for label in still_loaded)
+                rollback_errors.extend(f"Pack service still active: {service}" for service in still_loaded)
             else:
                 if app_previous is None and app_swap_state:
                     app_previous = app_swap_state[-1]
