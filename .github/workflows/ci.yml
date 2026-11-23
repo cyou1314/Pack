@@ -36,13 +36,16 @@ jobs:
           bash -n app/make-bundle.sh
           bash -n app/test-make-bundle.sh
       - name: Python compile
-        run: python -m compileall -q hub tests
+        run: |
+          python -m compileall -q hub tests
+          python -m py_compile installer/manager.py installer/test_manager_paths.py
       - name: Unit tests
         run: |
           bash hub/test_backup.sh
           python hub/test_reply_watcher.py
           python hub/test_resolve_mention.py
           python hub/test_db_query_indexes.py
+          python installer/test_manager_paths.py
           bash app/test-make-bundle.sh
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
