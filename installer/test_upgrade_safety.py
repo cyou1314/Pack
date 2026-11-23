@@ -17,6 +17,7 @@ import manager
 
 
 MARKER = "com.cyou.pack.installer.v1"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def write_text(path, value, mode=None):
@@ -333,6 +334,79 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual(loaded, set(f.labels.values()))
         self.assertTrue(any(args[1:3] == ["hub.py", "init"] for args in subprocess_calls))
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
+
+    def test_preflight_runs_real_hub_init_on_backup_copy_not_live_database(self):
+        with tempfile.TemporaryDirectory(prefix="pack-migration-preflight-") as directory:
+            root = Path(directory)
+            live_hub = root / "live-hub"
+            stage_hub = root / "stage-hub"
+            backup_root = root / "backup"
+            database_dir = backup_root / "database"
+            (live_hub).mkdir()
+            (stage_hub / "python" / "bin").mkdir(parents=True)
+            database_dir.mkdir(parents=True)
+            write_text(live_hub / ".dispatcher_token", "dispatcher-secret", 0o600)
+            write_text(live_hub / "pack.db", "live-db-must-not-be-opened", 0o600)
+
+            (stage_hub / "python" / "bin" / "python3").symlink_to(Path(sys.executable))
+            shutil.copy2(ROOT / "hub" / "hub.py", stage_hub / "hub.py")
+            shutil.copytree(ROOT / "hub" / "core", stage_hub / "core")
+            shutil.copytree(ROOT / "hub" / "services", stage_hub / "services")
+
+            snapshot = database_dir / "pack-test.db"
+            legacy = sqlite3.connect(snapshot)
+            legacy.executescript("""
+                CREATE TABLE members(
+                    id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL,
+                    role TEXT NOT NULL, token_hash TEXT NOT NULL,
+                    profile TEXT, last_heartbeat REAL, created_at REAL NOT NULL);
+                INSERT INTO members(name,role,token_hash,created_at)
+                    VALUES('dispatcher','dispatcher','legacy-hash',1);
+                CREATE TABLE tasks(
+                    id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
+                    title TEXT NOT NULL, body TEXT NOT NULL,
+                    created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
+                    claim_token TEXT, lease_expires REAL,
+                    attempts INTEGER NOT NULL DEFAULT 0, result TEXT,
+                    review_note TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+                CREATE TABLE task_transfers(
+                    id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL,
+                    from_member TEXT NOT NULL, to_member TEXT NOT NULL,
+                    reason TEXT, actor TEXT NOT NULL, created_at REAL NOT NULL);
+                CREATE TABLE messages(
+                    id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
+                    author_id INTEGER NOT NULL, kind TEXT NOT NULL,
+                    body TEXT NOT NULL, task_id INTEGER, created_at REAL NOT NULL);
+                CREATE TABLE audit(
+                    id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL,
+                    action TEXT NOT NULL, detail TEXT);
+                CREATE TABLE review_log(
+                    id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL,
+                    target_url TEXT NOT NULL, owner_quote TEXT NOT NULL,
+                    member_desc TEXT NOT NULL, verdict TEXT NOT NULL,
+                    reviewer TEXT NOT NULL, created_at REAL NOT NULL);
+            """)
+            legacy.commit()
+            legacy.close()
+
+            with patch.object(manager, "hub", live_hub):
+                manager.preflight_upgrade_migration(stage_hub, backup_root)
+
+            migrated = sqlite3.connect(stage_hub / "pack.db")
+            task_cols = {row[1] for row in migrated.execute("PRAGMA table_info(tasks)")}
+            transfer_cols = {
+                row[1] for row in migrated.execute("PRAGMA table_info(task_transfers)")
+            }
+            member_cols = {row[1] for row in migrated.execute("PRAGMA table_info(members)")}
+            self.assertTrue({"sched_at", "urgent", "next_claim_at"} <= task_cols)
+            self.assertTrue({"status", "accepted_at", "expires_at"} <= transfer_cols)
+            self.assertIn("avatar", member_cols)
+            self.assertEqual(migrated.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            migrated.close()
+            self.assertEqual(
+                (live_hub / "pack.db").read_text(encoding="utf-8"),
+                "live-db-must-not-be-opened",
+            )
 
     def test_port_conflict_after_stop_does_not_rewind_live_database(self):
         f = self.fixture
