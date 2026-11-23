@@ -51,7 +51,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
             connection = self._database(directory)
             try:
                 before = connection.execute(
-                    "SELECT id,name,role,created_at,removed_at,provider,display_name,kind "
+                    "SELECT id,name,role,created_at,removed_at,provider,display_name,kind,login_state "
                     "FROM members ORDER BY id"
                 ).fetchall()
                 apply_migrations(connection, clock=lambda: 100.0)
@@ -66,13 +66,13 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     "connection_mode,status,legacy_provider_label,created_at,updated_at "
                     "FROM agents ORDER BY legacy_member_id"
                 ).fetchall()
-                self.assertEqual(len(agents), 4)
+                self.assertEqual(len(agents), 6)
                 provider_ids = {row[0] for row in connection.execute("SELECT provider_id FROM providers")}
                 self.assertNotIn("external", provider_ids)
                 self.assertEqual(
                     tuple(agents[0]),
                     ("legacy-member-1", "codex", 1, "codex-user", None,
-                     "legacy_unclassified", "Codex", 10.0, 100.0),
+                     "pending", "Codex", 10.0, 100.0),
                 )
                 self.assertEqual(
                     tuple(agents[1]),
@@ -83,6 +83,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 self.assertEqual(agents[2]["provider_id"], "legacy")
                 self.assertEqual(agents[3]["provider_id"], "legacy")
                 self.assertEqual(agents[3]["legacy_provider_label"], "unknown-vendor")
+                self.assertEqual(agents[4]["status"], "pending")
+                self.assertEqual(agents[5]["status"], "disconnected")
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM agent_connections").fetchone()[0],
                     0,
