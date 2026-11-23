@@ -154,3 +154,5 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 - **M1a 验收仍需 CI 与代码审查通过。** M1b shadow read、差异报告和并发 init 专项测试尚未实施；此阶段没有启用新读路径。
 
 - Codex 审查修正：Provider 身份与 external connection mode 独立归一；迁移 checksum 已纳入回填逻辑 AST 与 Provider 映射表，防止数据迁移规则变化却复用旧 checksum。
+
+- 迁移版本冻结规则：M1a/v1 合入并发布后，不得直接修改其 DDL、Provider 映射或回填逻辑；任何后续数据行为变化必须新增 migration version。checksum 不匹配时 Hub 初始化 fail-closed，避免旧库静默跳过或新旧库映射漂移。
