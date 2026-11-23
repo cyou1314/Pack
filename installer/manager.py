@@ -114,6 +114,16 @@ def require_regular_file(path, description):
         raise SystemExit(f"Missing or invalid {description}: {path}")
 
 
+def require_private_mode(path, description):
+    path = pathlib.Path(path)
+    mode = path.stat().st_mode & 0o777
+    if mode & 0o077:
+        raise SystemExit(
+            f"{description} has group/other permissions; expected a private mode: "
+            f"{oct(mode)} ({path})"
+        )
+
+
 def remove_path(path):
     path = pathlib.Path(path)
     if path.is_symlink() or path.is_file():
@@ -181,9 +191,29 @@ def validate_upgrade_installation():
     require_real_directory(hub / "attachments", "Hub attachments directory")
     require_real_directory(engine / "data", "Engine data directory")
     require_real_directory(engine / "data" / "local", "Engine local data directory")
+    for path, description in (
+        (base, "Pack data root"),
+        (hub, "local Hub directory"),
+        (engine, "local Engine directory"),
+        (socket_dir, "handoff socket directory"),
+        (hub / "attachments", "Hub attachments directory"),
+        (engine / "data", "Engine data directory"),
+        (engine / "data" / "local", "Engine local data directory"),
+    ):
+        require_private_mode(path, description)
     require_regular_file(config, "App config")
     require_regular_file(hub / "pack.db", "Hub database")
     require_regular_file(hub / ".dispatcher_token", "Hub dispatcher token")
+    for path, description in (
+        (config, "App config"),
+        (hub / "pack.db", "Hub database"),
+        (hub / ".dispatcher_token", "Hub dispatcher token"),
+    ):
+        require_private_mode(path, description)
+    owner_token = hub / ".owner_token"
+    if owner_token.exists() or owner_token.is_symlink():
+        require_regular_file(owner_token, "Hub owner token")
+        require_private_mode(owner_token, "Hub owner token")
     require_regular_file(hub / "backup-db.sh", "installed database backup script")
     require_regular_file(hub / "verify-backup.sh", "installed backup verification script")
     try:
@@ -206,6 +236,7 @@ def validate_upgrade_installation():
             raise SystemExit(f"Missing Pack LaunchAgent plist; refusing partial upgrade: {label}")
         if document.get("Umask") != 0o077:
             raise SystemExit(f"LaunchAgent umask is not private; refusing upgrade: {label}")
+        require_private_mode(agents / (label + ".plist"), f"LaunchAgent plist {label}")
 
     for name in HUB_PROGRAM_DIRS:
         require_real_directory(BUNDLE / "python" if name == "python" else BUNDLE / "hub" / name,

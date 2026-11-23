@@ -80,6 +80,17 @@ class UpgradeFixture:
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
+        for directory in (
+            self.base,
+            self.hub,
+            self.engine,
+            self.hub / "attachments",
+            self.engine / "data",
+            self.engine / "data" / "local",
+            self.socket_dir,
+        ):
+            directory.chmod(0o700)
+
         write_text(self.config, json.dumps({"hubUrl": "http://127.0.0.1:18795/mcp"}), 0o600)
         write_text(self.hub / "pack.db", "original-db", 0o600)
         write_text(self.hub / ".dispatcher_token", "dispatcher-secret", 0o600)
@@ -122,6 +133,7 @@ class UpgradeFixture:
             path = self.agents / (label + ".plist")
             with path.open("wb") as stream:
                 plistlib.dump({"Label": label, "ProgramArguments": expected[kind], "Umask": 0o077}, stream)
+            path.chmod(0o600)
             self.plist_bytes[label] = path.read_bytes()
 
         self.patches = ExitStack()
@@ -227,6 +239,17 @@ class UpgradeSafetyTests(unittest.TestCase):
         ctl, calls, _ = f.fake_ctl()
         with patch.object(manager, "ctl", side_effect=ctl):
             with self.assertRaisesRegex(SystemExit, "outside the Pack service directory"):
+                manager.upgrade()
+
+        self.assertFalse(any(call[0] == "bootout" for call in calls))
+        self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
+
+    def test_world_readable_config_is_rejected_before_backup_or_service_stop(self):
+        f = self.fixture
+        f.config.chmod(0o644)
+        ctl, calls, _ = f.fake_ctl()
+        with patch.object(manager, "ctl", side_effect=ctl):
+            with self.assertRaisesRegex(SystemExit, "group/other permissions"):
                 manager.upgrade()
 
         self.assertFalse(any(call[0] == "bootout" for call in calls))
