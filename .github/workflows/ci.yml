@@ -34,6 +34,7 @@ jobs:
           bash -n tests/hub-staging56/run_tests.sh
           bash -n installer/build-dmg.sh
           bash -n app/make-bundle.sh
+          bash -n app/test-make-bundle.sh
       - name: Python compile
         run: python -m compileall -q hub tests
       - name: Unit tests
@@ -42,6 +43,7 @@ jobs:
           python hub/test_reply_watcher.py
           python hub/test_resolve_mention.py
           python hub/test_db_query_indexes.py
+          bash app/test-make-bundle.sh
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
 
