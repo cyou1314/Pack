@@ -29,10 +29,15 @@ report_path() {
   if [[ -L "$path" ]]; then
     printf '%s=symlink\n' "$label" >> "$OUT"
   elif [[ -e "$path" ]]; then
-    if [[ -d "$path" ]]; then kind="directory"; else kind="file"; fi
+    if [[ -d "$path" ]]; then
+      kind="directory"
+      size="not-scanned"
+    else
+      kind="file"
+      size="$(stat -f '%z bytes' "$path" 2>/dev/null || printf 'unknown')"
+    fi
     perms="$(stat -f '%Sp' "$path" 2>/dev/null || printf 'unknown')"
     owner="$(stat -f '%Su:%Sg' "$path" 2>/dev/null || printf 'unknown')"
-    size="$(du -sk "$path" 2>/dev/null | awk '{print $1 " KiB"}' || printf 'unknown')"
     printf '%s=%s; permissions=%s; owner=%s; size=%s\n' "$label" "$kind" "$perms" "$owner" "$size" >> "$OUT"
   else
     printf '%s=missing\n' "$label" >> "$OUT"
