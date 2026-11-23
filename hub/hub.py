@@ -1492,6 +1492,7 @@ def build_server(context: HubContext | None = None):
         from .services.messages import pull_inbox_messages as _pull_inbox_messages
         from .services.messages import mark_inbox_read as _mark_inbox_read
         from .services.attachments import get_attachment as _get_attachment
+        from .services.attachments import put_attachment as _put_attachment
         from .services.attachments import list_attachments as _list_attachments
     else:
         from services.rooms import list_rooms as _list_rooms
@@ -1508,6 +1509,7 @@ def build_server(context: HubContext | None = None):
         from services.messages import pull_inbox_messages as _pull_inbox_messages
         from services.messages import mark_inbox_read as _mark_inbox_read
         from services.attachments import get_attachment as _get_attachment
+        from services.attachments import put_attachment as _put_attachment
         from services.attachments import list_attachments as _list_attachments
     if __package__:
         from .services.members import list_members as _list_members
@@ -2269,92 +2271,17 @@ def build_server(context: HubContext | None = None):
         attachment_ids 把它绑到一条消息上（只能绑自己的、未绑定的）。"""
         me = authenticate()
         require(me)
-        if mime not in ATTACH_MIME_EXT:
-            raise ValueError(f"unsupported mime: {mime}")
-        if len(data_base64) > (ATTACH_MAX_BYTES * 4 // 3) + 1024:
-            raise ValueError("attachment too large")
-        try:
-            data = base64.b64decode(data_base64, validate=True)
-        except Exception:
-            raise ValueError("invalid base64")
-        if not data:
-            raise ValueError("empty attachment")
-        if len(data) > ATTACH_MAX_BYTES:
-            raise ValueError("attachment too large")
-        ext = _is_external(me)
-        if ext and len(data) > EXT_ATTACH_MAX_BYTES:
-            # 件二 external 独立配额之一：单文件 ≤5MB（既有成员仍走
-            # 上面的全员 10MB 口径）。staging51 红队修复：按定稿
-            # 「超限硬拒并写审计」口径，抛错前补写一条与锁内其它
-            # 配额超限同名的 external_attachment_quota 审计——此处
-            # 尚未进 _lock、无既有连接，用独立短事务落审计再抛错。
-            aconn = db()
-            try:
-                audit(aconn, me["name"], "external_attachment_quota",
-                      f"room {room} size {len(data)}:"
-                      " single file cap exceeded (5MB)")
-                aconn.commit()
-            finally:
-                aconn.close()
-            raise ValueError("attachment too large for external members: > 5MB")
-        if _sniff_image_mime(data) != mime:
-            raise ValueError("mime does not match file content")
-        sha = hashlib.sha256(data).hexdigest()
-        name = (filename or "").replace("/", "_").replace("\\", "_")[:120]
-        with _lock:
-            conn = db()
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
-                conn.close()
-                raise ValueError(f"no such room: {room}")
-            if ext:
-                if r["id"] != me["bound_room_id"]:
-                    conn.close()
-                    raise ValueError(
-                        "forbidden: external members may only upload to their bound room")
-                # 件二 external 独立配额之二/三：每天（滚动 24h）≤10 次
-                # 上传、名下附件总量（未绑定 + 已绑定合计）≤50MB；
-                # 超限硬拒 + 审计。本段在 _lock 内，计数与落库串行。
-                day_n = conn.execute(
-                    "SELECT COUNT(*) AS n FROM attachments"
-                    " WHERE uploader_id=? AND created_at>=?",
-                    (me["id"], context.clock() - 86400)).fetchone()["n"]
-                mine = conn.execute(
-                    "SELECT COALESCE(SUM(size),0) AS s FROM attachments"
-                    " WHERE uploader_id=?", (me["id"],)).fetchone()["s"]
-                why = None
-                if day_n >= EXT_ATTACH_DAILY_UPLOADS:
-                    why = f"daily upload cap reached ({EXT_ATTACH_DAILY_UPLOADS}/day)"
-                elif mine + len(data) > EXT_ATTACH_MEMBER_QUOTA:
-                    why = "member attachment quota exceeded (50MB total)"
-                if why:
-                    audit(conn, me["name"], "external_attachment_quota",
-                          f"room {room} size {len(data)}: {why}")
-                    conn.commit()
-                    conn.close()
-                    raise ValueError(f"external attachment quota: {why}")
-            total = conn.execute(
-                "SELECT COALESCE(SUM(size),0) AS s FROM attachments WHERE room_id=?",
-                (r["id"],)).fetchone()["s"]
-            if total + len(data) > ATTACH_ROOM_QUOTA:
-                conn.close()
-                raise ValueError("room attachment quota exceeded")
-            path = _attach_path(sha, mime)
-            if not os.path.exists(path):
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                tmp = path + f".tmp-{os.getpid()}"
-                with open(tmp, "wb") as f:
-                    f.write(data)
-                os.replace(tmp, path)
-            cur = conn.execute(
-                "INSERT INTO attachments(sha256,mime,size,original_name,uploader_id,room_id,message_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)",
-                (sha, mime, len(data), name, me["id"], r["id"], context.clock()))
-            aid = cur.lastrowid
-            audit(conn, me["name"], "attachment_put",
-                  f"attachment {aid} room {room} size {len(data)}")
-            conn.commit()
-            conn.close()
-        return {"attachment_id": aid, "sha256": sha, "size": len(data), "mime": mime}
+        return _put_attachment(
+            context, me, room, filename, mime, data_base64,
+            mime_extensions=ATTACH_MIME_EXT,
+            max_bytes=ATTACH_MAX_BYTES,
+            room_quota=ATTACH_ROOM_QUOTA,
+            external_max_bytes=EXT_ATTACH_MAX_BYTES,
+            external_daily_uploads=EXT_ATTACH_DAILY_UPLOADS,
+            external_member_quota=EXT_ATTACH_MEMBER_QUOTA,
+            sniff_image_mime=_sniff_image_mime,
+            attach_path=_attach_path,
+        )
 
     @mcp.tool
     def attachment_get(attachment_id: int) -> dict:

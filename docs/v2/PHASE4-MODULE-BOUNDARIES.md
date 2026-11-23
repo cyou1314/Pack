@@ -330,3 +330,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - external 的绑定房、入群时间水位继续由数据层实施。附件本体读取在文件打开前核验成员权限、文件路径边界和 symlink；读取后核对 SQLite 记录的 size 与 SHA-256，拒绝内容损坏或被替换文件；失败路径统一关闭连接、不提交成功审计。
 - 新增 `hub/test_attachment_read.py` 八项隔离测试，覆盖成功读与审计、external 越权/水位、缺失或损坏文件、软链接路径逃逸、审计异常、列表房间边界和消息过滤；CI 与复制安装运行包 smoke test 同步接入。
 - 不更改 SQLite schema、75 MCP 工具契约或 Mac 部署路径/服务标签；本批未修改已有附件数据或安装器，完整 staging/macOS 验收以 GitHub Actions 为准。
+
+
+### 附件上传事务/跨进程配额与文件防覆盖（2026-11-23）
+
+- `attachment_put` 的身份鉴权后逻辑移至 `hub/services/attachments.py:put_attachment`；原 MCP 名称、参数、返回值、base64/MIME/魔数/10MB/外部成员 5MB 和 24h/50MB/房间 500MB 等限制保持不变。
+- 写入前在原 `HubContext.lock` 内申请 SQLite `BEGIN IMMEDIATE`，把房间/成员配额读取、文件发布、附件元数据和成功审计放在串行写入区；多 Hub 进程使用不同锁时仍受 SQLite writer reservation 保护。
+- 文件落盘使用 `mkstemp` 唯一 0600 临时文件、`fsync` 和不可覆盖的 `os.link`，禁止重写已有 sha256 目标。已有目标文件会按完整内容重新校验；损坏、非普通文件和符号链接拒绝复用，确保新上传不破坏既有文件。
+- 普通异常下，DB 插入或审计失败会回滚并清理由本次操作新建且未被旧元数据引用的目标文件；引用既有内容时不删除共享文件，临时文件在成功及失败路径均清理。由于文件系统和 SQLite 没有分布式事务，**进程被强制终止/断电发生在文件发布和 DB commit 之间仍可能留下孤立文件**，后续应单独加入安全巡检和回收；不宣称跨文件系统完全原子性。
+- 新增 `hub/test_attachment_upload.py` 11 项隔离测试（成功读写、相同哈希复用、输入/权限/配额、元数据故障回滚、共享文件保护、篡改与软链接、独立 HubContext 并发抢房间配额），加入 CI。
+- 不变更 75 个 MCP 工具契约/24 张 SQLite 表、Mac 安装器或真实用户数据；仍不合并、不部署。
