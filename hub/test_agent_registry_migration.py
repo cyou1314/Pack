@@ -34,11 +34,13 @@ class AgentRegistryMigrationTests(unittest.TestCase):
             INSERT INTO members(id,name,role,created_at,provider,display_name,kind)
                 VALUES(1,'codex-user','member',10,'Codex',NULL,NULL);
             INSERT INTO members(id,name,role,created_at,provider,display_name,kind)
-                VALUES(2,'external-user','member',20,'unknown-vendor','External Name','external');
+                VALUES(2,'external-user','member',20,'codex','External Name','external');
             INSERT INTO members(id,name,role,created_at,removed_at,provider,display_name,kind)
                 VALUES(3,'removed-user','member',30,25,'','Removed Name',NULL);
             INSERT INTO members(id,name,role,created_at)
                 VALUES(4,'dispatcher','dispatcher',40);
+            INSERT INTO members(id,name,role,created_at,provider,display_name,kind)
+                VALUES(5,'unknown-provider-user','member',50,'unknown-vendor',NULL,NULL);
             """
         )
         connection.commit()
@@ -64,7 +66,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     "connection_mode,status,legacy_provider_label,created_at,updated_at "
                     "FROM agents ORDER BY legacy_member_id"
                 ).fetchall()
-                self.assertEqual(len(agents), 3)
+                self.assertEqual(len(agents), 4)
                 self.assertEqual(
                     tuple(agents[0]),
                     ("legacy-member-1", "codex", 1, "codex-user", None,
@@ -72,11 +74,13 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     tuple(agents[1]),
-                    ("legacy-member-2", "external", 2, "External Name",
-                     "external_agent", "active", "unknown-vendor", 20.0, 100.0),
+                    ("legacy-member-2", "codex", 2, "External Name",
+                     "external_agent", "active", "codex", 20.0, 100.0),
                 )
                 self.assertEqual(agents[2]["status"], "removed")
                 self.assertEqual(agents[2]["provider_id"], "legacy")
+                self.assertEqual(agents[3]["provider_id"], "legacy")
+                self.assertEqual(agents[3]["legacy_provider_label"], "unknown-vendor")
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM agent_connections").fetchone()[0],
                     0,
@@ -118,6 +122,22 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     )
                 connection.rollback()
             finally:
+                connection.close()
+
+    def test_backfill_mapping_changes_are_detected_by_ledger_checksum(self):
+        from core import migrations
+
+        with tempfile.TemporaryDirectory(prefix="pack-agent-registry-") as directory:
+            connection = self._database(directory)
+            original = dict(migrations._PROVIDER_LABELS)
+            try:
+                apply_migrations(connection, clock=lambda: 100.0)
+                migrations._PROVIDER_LABELS["codex"] = ("codex", "Changed Vendor")
+                with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                    apply_migrations(connection, clock=lambda: 200.0)
+            finally:
+                migrations._PROVIDER_LABELS.clear()
+                migrations._PROVIDER_LABELS.update(original)
                 connection.close()
 
     def test_failed_migration_rolls_back_schema_and_ledger(self):
