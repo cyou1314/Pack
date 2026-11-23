@@ -160,7 +160,9 @@ extension AppState {
             if messages.contains(where: { $0.kind == "question" }) {
                 let answerClient = ownerClient ?? client
                 let identity = try? await answerClient.call(name: "heartbeat")
-                guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
+                guard room == currentRoom, generation == roomGeneration,
+                      currentClientGeneration == clientGeneration,
+                      messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
                 questionResponderName = identity?["member"] as? String
             }
             do {
