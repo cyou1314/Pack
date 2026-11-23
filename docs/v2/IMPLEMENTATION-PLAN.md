@@ -181,3 +181,12 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 - **M3 Provider Adapter：** Codex Adapter 有 mock 测试，但真实 Mac App Server 登录、Session/Turn、断线恢复和审批闭环未验收；ChatGPT、Doubao 等 Adapter 仍按 Provider Matrix 单独验证。
 - **安全门槛：** 在 M2 Event Gateway、Hub Permission/Approval/Audit 与 SwiftUI 人工审批闭环完成前，不开放 Codex command/file 高风险工具自动执行。
 - **执行顺序：** M1a additive migration → M1b shadow read → M1c read-only API 评估 → M2 Supervisor/Session Manager/Inbox-Outbox/Event Gateway → M3 真实 Provider 验收。真实 Mac 部署继续后置。
+
+
+### M1a：Agent Registry 增量 schema 与 legacy backfill（候选 PR）
+
+- 已实现版本化 migration ledger、checksum、BEGIN IMMEDIATE 与失败回滚。
+- 已实现 providers / agents / connections / sessions 表、外键与索引。
+- 已实现旧 member 稳定映射；保留原 members 行、token hash、任务/消息引用与私有记忆。
+- 已启用逐连接 SQLite foreign key enforcement，并加入测试和 schema contract snapshot。
+- 当前在独立分支等待 CI/审查；未合入 Foundation、未部署。M1b shadow read 未开始。
