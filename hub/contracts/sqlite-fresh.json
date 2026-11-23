@@ -7,6 +7,336 @@
       "columns": [
         {
           "default": null,
+          "name": "connection_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "mode",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "auth_kind",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "credential_ref",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'{}'",
+          "name": "safe_metadata_json",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "revoked_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agents",
+          "to": "agent_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "agent_id"
+          ],
+          "name": "idx_agent_connections_one_active",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE UNIQUE INDEX idx_agent_connections_one_active ON agent_connections(agent_id) WHERE status IN ('pending','connected')",
+          "unique": true
+        },
+        {
+          "columns": [
+            "connection_id"
+          ],
+          "name": "sqlite_autoindex_agent_connections_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_connections"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "session_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "room_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "provider_session_id",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "last_event_sequence",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "last_used_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "room_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "rooms",
+          "to": "id"
+        },
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agents",
+          "to": "agent_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "agent_id",
+            "room_id"
+          ],
+          "name": "idx_agent_sessions_agent_room",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_sessions_agent_room ON agent_sessions(agent_id, room_id)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "session_id"
+          ],
+          "name": "sqlite_autoindex_agent_sessions_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_sessions"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "provider_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "legacy_member_id",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "display_name",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "connection_mode",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "legacy_provider_label",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "legacy_member_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "members",
+          "to": "id"
+        },
+        {
+          "from": "provider_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "providers",
+          "to": "provider_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "provider_id",
+            "status"
+          ],
+          "name": "idx_agents_provider_status",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agents_provider_status ON agents(provider_id, status)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "agent_id"
+          ],
+          "name": "sqlite_autoindex_agents_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        },
+        {
+          "columns": [
+            "legacy_member_id"
+          ],
+          "name": "sqlite_autoindex_agents_2",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agents"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
           "name": "id",
           "notnull": false,
           "primary_key_position": 1,
@@ -313,6 +643,41 @@
         }
       ],
       "name": "egress_rules"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "version",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "name",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "checksum",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "applied_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [],
+      "name": "hub_schema_migrations"
     },
     {
       "columns": [
@@ -1048,6 +1413,59 @@
         }
       ],
       "name": "pair_codes"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "provider_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "display_name",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "provider_id"
+          ],
+          "name": "sqlite_autoindex_providers_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "providers"
     },
     {
       "columns": [
