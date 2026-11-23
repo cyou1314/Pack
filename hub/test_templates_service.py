@@ -180,7 +180,7 @@ class TemplateServiceTests(unittest.TestCase):
             raise ValueError("no such member: ghost")
         with self.assertRaisesRegex(ValueError, "no such member: ghost"):
             fire_template(
-                self.context, self.dispatcher, "web",
+                self.context, self.dispatcher, "web", "API",
                 create_task=create_task,
             )
         self.assertEqual(len(calls), 1)
