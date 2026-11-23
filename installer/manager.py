@@ -61,12 +61,24 @@ async def setup_owner():
     write_private(hub/'.owner_token',owner)
     write_private(config,json.dumps({'hubUrl':f'http://127.0.0.1:{hp}/mcp','token':token,'ownerToken':owner}))
 
+def _remove_owned_path(path):
+    """Remove one path created by this install attempt, never follow symlinks."""
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
 def install():
     if hub.exists() or engine.exists() or config.exists(): raise SystemExit('Existing service data or App config found; refusing to overwrite.')
     if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
     for label in labels.values():
         if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0: raise SystemExit('A service label is already in use.')
     if socket_dir.exists(): raise SystemExit('Existing handoff socket directory; refusing to overwrite.')
+    agent_plists = [agents/(label+'.plist') for label in labels.values()]
+    if any(path.exists() or path.is_symlink() for path in agent_plists):
+        raise SystemExit('A service LaunchAgent plist already exists; refusing to overwrite.')
+    agents_preexisting = agents.exists()
     os.umask(0o077); hub.mkdir(parents=True,mode=0o700); engine.mkdir(parents=True,mode=0o700); agents.mkdir(parents=True,exist_ok=True)
     shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
     for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
@@ -94,7 +106,18 @@ def install():
             except OSError: time.sleep(.25)
         else: raise RuntimeError('Local engine did not start')
     except Exception:
-        for label in labels.values(): ctl('bootout',f'gui/{uid}/{label}',check=False)
+        # This was a fresh install (all destinations were checked absent above).
+        # Roll back only paths owned by this attempt so a failed first install
+        # cannot leave stale LaunchAgents that block every subsequent retry.
+        for label in labels.values():
+            ctl('bootout',f'gui/{uid}/{label}',check=False)
+        for path in agent_plists:
+            _remove_owned_path(path)
+        for path in (config, socket_dir, engine, hub):
+            _remove_owned_path(path)
+        if not agents_preexisting:
+            try: agents.rmdir()
+            except OSError: pass
         raise
     print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
     print('Open Pack to migrate the private local credentials into Keychain.')
