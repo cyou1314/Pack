@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Non-destructive upgrade and rollback tests for the packaged macOS installer."""
+import json
+import os
+import plistlib
+import shutil
+import subprocess
+import tempfile
+import unittest
+from contextlib import ExitStack, redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+from io import StringIO
+
+import manager
+
+
+MARKER = "com.cyou.pack.installer.v1"
+
+
+def write_text(path, value, mode=None):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")
+    if mode is not None:
+        path.chmod(mode)
+    return path
+
+
+def make_app(path, version, extra_file):
+    path = Path(path)
+    contents = path / "Contents"
+    contents.mkdir(parents=True, exist_ok=True)
+    info = {
+        "CFBundleIdentifier": "com.cyou.pack",
+        "CFBundleExecutable": "PackApp",
+        "CFBundleShortVersionString": version,
+        "PackInstallerMarker": MARKER,
+    }
+    with (contents / "Info.plist").open("wb") as stream:
+        plistlib.dump(info, stream)
+    write_text(path / extra_file, version)
+    return path
+
+
+class UpgradeFixture:
+    def __init__(self, test):
+        self.temp = tempfile.TemporaryDirectory(prefix="pack-upgrade-test-")
+        test.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+
+        self.home = root / "home"
+        self.base = root / "pack"
+        self.hub = self.base / "local-hub"
+        self.engine = self.base / "local-engine"
+        self.config = self.base / "config.json"
+        self.socket_dir = self.base / "handoff-socket"
+        self.agents = self.home / "Library" / "LaunchAgents"
+        self.app_path = self.base / "Applications" / "Pack.app"
+        self.bundle = root / "bundle"
+        self.labels = {
+            "hub": "com.pack.installer-test-hub",
+            "watch": "com.pack.installer-test-watch",
+            "backup": "com.pack.installer-test-backup",
+            "engine": "com.pack.installer-test-engine",
+        }
+        self.uid = 501
+        self.hp = 18795
+        self.ep = 47822
+
+        for directory in (
+            self.home / "Library",
+            self.agents,
+            self.hub / "attachments",
+            self.hub / "backups",
+            self.engine / "data" / "local",
+            self.socket_dir,
+            self.app_path.parent,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        write_text(self.config, json.dumps({"hubUrl": "http://127.0.0.1:18795/mcp"}), 0o600)
+        write_text(self.hub / "pack.db", "original-db", 0o600)
+        write_text(self.hub / ".dispatcher_token", "dispatcher-secret", 0o600)
+        write_text(self.hub / ".owner_token", "owner-secret", 0o600)
+        write_text(self.hub / "attachments" / "image.bin", "original-attachment")
+        write_text(self.engine / "data" / "local" / "session.json", "original-session")
+
+        # Existing program payload.
+        write_text(self.hub / "python" / "bin" / "python3", "old-python", 0o755)
+        write_text(self.hub / "hub.py", "old-hub")
+        write_text(self.hub / "room_watch.py", "old-watch")
+        write_text(self.hub / "backup-db.sh", "old-backup")
+        write_text(self.hub / "verify-backup.sh", "old-verify")
+        write_text(self.hub / "core" / "context.py", "old-context")
+        write_text(self.hub / "services" / "rooms.py", "old-rooms")
+        write_text(self.engine / "app" / "headless.cjs", "old-engine")
+        write_text(self.engine / "Electron.app" / "Contents" / "MacOS" / "Electron", "old-electron")
+        make_app(self.app_path, "1", "old-app.txt")
+
+        # New DMG payload.
+        write_text(self.bundle / "python" / "bin" / "python3", "new-python", 0o755)
+        write_text(self.bundle / "hub" / "hub.py", "new-hub")
+        write_text(self.bundle / "hub" / "room_watch.py", "new-watch")
+        write_text(self.bundle / "hub" / "backup-db.sh", "new-backup")
+        write_text(self.bundle / "hub" / "verify-backup.sh", "new-verify")
+        write_text(self.bundle / "hub" / "core" / "context.py", "new-context")
+        write_text(self.bundle / "hub" / "services" / "rooms.py", "new-rooms")
+        write_text(self.bundle / "engine" / "app" / "headless.cjs", "new-engine")
+        write_text(self.bundle / "engine" / "Electron.app" / "Contents" / "MacOS" / "Electron", "new-electron")
+        make_app(self.bundle / "Pack.app", "2", "new-app.txt")
+
+        self.plist_bytes = {}
+        expected = {
+            "hub": [str(self.hub / "python/bin/python3"), str(self.hub / "hub.py"), "serve"],
+            "watch": [str(self.hub / "python/bin/python3"), str(self.hub / "room_watch.py")],
+            "backup": ["/bin/bash", str(self.hub / "backup-db.sh")],
+            "engine": [str(self.engine / "Electron.app/Contents/MacOS/Electron"), str(self.engine / "app")],
+        }
+        for kind, label in self.labels.items():
+            path = self.agents / (label + ".plist")
+            with path.open("wb") as stream:
+                plistlib.dump({"Label": label, "ProgramArguments": expected[kind], "Umask": 0o077}, stream)
+            self.plist_bytes[label] = path.read_bytes()
+
+        self.patches = ExitStack()
+        test.addCleanup(self.patches.close)
+        for name, value in {
+            "HOME": self.home,
+            "base": self.base,
+            "hub": self.hub,
+            "engine": self.engine,
+            "config": self.config,
+            "socket_dir": self.socket_dir,
+            "agents": self.agents,
+            "app_path": self.app_path,
+            "BUNDLE": self.bundle,
+            "labels": self.labels,
+            "uid": self.uid,
+            "hp": self.hp,
+            "ep": self.ep,
+        }.items():
+            self.patches.enter_context(patch.object(manager, name, value))
+
+    def fake_ctl(self, fail_watch_once=False):
+        loaded = set(self.labels.values())
+        calls = []
+        state = {"fail_watch_once": fail_watch_once}
+
+        def ctl(*args, check=True):
+            args = tuple(str(value) for value in args)
+            calls.append(args)
+            if args[0] == "print":
+                label = args[1].split("/")[-1]
+                return SimpleNamespace(returncode=0 if label in loaded else 1)
+            if args[0] == "bootout":
+                loaded.discard(args[1].split("/")[-1])
+                return SimpleNamespace(returncode=0)
+            if args[0] == "bootstrap":
+                label = Path(args[2]).stem
+                if state["fail_watch_once"] and label.endswith("-watch"):
+                    state["fail_watch_once"] = False
+                    raise subprocess.CalledProcessError(1, args)
+                loaded.add(label)
+                return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=0)
+
+        return ctl, calls, loaded
+
+    def fake_subprocess_run(self, pgrep_returncode=1, backup_failure=False):
+        calls = []
+
+        def run(args, **kwargs):
+            args = [str(value) for value in args]
+            calls.append(args)
+            if args[0] == "/usr/bin/pgrep":
+                return SimpleNamespace(returncode=pgrep_returncode)
+            if args[0] == "/bin/bash":
+                script = Path(args[1]).name
+                if script == "backup-db.sh":
+                    if backup_failure:
+                        raise subprocess.CalledProcessError(1, args)
+                    backup_dir = Path(kwargs["env"]["PACK_BACKUP_DIR"])
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    write_text(backup_dir / "pack-test.db", "snapshot")
+                    write_text(backup_dir / "attachments-test.tar.gz", "archive")
+                    write_text(backup_dir / "manifest-test.sha256", "manifest")
+                return SimpleNamespace(returncode=0)
+            if args[0] == "/usr/bin/ditto":
+                shutil.copytree(Path(args[1]), Path(args[2]), symlinks=True)
+                return SimpleNamespace(returncode=0)
+            if args[0] in ("codesign", "plutil") or args[0].endswith("/python3"):
+                return SimpleNamespace(returncode=0)
+            raise AssertionError(f"Unexpected subprocess call: {args}")
+
+        return run, calls
+
+
+class UpgradeSafetyTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = UpgradeFixture(self)
+
+    def test_unowned_agent_is_rejected_before_backup_or_service_stop(self):
+        f = self.fixture
+        path = f.agents / (f.labels["watch"] + ".plist")
+        with path.open("rb") as stream:
+            document = plistlib.load(stream)
+        document["ProgramArguments"][1] = str(f.base / "unrelated" / "room_watch.py")
+        with path.open("wb") as stream:
+            plistlib.dump(document, stream)
+
+        ctl, calls, _ = f.fake_ctl()
+        with patch.object(manager, "ctl", side_effect=ctl):
+            with self.assertRaisesRegex(SystemExit, "outside the Pack service directory"):
+                manager.upgrade()
+
+        self.assertFalse(any(call[0] == "bootout" for call in calls))
+        self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
+
+    def test_running_app_is_rejected_before_backup_or_service_stop(self):
+        f = self.fixture
+        ctl, calls, _ = f.fake_ctl()
+        run, _ = f.fake_subprocess_run(pgrep_returncode=0)
+        with patch.object(manager, "ctl", side_effect=ctl), patch.object(manager.subprocess, "run", side_effect=run):
+            with self.assertRaisesRegex(SystemExit, "quit Pack.app"):
+                manager.upgrade()
+
+        self.assertFalse(any(call[0] == "bootout" for call in calls))
+        self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
+
+    def test_backup_failure_aborts_before_stopping_services(self):
+        f = self.fixture
+        ctl, calls, _ = f.fake_ctl()
+        run, _ = f.fake_subprocess_run(backup_failure=True)
+        with patch.object(manager, "ctl", side_effect=ctl), patch.object(manager.subprocess, "run", side_effect=run):
+            with self.assertRaisesRegex(RuntimeError, "Verified backup retained"):
+                manager.upgrade()
+
+        self.assertFalse(any(call[0] == "bootout" for call in calls))
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
+        self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
+
+    def test_successful_upgrade_preserves_data_and_retains_verified_backup(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl()
+        run, subprocess_calls = f.fake_subprocess_run()
+        output = StringIO()
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_port", return_value=None),
+            redirect_stdout(output),
+        ):
+            manager.upgrade()
+
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "new-hub")
+        self.assertEqual((f.hub / "core" / "context.py").read_text(encoding="utf-8"), "new-context")
+        self.assertEqual((f.engine / "app" / "headless.cjs").read_text(encoding="utf-8"), "new-engine")
+        self.assertTrue((f.app_path / "new-app.txt").is_file())
+        self.assertFalse((f.app_path / "old-app.txt").exists())
+
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
+        self.assertEqual((f.hub / "attachments" / "image.bin").read_text(encoding="utf-8"), "original-attachment")
+        self.assertEqual((f.engine / "data" / "local" / "session.json").read_text(encoding="utf-8"), "original-session")
+        self.assertEqual(f.config.read_text(encoding="utf-8"), json.dumps({"hubUrl": "http://127.0.0.1:18795/mcp"}))
+        self.assertEqual((f.hub / ".dispatcher_token").read_text(encoding="utf-8"), "dispatcher-secret")
+        for label, original in f.plist_bytes.items():
+            self.assertEqual((f.agents / (label + ".plist")).read_bytes(), original)
+
+        backups = list((f.hub / "backups").glob("upgrade-*"))
+        self.assertEqual(len(backups), 1)
+        backup = backups[0]
+        self.assertEqual((backup / "database" / "pack-test.db").read_text(encoding="utf-8"), "snapshot")
+        self.assertEqual((backup / "code" / "hub" / "hub.py").read_text(encoding="utf-8"), "old-hub")
+        self.assertTrue((backup / "Pack.app" / "old-app.txt").is_file())
+        self.assertEqual((backup / "state" / "config.json").stat().st_mode & 0o777, 0o600)
+        self.assertIn("UPGRADE OK", output.getvalue())
+        self.assertEqual(loaded, set(f.labels.values()))
+        self.assertTrue(any(args[0] == "/usr/bin/ditto" for args in subprocess_calls))
+        self.assertTrue(any(call[0] == "bootout" for call in calls))
+        self.assertTrue(any(call[0] == "bootstrap" for call in calls))
+
+    def test_failed_restart_restores_previous_program_and_app(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl(fail_watch_once=True)
+        run, _ = f.fake_subprocess_run()
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_port", return_value=None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "previous program files were restored"):
+                manager.upgrade()
+
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
+        self.assertEqual((f.hub / "core" / "context.py").read_text(encoding="utf-8"), "old-context")
+        self.assertEqual((f.engine / "app" / "headless.cjs").read_text(encoding="utf-8"), "old-engine")
+        self.assertTrue((f.app_path / "old-app.txt").is_file())
+        self.assertFalse((f.app_path / "new-app.txt").exists())
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
+        self.assertEqual((f.engine / "data" / "local" / "session.json").read_text(encoding="utf-8"), "original-session")
+        self.assertEqual(loaded, set(f.labels.values()))
+        self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
+        self.assertTrue(any(call[0] == "bootout" for call in calls))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
