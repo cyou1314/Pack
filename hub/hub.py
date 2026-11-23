@@ -67,6 +67,7 @@ if __package__:
     from .services.tasks import inspect_unclaimed_tasks as _inspect_unclaimed_tasks
     from .core.schema import SCHEMA
     from .core.context import HubContext
+    from .core.migrations import apply_migrations as _apply_hub_migrations
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
         action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
@@ -81,6 +82,7 @@ else:
     from services.tasks import inspect_unclaimed_tasks as _inspect_unclaimed_tasks
     from core.schema import SCHEMA
     from core.context import HubContext
+    from core.migrations import apply_migrations as _apply_hub_migrations
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
 
@@ -795,6 +797,9 @@ def init(context: HubContext | None = None):
             conn.execute("UPDATE members SET avatar=? WHERE id=?",
                          (json.dumps(a), r["id"]))
     conn.commit()
+    # v2 Agent Registry is additive and independently versioned. Run it only
+    # after legacy Hub initialization has committed its compatibility columns.
+    _apply_hub_migrations(conn, clock=context.clock)
     conn.close()
     print("init ok")
 
