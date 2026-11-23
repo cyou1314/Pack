@@ -171,6 +171,9 @@ final class AppState: ObservableObject {
     private var discoveryInProgress = false
     private var clientGeneration = 0
     private var consecutiveRefreshFailures = 0
+    private var lastFullMessageRefreshUptime: TimeInterval = 0
+    private var lastFullMessageRefreshClientGeneration = -1
+    private let messageFullRefreshInterval: TimeInterval = 60
     private let hubDiscoveryInterval: TimeInterval = 60
     private let hubDiscoveryTimeout: TimeInterval = 5
     private let taskListPageSize = 100
@@ -218,10 +221,18 @@ final class AppState: ObservableObject {
         let room = currentRoom
         let generation = roomGeneration
         let currentClientGeneration = clientGeneration
+        let messageRefreshUptime = ProcessInfo.processInfo.systemUptime
+        // Poll only new message IDs between periodic full snapshots. The full
+        // tail refresh is still needed to pick up edits/deletions to old IDs.
+        let fullMessageRefresh = roomLoading ||
+            lastFullMessageRefreshClientGeneration != currentClientGeneration ||
+            messageRefreshUptime - lastFullMessageRefreshUptime >= messageFullRefreshInterval
+        let messageSinceID = fullMessageRefresh ? 0 : (messages.last?.id ?? 0)
         do {
             let roomRes = try await client.call(name: "room_list")
             let msgRes = try await client.call(name: "room_read_new",
-                                               args: ["room": room, "since_id": 0, "limit": 200, "tail": true])
+                                               args: ["room": room, "since_id": messageSinceID,
+                                                      "limit": 200, "tail": fullMessageRefresh])
             let taskRows = try await loadTaskPages(client, room: room)
             let memRes = try await client.call(name: "member_list")
             let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
@@ -246,8 +257,18 @@ final class AppState: ObservableObject {
                                     return MessageAttachment(id: id, mime: mime, size: intVal(item["size"]), filename: (item["filename"] as? String) ?? "图片")
                                 }, replyToId: optIntVal($0["reply_to_id"]), questionPayload: QuestionPayload.parse($0["payload"]))
                 }
-                if roomLoading { messages = parsedMessages }
-                else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
+                if fullMessageRefresh {
+                    lastFullMessageRefreshUptime = messageRefreshUptime
+                    lastFullMessageRefreshClientGeneration = currentClientGeneration
+                    if roomLoading { messages = parsedMessages }
+                    else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
+                } else if !parsedMessages.isEmpty {
+                    var mergedByID: [Int: RoomMessage] = [:]
+                    for message in messages { mergedByID[message.id] = message }
+                    for message in parsedMessages { mergedByID[message.id] = message }
+                    let merged = mergedByID.keys.sorted().suffix(200).compactMap { mergedByID[$0] }
+                    withAnimation(DesignTokens.animStd) { messages = merged }
+                }
             }
             if messages.contains(where: { $0.kind == "question" }) {
                 let answerClient = ownerClient ?? client
