@@ -1,6 +1,6 @@
 # Agent Registry 数据层迁移设计
 
-- 状态：M1a 已合入 v2 Foundation（PR #21）；M1b 只读影子比对正在独立 PR 实施；尚未部署到用户 Mac
+- 状态：M1a/M1b 已合入 v2 Foundation（PR #21/#22/#23）；M1b SQLite 完整性预检补强在 PR #24；尚未在用户 Mac/生产数据库运行
 - 日期：2026-11-23
 - 目标基线：Pack v2 M1（Agent Registry 数据层）
 - 约束：保持 v1 members / rooms / messages / tasks / runs / audit / member_memory 的现有语义
@@ -33,7 +33,7 @@ M1 采用**兼容映射 + 只读影子验证**，不把现有 `members` 替换�
 
 ## 3. 新表建议
 
-所有表使用显式字段、外键和索引。当前 `hub/core/storage.py` 已配置 WAL 与 busy_timeout，但**尚未启用 `PRAGMA foreign_keys=ON`**；M1a 必须在共享连接工厂逐连接启用并增加 FK enforcement 测试，不能把它描述成现有行为。以下是逻辑字段，不是已经执行的 DDL。
+所有表使用显式字段、外键和索引。M1a 已在 `hub/core/storage.py` 的共享连接工厂逐连接启用 `PRAGMA foreign_keys=ON`，并为新增 Registry 表建立外键；旧 v1 表未被补写或重建外键。以下字段表为逻辑设计，实际 DDL 以已合入的 migration 为准。
 
 ### providers
 
@@ -140,18 +140,18 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 3. **M1c（独立 PR）：** 仅在 shadow read 稳定后，评估 Agent detail/read-only API；不移除 members。
 4. **M2：** 再做 Runtime Supervisor、Session Manager、Inbox/Outbox 和 Event Gateway；不得把 Provider Adapter 直接暴露给 Hub MCP 工具执行。
 
-**当前状态：** 仅完成设计文档。没有 DDL、数据库迁移、影子读取或生产数据操作。
+**当前状态：** M1a DDL/迁移和 M1b 只读 Shadow CLI 已合入 v2 Foundation；CI 使用临时数据库验证，不代表已在用户 Mac/生产数据库运行。
 
 
-## 8. M1a 实施记录（候选 PR，2026-11-23）
+## 8. M1a 实施记录（PR #21 已合并，2026-11-23）
 
 - 新增 `hub/core/migrations.py`：版本号 + SHA-256 checksum migration ledger；checksum 同时覆盖 DDL、Provider 映射表及数据回填函数的规范化源码（避免 Python AST 版本差异）；所有 DDL/DML 在 `BEGIN IMMEDIATE` 中执行，失败整体 rollback；重复执行验证 checksum 后跳过。
 - 新增 providers / agents / agent_connections / agent_sessions 表与外键、唯一索引、查询索引。首版不生成 connection/session 行，不复制凭据或私人记忆。
 - 对现有 `members.role='member'` 逐行建立稳定 ID `legacy-member-{id}` 映射；dispatcher/owner 不映射。已软删除成员标记 removed；external kind 只映射为 external_agent 连接模式，不覆盖 codex/gemini 等厂商身份；pending/logged_in/expired 登录状态分别保守映射为 pending/pending/disconnected。Provider 使用显式白名单映射，未知值归入 legacy 并保留原始标签。
 - `hub/core/storage.py` 每个连接启用 `PRAGMA foreign_keys=ON`；现有旧表不添加/重写外键，旧 token、任务、消息、记忆和房间绑定不改。
-- `hub.init()` 在既有兼容列迁移提交后运行独立版本化迁移；不由 DMG 安装器执行，不读取 Keychain，不触碰 Provider 账号。
+- `hub.init()` 在既有兼容列迁移提交后运行独立版本化迁移；DMG 安装器本身不执行迁移，但更新后的 Hub 首次初始化会自动应用迁移。在 Mac 发布前必须有数据库备份/恢复演练；迁移不读取 Keychain，不触碰 Provider 账号。
 - 新增迁移单测覆盖 legacy 映射、重复执行、外键拒绝非法引用和失败回滚；CI 增加该测试，SQLite fresh/legacy snapshots 更新。
-- **M1a 已通过 CI/代码审查并合入 Foundation。** M1b shadow read 与差异报告正在实施；此阶段没有启用新读路径。
+- **M1a 已通过 CI/代码审查并合入 Foundation。** M1b Shadow CLI 通过 PR #22 合入，PR #23 补充并发迁移、CLI 文件字节不变和敏感字段不输出测试；两批 CI 与 Codex 审查均通过。此阶段没有启用新读路径。
 
 - Codex 审查修正：Provider 身份与 external connection mode 独立归一；迁移 checksum 已纳入回填逻辑规范化源码与 Provider 映射表，并避免 Python 版本相关 AST 表示，防止数据迁移规则变化却复用旧 checksum。
 
@@ -163,4 +163,56 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 - `hub/services/agent_registry_shadow.py` 提供只读比较：按 legacy member ID 比对稳定 Agent ID、Provider、展示名、connection mode、状态、原始 Provider 标签和创建时间。
 - 报告只输出计数、legacy member ID 与 mismatch 字段名；不读取或输出 token hash、profile、消息正文、任务正文或私有记忆。发现未知 migration version 或 checksum 不匹配时必须返回 not-ready，不能给出可通过的报告。
 - `python -m services.agent_registry_shadow` 是手动诊断 CLI（从已安装 Hub 目录执行），通过 SQLite URI `mode=ro` 与 `PRAGMA query_only=ON` 打开数据库；不加入 Hub MCP 工具、不在启动时自动执行、不自动修复数据。
-- M1b 的目的仅是验证 M1a backfill 的一致性；只有人工检查报告全部为零差异，才评估后续 read-only API。旧 `members` 仍是唯一读写事实来源。
+- M1b 的目的仅是验证 M1a backfill 的一致性。PR #24 进一步将 SQLite `quick_check` 与 `foreign_key_check` 纳入 Shadow readiness；只有真实数据库的人工报告满足 checksum 正确、完整性检查通过、FK violation 为 0、mapping mismatch 为 0，才允许进入 M1c API 实施。旧 `members` 仍是唯一读写事实来源。
+
+
+## 10. M1c Agent Registry 只读 API 评估
+
+### 10.1 当前结论
+
+M1c 先完成接口评估，不立即注册 MCP 工具。当前 CI 只覆盖临时 SQLite fixture；没有对用户 Mac 数据库执行 shadow report，因此不能把 CI 通过等同于真实历史数据映射已验证。
+
+在真实数据库 shadow report 满足以下条件前，不新增 agent_list / agent_get 工具，也不修改现有 member_list：
+
+- migration checksum 全部匹配；
+- SQLite quick_check 返回 ok；
+- PRAGMA foreign_key_check 返回 0 行；
+- legacy member mapping mismatch 为 0；
+- unmapped member 与 unexpected mapping 均为 0；
+- 人工确认报告未包含 token、profile、消息正文、任务正文或私有记忆。
+
+### 10.2 建议的最小 API
+
+通过门槛后，单独 PR 评估两个只读 MCP 工具：
+
+**agent_list(include_removed=false, provider_id="", limit=100, offset=0)**
+
+返回稳定分页的 Agent 摘要：agent_id、provider_id、Provider 展示名、display_name、connection_mode、status、created_at、updated_at，以及 total/limit/offset。默认排除 removed；只有明确管理界面需要时才允许 dispatcher 设置 include_removed=true。排序固定为 updated_at DESC, agent_id ASC。
+
+**agent_get(agent_id)**
+
+返回 Agent 摘要及连接/Session 的安全元数据。Connection 仅返回 connection_id、mode、auth_kind、status、创建/更新时间与撤销时间；Session 仅返回 session_id、room_id、status、last_event_sequence、创建/更新时间与最后使用时间。
+
+### 10.3 权限与数据边界
+
+- 首版仅允许 role=dispatcher；不向 owner/member/external 扩权，待 App 实际身份模型核实后另行决策。
+- 不把工具加入 EXTERNAL_ALLOWED_TOOLS 或 READONLY_ALLOWED_TOOLS；external 永远不能通过该接口读取 Registry。
+- 成功读取只执行参数化 SELECT；不写 Registry、members、审计或事件数据。现有统一工具 gate 对拒绝访问的审计行为保持不变。
+- 不返回 credential_ref、safe_metadata_json、Provider 原生 Session ID、Token/Key、Cookie、环境变量、Profile、Quota、Heartbeat、成员私有记忆或原始 provider 标签。
+- 不返回 legacy_member_id；该映射只供迁移、排障和内部审计使用。
+- 连接和 Session 只返回白名单字段；禁止直接序列化整行 SQLite Row。
+
+### 10.4 实现约束
+
+- 新读服务使用 SQLite URI mode=ro，并设置 PRAGMA query_only=ON；不复用可写业务连接。
+- Agent 视图只读 agents/providers/agent_connections/agent_sessions；不通过 members 回填或覆盖新字段。
+- 参数使用 SQL bind；限制 limit 最大值；固定排序，避免分页不稳定。
+- agent_get 的多表读取使用同一个只读事务快照。
+- 不改变 member_list 的 MCP schema、返回字段、外部成员脱敏规则或 App 现有数据源。
+- 不做 Agent 创建/编辑/删除、连接写入、Session 创建/恢复，也不接 Runtime Provider 进程。
+
+### 10.5 回滚与后续
+
+API 首次实现应由独立 feature flag 控制；默认关闭，只有完成 Mac 备份/恢复演练、真实数据库 shadow 报告与 MCP 权限回归后才允许启用。回滚只关闭 API，不删除 Registry 表，不触碰旧 members。
+
+M1c 不等于 M2。Runtime Supervisor、事件持久化、审批闭环仍须单独完成；不能因有只读 Agent API 就开放 Provider 命令或文件操作。
