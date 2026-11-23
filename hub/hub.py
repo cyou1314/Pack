@@ -125,6 +125,12 @@ CREATE TABLE IF NOT EXISTS messages(
   kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER, created_at REAL NOT NULL,
   deleted_at REAL, edited_at REAL);
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_approval_task
+  ON messages(task_id, id DESC) WHERE kind='approval_request';
+CREATE INDEX IF NOT EXISTS idx_messages_approval_legacy
+  ON messages(id DESC) WHERE kind='approval_request' AND task_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_dispatch_decisions
+  ON messages(author_id, id) WHERE kind IN ('chat','decision');
 CREATE TABLE IF NOT EXISTS tasks(
   id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
   created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
@@ -132,7 +138,8 @@ CREATE TABLE IF NOT EXISTS tasks(
   result TEXT, envelope TEXT, review_note TEXT, fail_class TEXT, next_claim_at REAL,
   created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
-  id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);
+  id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
+  detail TEXT, task_id INTEGER);
 CREATE TABLE IF NOT EXISTS room_summaries(
   room_id INTEGER PRIMARY KEY, data TEXT NOT NULL,
   updated_at REAL NOT NULL, updated_by TEXT NOT NULL);
@@ -155,6 +162,8 @@ CREATE TABLE IF NOT EXISTS review_log(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, target_url TEXT NOT NULL,
   owner_quote TEXT NOT NULL, member_desc TEXT NOT NULL, verdict TEXT NOT NULL,
   reviewer TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_review_log_task_time
+  ON review_log(task_id, created_at);
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, member_id INTEGER NOT NULL,
   fence INTEGER NOT NULL, claim_token TEXT, status TEXT NOT NULL DEFAULT 'running',
@@ -217,9 +226,25 @@ CREATE INDEX IF NOT EXISTS idx_pair_attempts_ts ON pair_attempts(ts);
 """
 
 
+AUDIT_TASK_RE = re.compile(r"^task ([0-9]+)(?:$|[: ])")
+
+
 def audit(conn, actor, action, detail=""):
-    conn.execute("INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
-                 (time.time(), actor, action, detail))
+    """写审计时同步提取标准 task 前缀，供 task_audit 使用结构化索引。"""
+    match = AUDIT_TASK_RE.match(detail or "") if isinstance(detail, str) else None
+    task_id = int(match.group(1)) if match else None
+    conn.execute(
+        "INSERT INTO audit(ts,actor,action,detail,task_id) VALUES(?,?,?,?,?)",
+        (time.time(), actor, action, detail, task_id))
+
+
+def _task_audit_events(conn, task_id):
+    """按结构化 task_id 读取任务事件，额外读取一行用于截断判断。"""
+    rows = conn.execute(
+        """SELECT ts, actor, action, detail FROM audit
+           WHERE task_id=? ORDER BY id ASC LIMIT 201""",
+        (task_id,)).fetchall()
+    return [dict(r) for r in rows[:200]], len(rows) > 200
 
 
 # ---------------- 附件通道（staging39 / D18） ----------------
@@ -471,12 +496,17 @@ def _approval_state(conn, task_id):
     没有返回 None；decided_by 为其后已出现的决议来源
     （'message' = 调度员决议消息，kind='decision'（规则引擎/独立审查）或历史
     kind='chat' 决议均认；'review' = 先前审查留痕），未决议为 None。"""
-    req = None
-    rows = conn.execute(
-        "SELECT * FROM messages WHERE kind='approval_request' ORDER BY id DESC").fetchall()
-    for r in rows:
-        if r["task_id"] == task_id:
-            req = r
+    req = conn.execute(
+        """SELECT * FROM messages
+           WHERE kind='approval_request' AND task_id=?
+           ORDER BY id DESC LIMIT 1""", (task_id,)).fetchone()
+    # 兼容迁移后新出现的旧式直写记录：只检查 task_id 为空且比已命中记录
+    # 更新的候选；正常 room_post 已在 _approval_gate 中补写 task_id。
+    for r in conn.execute(
+            """SELECT * FROM messages
+               WHERE kind='approval_request' AND task_id IS NULL
+               ORDER BY id DESC"""):
+        if req is not None and r["id"] <= req["id"]:
             break
         m = TASK_REF_RE.search(r["body"] or "")
         if m and int(m.group(1)) == task_id:
@@ -929,6 +959,38 @@ def init():
         conn.execute("ALTER TABLE members ADD COLUMN access_mode TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO hub_settings(key,value) VALUES('external_enabled','1')")
+    # staging57 / 查询索引：审计事件结构化归属 + 历史数据一次性回填。
+    # 旧 detail 前缀口径严格对应 task <id>、task <id>:...、task <id> ...。
+    acols = [r[1] for r in conn.execute("PRAGMA table_info(audit)").fetchall()]
+    if "task_id" not in acols:
+        conn.execute("ALTER TABLE audit ADD COLUMN task_id INTEGER")
+    if not conn.execute(
+            "SELECT 1 FROM hub_settings WHERE key='audit_task_id_backfill_v1'").fetchone():
+        for r in conn.execute(
+                "SELECT id, detail FROM audit WHERE task_id IS NULL").fetchall():
+            match = AUDIT_TASK_RE.match(r["detail"] or "")
+            if match:
+                conn.execute("UPDATE audit SET task_id=? WHERE id=?",
+                             (int(match.group(1)), r["id"]))
+        conn.execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value) "
+            "VALUES('audit_task_id_backfill_v1','1')")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_task ON audit(task_id, id)")
+    # 历史 approval_request 由正文携带任务号；迁移时补 task_id 后，热路径
+    # 可走 idx_messages_approval_task，不再每次倒扫整张 messages 表。
+    if not conn.execute(
+            "SELECT 1 FROM hub_settings WHERE key='approval_task_id_backfill_v1'").fetchone():
+        for r in conn.execute(
+                "SELECT id, body FROM messages "
+                "WHERE kind='approval_request' AND task_id IS NULL").fetchall():
+            match = TASK_REF_RE.search(r["body"] or "")
+            if match:
+                conn.execute("UPDATE messages SET task_id=? WHERE id=? AND task_id IS NULL",
+                             (int(match.group(1)), r["id"]))
+        conn.execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value) "
+            "VALUES('approval_task_id_backfill_v1','1')")
     # H2 房间归档标记。
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
     if "archived_at" not in rcols:
