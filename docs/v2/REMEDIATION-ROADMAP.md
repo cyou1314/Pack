@@ -175,7 +175,7 @@
 
 ## 9. Phase 4 拆分前的代码边界盘点
 
-当前规模与目标模块边界见 [PHASE4-MODULE-BOUNDARIES.md](PHASE4-MODULE-BOUNDARIES.md)。本阶段尚未开始改动 Hub/App 大型文件；先冻结 MCP tool/数据库契约，再逐个提取纯逻辑和领域模块。
+当前规模与目标模块边界见 [PHASE4-MODULE-BOUNDARIES.md](PHASE4-MODULE-BOUNDARIES.md)。Hub 已将成员、房间、任务、规则、附件、记忆、技能、桌面、配对等大部分业务迁入领域服务，75 个 MCP tools 保留原名称/参数/返回契约；App Views 已按功能拆分，AppState 的 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle 行为已迁入同一 AppState 的领域扩展，主文件约 218 行。剩余工作聚焦 Settings/catalog、跨域状态所有权评估和真实 Mac 验收；不以文件行数为目标，也不在缺少收益时引入独立 Store。
 
 ## 10. 每批交付记录格式
 
@@ -204,3 +204,14 @@
 - `start()`、`refresh()` 和任务分页读取已迁入 `AppState+Lifecycle.swift`；原轮询周期、地址发现、快照读取顺序、generation 守卫、失败重试与未读/通知处理均保持原实现。
 - `AppState.swift` 主要保留 `@Published` 状态所有权、少量应用级派发/派生状态和通用 action helper；尚未把状态属性拆成独立 Store。
 - 后续不以文件行数为目标继续拆分；优先检查 Settings/catalog 边界、跨域状态所有权和可测性，再决定是否引入更明确的 Coordinator/Store。
+
+
+## 13. Mac 安装升级与部署前盘点（2026-11-23）
+
+- 新增 DMG 根目录 `upgrade.command` / `manager.py upgrade`，只接受可验证的完整 Pack 安装；先暂存/验证新版程序，再停止 Pack 写服务、确认端口释放，随后创建停机后的 SQLite/附件备份，最后原子替换 Hub/Engine/App。
+- 新服务启动后通过 dispatcher token 执行只读 MCP `room_list`，并检查 Engine 本地端口；启动失败时重新验证备份 manifest、SQLite 完整性和附件归档，再回滚程序与 DB。若新服务尚未启动，不恢复旧 DB，避免丢弃 staging 期间的写入。
+- 回滚状态由外层事务统一持有；文件/App rename 或恢复失败时不重新启动混合版本，保留暂存目录与恢复文件。
+- `installer/test_upgrade_safety.py` 覆盖安装身份拒绝、App 正在运行、备份失败、端口冲突、成功升级保留数据、Hub 启动失败回滚、程序/App rename 回滚失败、备份二次校验失败等路径。
+- 新增 `installer/mac-inventory.sh`：只读盘点 Pack/Engine/App、Pack 与 legacy runtime LaunchAgent、端口、SQLite quick_check、附件和备份数量；不输出配置/Token/Keychain 值，不启停服务或改写 Pack 数据。
+- macOS CI 增加 installer safety/upgrade tests，并在 Apple Runner 实际执行 inventory 脚本。Run [#45109400860](https://github.com/cyou1314/Pack/actions/runs/45109400860) 的 macOS installer regression、inventory、Swift Build/Unit Tests/App Bundle 和 Runtime 已通过；Hub Default staging regression 仍在运行，最终全绿以最新 head 的 CI 为准。
+- 尚未完成：隔离 Mac 上的真实 DMG 构建/升级/失败回滚、Keychain/登录态验证和生产 Mac 部署。当前远程 Mac 设备离线；不合并 PR #7、不操作用户真实 Mac。
