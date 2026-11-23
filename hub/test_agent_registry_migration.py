@@ -23,7 +23,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 removed_at REAL,
                 provider TEXT,
                 display_name TEXT,
-                kind TEXT
+                kind TEXT,
+                login_state TEXT
             );
             CREATE TABLE rooms(
                 id INTEGER PRIMARY KEY,
@@ -31,8 +32,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 created_at REAL NOT NULL
             );
             INSERT INTO rooms(id,name,created_at) VALUES(1,'room-a',1);
-            INSERT INTO members(id,name,role,created_at,provider,display_name,kind)
-                VALUES(1,'codex-user','member',10,'Codex',NULL,NULL);
+            INSERT INTO members(id,name,role,created_at,provider,display_name,kind,login_state)
+                VALUES(1,'codex-user','member',10,'Codex',NULL,NULL,'logged_in');
             INSERT INTO members(id,name,role,created_at,provider,display_name,kind)
                 VALUES(2,'external-user','member',20,'codex','External Name','external');
             INSERT INTO members(id,name,role,created_at,removed_at,provider,display_name,kind)
@@ -41,6 +42,10 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 VALUES(4,'dispatcher','dispatcher',40);
             INSERT INTO members(id,name,role,created_at,provider,display_name,kind)
                 VALUES(5,'unknown-provider-user','member',50,'unknown-vendor',NULL,NULL);
+            INSERT INTO members(id,name,role,created_at,provider,login_state)
+                VALUES(6,'pending-user','member',60,'muse','pending');
+            INSERT INTO members(id,name,role,created_at,provider,login_state)
+                VALUES(7,'expired-user','member',70,'muse','expired');
             """
         )
         connection.commit()
@@ -56,7 +61,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 ).fetchall()
                 apply_migrations(connection, clock=lambda: 100.0)
                 after = connection.execute(
-                    "SELECT id,name,role,created_at,removed_at,provider,display_name,kind "
+                    "SELECT id,name,role,created_at,removed_at,provider,display_name,kind,login_state "
                     "FROM members ORDER BY id"
                 ).fetchall()
                 self.assertEqual([tuple(row) for row in after], [tuple(row) for row in before])
@@ -67,7 +72,9 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     "FROM agents ORDER BY legacy_member_id"
                 ).fetchall()
                 self.assertEqual(len(agents), 6)
-                provider_ids = {row[0] for row in connection.execute("SELECT provider_id FROM providers")}
+                provider_ids = {
+                    row[0] for row in connection.execute("SELECT provider_id FROM providers")
+                }
                 self.assertNotIn("external", provider_ids)
                 self.assertEqual(
                     tuple(agents[0]),
@@ -96,7 +103,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 self.assertEqual(
                     connection.execute(
                         "SELECT version,name FROM hub_schema_migrations"
-                    ).fetchall()[0]["name"],
+                    ).fetchone()["name"],
                     "additive_agent_registry",
                 )
             finally:
