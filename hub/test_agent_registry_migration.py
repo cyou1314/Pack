@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Regression tests for the additive Agent Registry schema migration."""
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -110,7 +111,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
                     1,
                 )
-                with self.assertRaises(Exception):
+                with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
                         "INSERT INTO agents(agent_id,provider_id,display_name,status,created_at,updated_at) "
                         "VALUES('invalid','missing-provider','Invalid','pending',1,1)"
