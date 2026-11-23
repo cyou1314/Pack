@@ -687,21 +687,15 @@ def _rollback_failed_install(agent_plists, owned_paths, agents_dir, agents_preex
     for label in labels.values():
         target = f"gui/{uid}/{label}"
         try:
-            result = ctl("bootout", target, check=False)
-            if result.returncode != 0:
-                # A failed bootout is safe only when launchctl confirms the
-                # service is no longer loaded. Unknown state means preserve
-                # every file the process may still be using.
-                status = ctl("print", target, check=False)
-                if status.returncode == 0:
-                    services_not_stopped.append(label)
-        except Exception:
-            try:
-                status = ctl("print", target, check=False)
-                if status.returncode == 0:
-                    services_not_stopped.append(label)
-            except Exception:
+            ctl("bootout", target, check=False)
+            # Verify after bootout even when launchctl reports success: do not
+            # unlink files until the job is no longer loaded. A query failure
+            # is an unknown state and therefore keeps all paths intact.
+            status = ctl("print", target, check=False)
+            if status.returncode == 0:
                 services_not_stopped.append(label)
+        except Exception:
+            services_not_stopped.append(label)
 
     if services_not_stopped:
         print(
