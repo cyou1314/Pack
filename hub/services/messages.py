@@ -299,3 +299,102 @@ def send_inbox_message(context, member, body: str, reply_to_id: int = 0,
         return {"sent": True, "message_id": result["message_id"]}
     finally:
         conn.close()
+
+
+def pull_inbox_messages(context, member, since_id: int = -1,
+                        room: str = "", *, user_agent,
+                        resolve_room, read_cursor, inbox_msg_sql,
+                        inbox_items, window_seconds: int,
+                        pull_limit: int, checkin_audit_gap: int) -> dict:
+    """Pull an inbox page and check in without advancing its read cursor.
+
+    Authentication, agent-version gate and room policy remain at the Hub
+    entrypoint. Heartbeat and audit are committed together; a failed pull
+    must not leave an unaccounted check-in.
+    """
+    room_id, room_name = resolve_room(member, room)
+    now = context.clock()
+    conn = context.connect()
+    try:
+        conn.execute(
+            "UPDATE members SET last_heartbeat=? WHERE id=?",
+            (now, member["id"]),
+        )
+        external = (member.get("kind") or "") == "external"
+        floor = (member["joined_msg_id"] or 0) if external else 0
+        cursor = read_cursor(conn, member["id"], room_id, floor)
+        if since_id is not None and int(since_id) >= 0:
+            effective_since = max(int(since_id), floor)
+        else:
+            effective_since = max(cursor, floor)
+        rows = conn.execute(
+            inbox_msg_sql + " WHERE m.room_id=? AND m.id>? AND m.created_at>=?"
+            " ORDER BY m.id ASC LIMIT ?",
+            (room_id, effective_since, now - window_seconds, pull_limit + 1),
+        ).fetchall()
+        has_more = len(rows) > pull_limit
+        rows = rows[:pull_limit]
+        all_names = [
+            entry["name"] for entry in
+            conn.execute("SELECT name FROM members").fetchall()
+        ]
+        items = inbox_items(conn, rows, member, all_names)
+        previous = conn.execute(
+            "SELECT MAX(ts) AS t FROM audit WHERE actor=?"
+            " AND action='inbox_pull'",
+            (member["name"],),
+        ).fetchone()["t"]
+        context.audit(
+            conn, member["name"], "inbox_pull",
+            f"room={room_name} n={len(items)} ua={user_agent or '-'}",
+        )
+        if previous and now - previous < checkin_audit_gap:
+            context.audit(
+                conn, member["name"], "inbox_checkin_frequent",
+                f"room={room_name} gap={int(now - previous)}s",
+            )
+        conn.commit()
+        return {
+            "room": room_name, "cursor": cursor,
+            "messages": items, "has_more": has_more,
+        }
+    finally:
+        conn.close()
+
+
+def mark_inbox_read(context, member, up_to_id: int = 0,
+                    room: str = "", *, resolve_room, read_cursor) -> dict:
+    """Advance the per-member, per-room cursor without cross-process rewind.
+
+    BEGIN IMMEDIATE acquires SQLite's writer reservation before the read
+    and UPSERT, so competing Hub processes cannot overwrite a newer cursor.
+    The database MAX guard is a second line of defense against regression.
+    """
+    room_id, room_name = resolve_room(member, room)
+    conn = context.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        external = (member.get("kind") or "") == "external"
+        floor = (member["joined_msg_id"] or 0) if external else 0
+        cursor = read_cursor(conn, member["id"], room_id, floor)
+        room_max = conn.execute(
+            "SELECT COALESCE(MAX(id),0) AS m FROM messages WHERE room_id=?",
+            (room_id,),
+        ).fetchone()["m"]
+        target = int(up_to_id) if up_to_id else room_max
+        new_cursor = max(cursor, min(target, room_max))
+        conn.execute(
+            "INSERT INTO member_read_cursors"
+            "(member_id,room_id,cursor_id) VALUES(?,?,?)"
+            " ON CONFLICT(member_id,room_id) DO UPDATE SET"
+            " cursor_id=MAX(member_read_cursors.cursor_id,excluded.cursor_id)",
+            (member["id"], room_id, new_cursor),
+        )
+        context.audit(
+            conn, member["name"], "inbox_mark_read",
+            f"room={room_name} cursor={new_cursor}",
+        )
+        conn.commit()
+        return {"room": room_name, "cursor": new_cursor}
+    finally:
+        conn.close()

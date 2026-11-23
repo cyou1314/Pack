@@ -1489,6 +1489,8 @@ def build_server(context: HubContext | None = None):
         from .services.rooms import edit_message as _edit_message
         from .services.messages import post_message as _post_message
         from .services.messages import send_inbox_message as _send_inbox_message
+        from .services.messages import pull_inbox_messages as _pull_inbox_messages
+        from .services.messages import mark_inbox_read as _mark_inbox_read
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1501,6 +1503,8 @@ def build_server(context: HubContext | None = None):
         from services.rooms import edit_message as _edit_message
         from services.messages import post_message as _post_message
         from services.messages import send_inbox_message as _send_inbox_message
+        from services.messages import pull_inbox_messages as _pull_inbox_messages
+        from services.messages import mark_inbox_read as _mark_inbox_read
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2185,41 +2189,17 @@ def build_server(context: HubContext | None = None):
         me = authenticate()
         require(me)
         ua = _agent_version_gate()
-        room_id, room_name = _inbox_resolve_room(me, room)
-        now = context.clock()
-        conn = db()
-        try:
-            conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?",
-                         (now, me["id"]))
-            floor = (me["joined_msg_id"] or 0) if _is_external(me) else 0
-            cursor = _read_cursor(conn, me["id"], room_id, floor)
-            if since_id is not None and int(since_id) >= 0:
-                eff = max(int(since_id), floor)
-            else:
-                eff = max(cursor, floor)
-            rows = conn.execute(
-                _INBOX_MSG_SQL + " WHERE m.room_id=? AND m.id>? AND m.created_at>=?"
-                " ORDER BY m.id ASC LIMIT ?",
-                (room_id, eff, now - INBOX_WINDOW_SECONDS,
-                 INBOX_PULL_LIMIT + 1)).fetchall()
-            has_more = len(rows) > INBOX_PULL_LIMIT
-            rows = rows[:INBOX_PULL_LIMIT]
-            all_names = [r["name"] for r in
-                         conn.execute("SELECT name FROM members").fetchall()]
-            items = _inbox_items(conn, rows, me, all_names)
-            prev = conn.execute(
-                "SELECT MAX(ts) AS t FROM audit WHERE actor=?"
-                " AND action='inbox_pull'", (me["name"],)).fetchone()["t"]
-            audit(conn, me["name"], "inbox_pull",
-                  f"room={room_name} n={len(items)} ua={ua or '-'}")
-            if prev and now - prev < INBOX_CHECKIN_AUDIT_GAP:
-                audit(conn, me["name"], "inbox_checkin_frequent",
-                      f"room={room_name} gap={int(now - prev)}s")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"room": room_name, "cursor": cursor,
-                "messages": items, "has_more": has_more}
+        return _pull_inbox_messages(
+            context, me, since_id, room,
+            user_agent=ua,
+            resolve_room=_inbox_resolve_room,
+            read_cursor=_read_cursor,
+            inbox_msg_sql=_INBOX_MSG_SQL,
+            inbox_items=_inbox_items,
+            window_seconds=INBOX_WINDOW_SECONDS,
+            pull_limit=INBOX_PULL_LIMIT,
+            checkin_audit_gap=INBOX_CHECKIN_AUDIT_GAP,
+        )
 
     @mcp.tool
     def inbox_mark_read(up_to_id: int = 0, room: str = "") -> dict:
@@ -2229,26 +2209,11 @@ def build_server(context: HubContext | None = None):
         me = authenticate()
         require(me)
         _agent_version_gate()
-        room_id, room_name = _inbox_resolve_room(me, room)
-        conn = db()
-        try:
-            floor = (me["joined_msg_id"] or 0) if _is_external(me) else 0
-            cursor = _read_cursor(conn, me["id"], room_id, floor)
-            room_max = conn.execute(
-                "SELECT COALESCE(MAX(id),0) AS m FROM messages WHERE room_id=?",
-                (room_id,)).fetchone()["m"]
-            target = int(up_to_id) if up_to_id else room_max
-            new_cursor = max(cursor, min(target, room_max))
-            conn.execute(
-                "INSERT OR REPLACE INTO member_read_cursors"
-                "(member_id,room_id,cursor_id) VALUES(?,?,?)",
-                (me["id"], room_id, new_cursor))
-            audit(conn, me["name"], "inbox_mark_read",
-                  f"room={room_name} cursor={new_cursor}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"room": room_name, "cursor": new_cursor}
+        return _mark_inbox_read(
+            context, me, up_to_id, room,
+            resolve_room=_inbox_resolve_room,
+            read_cursor=_read_cursor,
+        )
 
     @mcp.tool
     def inbox_send(body: str, reply_to_id: int = 0, attachment_ids: str = "",

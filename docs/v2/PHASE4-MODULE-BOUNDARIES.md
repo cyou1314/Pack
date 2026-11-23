@@ -313,3 +313,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - `message_op_keys` 唯一键继续是 (member_id, op_key)。发送前同事务查找已持久化 message_id，存在即原样返回 deduplicated；历史 message_id=NULL 行会在同事务填回，绝不覆盖已有非空回执。其他成员同名 key 不冲突；无 key 时保持普通发消息行为。
 - 保留 `inbox_send` 原 FastMCP 接口、身份权限、版本门、跨房回复水位、防盲回默认拦截和 ignore_new；底层仍复用 `room_post` 的附件、kind、频控逻辑，不更改表结构或 Mac 安装路径。
 - 新增 `hub/test_inbox_atomic.py` 十项隔离数据库回归：断线重试同 key、空 key 兼容、op_key/审计故障整体回滚、盲回拦截后允许强发、跨房/缺失引用、external 入群水位、跨成员 key 作用域、历史空回执修复、同 key 并发单次写入。加入 Hub CI；整套结果以 Actions 为准。
+
+
+### Inbox 拉取与已读游标服务迁移（2026-11-23）
+
+- `inbox_pull`、`inbox_mark_read` 的业务逻辑提取至 `hub/services/messages.py`，原 FastMCP 工具签名、身份认证、版本门、房间绑定与审计格式保持不变。
+- 拉取仍使用近 10 天时间窗口、100 条分页与 external 入群水位；`inbox_pull` 心跳与审计保持同一 SQLite 事务，读取不推进已读游标，显式 since_id 可回看历史。
+- 标已读以 SQLite `BEGIN IMMEDIATE` 串行化「读取现有游标→房间最大 ID →写入」，UPSERT 再以 `MAX` 保证同一成员/房间游标只进不退，避免多个 Hub 进程的竞态覆盖；只允许标到本房已存在的最大消息 ID。
+- 新增 `hub/test_inbox_read.py` 八项隔离回归，涵盖心跳/内容/审计、回看与频繁拉取、external 水位、时间窗口分页、单调标已读、审计失败回滚和双线程竞争。纳入 CI 和复制运行时 FastMCP 工具注册断言。
+- 本批未改 SQLite schema、75 工具契约、Mac 安装/服务/数据路径；真实 Mac 验收继续后置。
