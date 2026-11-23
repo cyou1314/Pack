@@ -196,12 +196,22 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 
 - M1a PR #21 已 squash 合入 `codex/pack-v2-foundation-20261121`，提交 `51128b954764b3e9e59d0e00eb802d24fea2684e`。
 - M1a PR 的 Hub regression、SQLite/MCP snapshots、staging regression、Runtime tests、macOS installer/Swift release build/unit tests/app bundle 验证全部通过；Codex 最新代码审查无发现。
-- M1b PR #22/#23 已合入：手动只读 Shadow CLI 不加 MCP 工具、不接入 member_list、不启用新读路径、不自动修复。PR #24 补齐 quick_check / foreign_key_check；M1c API 仅完成评估草案，等待真实数据库 shadow report 通过后再实施。
+- M1b PR #22/#23 已合入：手动只读 Shadow CLI 不加 MCP 工具、不接入 member_list、不启用新读路径、不自动修复。PR #24 已补齐 quick_check / foreign_key_check；M1c API 仍等待真实数据库备份副本 shadow report 通过后再实施。
 
 
 ### 2026-11-23 分支集成状态
 
-- v2 Foundation 当前位于 codex/pack-v2-foundation-20261121，最新 M1b hardening 合并提交为 6ad5f14397f10a52c7d8848ec2c13bf5d1b62fd9。
-- Umbrella PR #6 仍是指向 main 的 draft，339 个文件变更；GitHub 当前报告 mergeable_state=dirty。因此 Foundation 上已完成的整改尚未全部进入 main，禁止把 PR #6 当作可直接合并的发布包。
-- 后续需单独做 main 基线差异/冲突审计和分批集成；在该审计完成前继续只在 Foundation 分支迭代，不部署 Mac。
+- v2 Foundation 当前位于 codex/pack-v2-foundation-20261121，最新已合并 mainline reconciliation 端口为 PR #28（App bundle 原子 no-clobber 发布）；PR #25 WAL init-only、PR #26 installer test path isolation、PR #27 基线审计均已合并。
+- Foundation 相对 main 当前分叉为 ahead 18 / behind 9；Umbrella PR #6 仍是 draft，343 个文件变更（32,583 additions / 6,823 deletions），GitHub 报告 mergeable_state=dirty。禁止将 PR #6 作为可直接合并的发布包。
+- staging56 专项回归正在 PR #29 中恢复；task_id 结构化审计和 query indexes 仍需独立 migration 与 service-aware 设计。继续只在 Foundation 分支迭代，不部署 Mac。
 - 注意：M1a 由 hub.init() 在更新后首次 Hub 初始化时自动应用；DMG 安装器本身不执行迁移。真实 Mac 发布前必须完成数据库备份、恢复演练和 shadow preflight。
+
+
+### 2026-11-23 mainline reconciliation 端口更新
+
+- PR #25 已合入：WAL 仅在 Hub init 配置；普通请求连接不再反复执行 journal_mode 转换。
+- PR #26 已合入：PACK_INSTALL_TEST_ROOT 下的 LaunchAgents 写入被隔离到测试根目录。
+- PR #27 已合入：main / Foundation 基线差异、重叠文件和分批移植队列已审计。
+- PR #28 已合入：App bundle 使用临时构建与原子 no-clobber 发布，保留 release 构建、Info.plist lint 和严格 codesign 验证。
+- PR #29 正在恢复 staging56 专项 CI；未通过前不视为该回归已恢复。
+- 真实 Mac 设备当前离线，M1c 仍未对用户数据库执行任何读取或迁移。
