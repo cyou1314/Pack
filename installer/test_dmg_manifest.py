@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Static packaging-contract tests; the actual DMG build remains a macOS gate."""
+import os
 import plistlib
 import unittest
 from pathlib import Path
@@ -67,6 +68,8 @@ class DmgManifestTests(unittest.TestCase):
         self.assertIn("upgrade.command", source)
         self.assertIn('manager.py" upgrade', command)
         self.assertIn("已有安装升级", readme)
+        self.assertTrue(os.access(ROOT / "installer" / "upgrade.command", os.X_OK))
+        self.assertTrue(os.access(ROOT / "installer" / "build-dmg.sh", os.X_OK))
 
 
 if __name__ == "__main__":
