@@ -400,3 +400,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 保持正文/简介长度限制、空简介保留旧描述、全量版本留存、成员仅能读取 enabled 指派、成员侧不存在/未指派统一 forbidden、dispatcher 目录 assignees 字段、未指派即 unassign 不造墓碑不审计、移除成员拒绝指派等语义。
 - 新增 `hub/test_skills_service.py` 12 项隔离测试，覆盖发布版本与描述、输入限额、dispatcher/member 目录差异、读取授权、assign/unassign 幂等与审计、回滚、审计失败回滚和独立 HubContext 并发版本分配。接入 CI 与安装包 smoke。
 - 无新增 MCP 工具或 SQLite 表；现有 75-tool / 24-table 契约不变。
+
+### Desktop 单实例锁服务化（2026-11-23）
+
+- 将 `desktop_acquire/desktop_release/desktop_status` 三个工具迁入 `hub/services/desktop.py`；Hub 层继续认证，原任务持有人/claim_token 检查通过 `_holder` 注入，锁快照复用 `_desktop_snapshot`。
+- acquire/release 在读取全局桌面锁状态前使用 `BEGIN IMMEDIATE`，使不同 Hub 进程共享 SQLite 时也只能有一个 GUI 任务拿到锁；保留同任务幂等重入、busy JSON、成员按 claim_token 放锁、dispatcher 强制释放与 idle no-op 行为。
+- acquire/release 的状态变更与审计同事务，审计失败回滚锁状态。新增 `hub/test_desktop_service.py` 10 项隔离测试，覆盖角色、claim_token、busy/idempotent、成员释放、dispatcher force release、status、审计回滚和独立 HubContext 并发竞争。接入 CI 与安装包 smoke。
+- 任务交活/阻塞/取消/转交/租约回收时使用的 `_desktop_release_for_task` 仍由调用方事务复用，本批不改变这些任务生命周期逻辑。

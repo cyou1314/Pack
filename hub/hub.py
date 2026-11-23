@@ -1511,6 +1511,9 @@ def build_server(context: HubContext | None = None):
         from .services.skills import read_skill as _read_skill
         from .services.skills import set_skill_assignment as _set_skill_assignment
         from .services.skills import rollback_skill as _rollback_skill
+        from .services.desktop import acquire_desktop as _acquire_desktop
+        from .services.desktop import release_desktop as _release_desktop
+        from .services.desktop import desktop_status as _desktop_status_service
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1545,6 +1548,9 @@ def build_server(context: HubContext | None = None):
         from services.skills import read_skill as _read_skill
         from services.skills import set_skill_assignment as _set_skill_assignment
         from services.skills import rollback_skill as _rollback_skill
+        from services.desktop import acquire_desktop as _acquire_desktop
+        from services.desktop import release_desktop as _release_desktop
+        from services.desktop import desktop_status as _desktop_status_service
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -3060,33 +3066,11 @@ def build_server(context: HubContext | None = None):
         自动释放，不会死锁）。"""
         me = authenticate()
         require(me)
-        if me["role"] != "member":
-            raise ValueError("desktop lock is for members holding a task")
-        conn = db()
-        try:
-            with _lock:
-                _holder(conn, me, task_id, claim_token)
-                snap = _desktop_snapshot(conn)
-                if snap["held"]:
-                    if snap["task_id"] == task_id and snap["holder"] == me["name"]:
-                        return {"held": True, "task_id": task_id,
-                                "acquired_at": snap["since"], "idempotent": True}
-                    raise ValueError(json.dumps(
-                        {"error": "desktop_busy", "holder": snap["holder"],
-                         "task_id": snap["task_id"], "since": snap["since"]},
-                        ensure_ascii=False))
-                now = _now()
-                conn.execute(
-                    "INSERT INTO desktop_lock(id, holder, task_id, acquired_at) "
-                    "VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET "
-                    "holder=excluded.holder, task_id=excluded.task_id, "
-                    "acquired_at=excluded.acquired_at",
-                    (me["name"], task_id, now))
-                audit(conn, me["name"], "desktop_acquire", f"task {task_id}")
-                conn.commit()
-                return {"held": True, "task_id": task_id, "acquired_at": now}
-        finally:
-            conn.close()
+        return _acquire_desktop(
+            context, me, task_id, claim_token,
+            current_holder=_holder,
+            snapshot=_desktop_snapshot,
+        )
 
     @mcp.tool
     def desktop_release(task_id: int = 0, claim_token: str = "") -> dict:
@@ -3096,32 +3080,11 @@ def build_server(context: HubContext | None = None):
         审计）。锁本来空闲时返回 {held: False, released: False}。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            with _lock:
-                snap = _desktop_snapshot(conn)
-                if not snap["held"]:
-                    return {"held": False, "released": False}
-                if me["role"] == "dispatcher":
-                    conn.execute(
-                        "UPDATE desktop_lock SET holder=NULL, task_id=NULL, "
-                        "acquired_at=NULL WHERE id=1")
-                    audit(conn, me["name"], "desktop_force_release",
-                          f"task {snap['task_id']} holder={snap['holder']}")
-                    conn.commit()
-                    return {"held": False, "released": True,
-                            "was_task_id": snap["task_id"]}
-                if not task_id or snap["task_id"] != task_id:
-                    raise ValueError("desktop lock is held by another task")
-                _holder(conn, me, task_id, claim_token)
-                conn.execute(
-                    "UPDATE desktop_lock SET holder=NULL, task_id=NULL, "
-                    "acquired_at=NULL WHERE id=1")
-                audit(conn, me["name"], "desktop_release", f"task {task_id}")
-                conn.commit()
-                return {"held": False, "released": True, "was_task_id": task_id}
-        finally:
-            conn.close()
+        return _release_desktop(
+            context, me, task_id, claim_token,
+            current_holder=_holder,
+            snapshot=_desktop_snapshot,
+        )
 
     @mcp.tool
     def desktop_status() -> dict:
@@ -3129,11 +3092,9 @@ def build_server(context: HubContext | None = None):
         任何已认证身份可查（群里协调谁在用桌面是公共信息）。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            return _desktop_snapshot(conn)
-        finally:
-            conn.close()
+        return _desktop_status_service(
+            context, me, snapshot=_desktop_snapshot,
+        )
 
     @mcp.tool
     def heartbeat() -> dict:

@@ -21,7 +21,7 @@ class HubPackageLayoutTests(unittest.TestCase):
                 "import asyncio,inspect,hub; tools=hub.build_server().list_tools(); "
                 "tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; "
                 "names={tool.name for tool in tools}; "
-                "assert {'room_list','member_list','task_audit','task_transfers_list','task_list','task_create','task_set_urgent','task_schedule','task_claim','task_update','task_complete','task_block','task_review','task_cancel','task_transfer','task_accept_transfer','task_release','task_clear_backoff','run_start','run_finish','message_edit','message_delete','room_post','inbox_send','inbox_pull','inbox_mark_read','attachment_get','attachment_list','attachment_put','rule_list','rule_upsert','rule_delete','egress_rule_list','egress_rule_upsert','egress_rule_delete','review_file','memory_read','memory_versions','memory_write','memory_rollback','skill_publish','skill_list','skill_read','skill_assign','skill_unassign','skill_rollback'}.issubset(names), names"
+                "assert {'room_list','member_list','task_audit','task_transfers_list','task_list','task_create','task_set_urgent','task_schedule','task_claim','task_update','task_complete','task_block','task_review','task_cancel','task_transfer','task_accept_transfer','task_release','task_clear_backoff','run_start','run_finish','message_edit','message_delete','room_post','inbox_send','inbox_pull','inbox_mark_read','attachment_get','attachment_list','attachment_put','rule_list','rule_upsert','rule_delete','egress_rule_list','egress_rule_upsert','egress_rule_delete','review_file','memory_read','memory_versions','memory_write','memory_rollback','skill_publish','skill_list','skill_read','skill_assign','skill_unassign','skill_rollback','desktop_acquire','desktop_release','desktop_status'}.issubset(names), names"
             )
             result = subprocess.run(
                 [sys.executable, "-c", smoke],
@@ -43,6 +43,7 @@ class HubPackageLayoutTests(unittest.TestCase):
             self.assertTrue((root / "services" / "reviews.py").is_file())
             self.assertTrue((root / "services" / "memory.py").is_file())
             self.assertTrue((root / "services" / "skills.py").is_file())
+            self.assertTrue((root / "services" / "desktop.py").is_file())
 
     def test_local_and_dmg_installers_copy_both_hub_packages(self):
         local = (ROOT / "local" / "install-local.sh").read_text(encoding="utf-8")
