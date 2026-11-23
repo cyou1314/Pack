@@ -402,10 +402,35 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual(len(list(f.app_path.parent.glob(".Pack.app.previous-*"))), 1)
         self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
 
+    def test_restore_refuses_a_backup_that_fails_reverification(self):
+        f = self.fixture
+        backup_root = f.hub / "backups" / "upgrade-reverify"
+        database = backup_root / "database"
+        state = backup_root / "state"
+        old_code = backup_root / "code" / "hub"
+        database.mkdir(parents=True)
+        state.mkdir()
+        old_code.mkdir(parents=True)
+        write_text(database / "pack-test.db", "snapshot")
+        write_text(old_code / "verify-backup.sh", "#!/bin/bash\nexit 0\n")
+
+        def fail_verification(args, **kwargs):
+            self.assertEqual(Path(args[1]).name, "verify-backup.sh")
+            raise subprocess.CalledProcessError(1, args)
+
+        live_db = f.hub / "pack.db"
+        with patch.object(manager.subprocess, "run", side_effect=fail_verification):
+            with self.assertRaises(subprocess.CalledProcessError):
+                manager.restore_database_snapshot(backup_root)
+
+        self.assertEqual(live_db.read_text(encoding="utf-8"), "original-db")
+        self.assertFalse(list(state.glob("pack.db.failed-*")))
+        self.assertFalse(list(f.hub.glob(".pack.db.rollback-*")))
+
     def test_failed_restart_restores_previous_program_and_app(self):
         f = self.fixture
         ctl, calls, loaded = f.fake_ctl(fail_watch_once=True, mutate_db_on_hub_bootstrap=True)
-        run, _ = f.fake_subprocess_run()
+        run, subprocess_calls = f.fake_subprocess_run()
         with (
             patch.object(manager, "ctl", side_effect=ctl),
             patch.object(manager.subprocess, "run", side_effect=run),
@@ -431,6 +456,10 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertTrue(any(list(state.glob("pack.db-shm.failed-*")) for state in rollback_states))
         self.assertEqual(loaded, set(f.labels.values()))
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
+        self.assertEqual(
+            sum(Path(call[1]).name == "verify-backup.sh" for call in subprocess_calls if call[0] == "/bin/bash"),
+            2,
+        )
         self.assertTrue(any(call[0] == "bootout" for call in calls))
 
 

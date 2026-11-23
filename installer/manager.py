@@ -393,6 +393,22 @@ def restore_database_snapshot(backup_root):
     snapshot = snapshots[0]
     require_regular_file(snapshot, "verified upgrade database snapshot")
 
+    stamp = snapshot.name[len("pack-"):-len(".db")]
+    verifier = pathlib.Path(backup_root) / "code" / "hub" / "verify-backup.sh"
+    require_regular_file(verifier, "backed-up database verification script")
+    verify_env = {
+        **os.environ,
+        "PACK_HUB_DIR": str(hub),
+        "PACK_BACKUP_DIR": str(database_dir),
+        "PACK_BACKUP_KEEP": "1",
+    }
+    subprocess.run(
+        ["/bin/bash", str(verifier), stamp],
+        cwd=str(hub),
+        env=verify_env,
+        check=True,
+    )
+
     state_root = pathlib.Path(backup_root) / "state"
     require_real_directory(state_root, "upgrade rollback state directory")
     live_db = hub / "pack.db"
