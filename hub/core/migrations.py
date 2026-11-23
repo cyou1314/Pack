@@ -6,7 +6,9 @@ checksum so repeated or concurrent initialization is safe.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -99,19 +101,38 @@ _REGISTRY_V1 = Migration(
 
 
 def _checksum(migration: Migration) -> str:
-    payload = json.dumps(
-        {"version": migration.version, "name": migration.name,
-         "statements": migration.statements},
-        ensure_ascii=False, separators=(",", ":"),
+    payload: dict[str, object] = {
+        "version": migration.version,
+        "name": migration.name,
+        "statements": migration.statements,
+    }
+    if migration.version == 1:
+        # The v1 migration includes a data backfill, not just DDL. Cover the
+        # normalization table and normalized AST of every helper that changes
+        # backfill behavior, so edits cannot silently reuse an old ledger hash.
+        payload["data_migration"] = {
+            "provider_labels": _PROVIDER_LABELS,
+            "provider_for_ast": ast.dump(
+                ast.parse(inspect.getsource(_provider_for)),
+                include_attributes=False,
+            ),
+            "apply_registry_v1_ast": ast.dump(
+                ast.parse(inspect.getsource(_apply_registry_v1)),
+                include_attributes=False,
+            ),
+        }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _provider_for(label: str | None, kind: str | None) -> tuple[str, str]:
-    if (kind or "").strip().lower() == "external":
-        return _PROVIDER_LABELS["external"]
+def _provider_for(label: str | None) -> tuple[str, str]:
+    """Resolve vendor identity independently from the connection mechanism."""
     raw = (label or "").strip()
-    return _PROVIDER_LABELS.get(raw.casefold(), _PROVIDER_LABELS.get(raw, ("legacy", "Legacy")))
+    return _PROVIDER_LABELS.get(
+        raw.casefold(), _PROVIDER_LABELS.get(raw, ("legacy", "Legacy"))
+    )
 
 
 def _apply_registry_v1(connection: sqlite3.Connection, now: float) -> None:
@@ -151,7 +172,7 @@ def _apply_registry_v1(connection: sqlite3.Connection, now: float) -> None:
     ).fetchall()
 
     for row in rows:
-        provider_id, _ = _provider_for(row["provider"], row["kind"])
+        provider_id, _ = _provider_for(row["provider"])
         external = (row["kind"] or "").strip().lower() == "external"
         removed = row["removed_at"] is not None
         status = "removed" if removed else ("active" if external else "legacy_unclassified")
