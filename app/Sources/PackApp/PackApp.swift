@@ -8,6 +8,16 @@ struct RoomItem: Identifiable {
     let lastMessageId: Int
 }
 
+import SwiftUI
+import Security
+import PackCore
+
+struct RoomItem: Identifiable {
+    let id: Int
+    let name: String
+    let lastMessageId: Int
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var messages: [RoomMessage] = []

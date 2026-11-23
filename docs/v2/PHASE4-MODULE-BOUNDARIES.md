@@ -457,3 +457,9 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 将原 `Views.swift`（约 1,618 行）按声明边界拆为 `Components.swift`、`Views.swift`（主窗口/侧栏）、`ChatFeatureViews.swift`、`TaskFeatureViews.swift`、`SettingsFeatureViews.swift`、`TaskDetailViews.swift`。
 - 仅移动现有 SwiftUI 声明与 imports；为跨文件复用移除顶层 view/component 的 `private`（仍为 PackApp module 内部可见），不改属性、body、状态流、导航、布局或事件逻辑。
 - SwiftPM target 递归包含 `Sources/PackApp` 下的 Swift 文件，不新增 target/dependency；本批以 Swift build/test 与 app bundle 检查作为验收。
+
+### AppState 与 App 入口分离（2026-11-23）
+
+- 将 `@MainActor AppState`（约 1,340 行）从 `PackApp.swift` 移入独立 `AppState.swift`；`PackApp.swift` 仅保留 `RoomItem` 与 `@main PackApp` 启动入口。
+- 不改变 `AppState` 属性、方法、actor 隔离、依赖初始化、Keychain、HubClient 调用或状态发布；两个文件沿用原 imports，保持同一 PackApp target。
+- 本批仅做声明边界拆分，为后续按 Connection/Rooms/Tasks/Members/Approvals/Settings 提取 Store 或 extension 建立入口；不提前引入新的状态管理框架。
