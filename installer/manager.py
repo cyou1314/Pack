@@ -572,25 +572,43 @@ def upgrade():
             ) from exc
         rollback_errors = []
         if services_stopped:
+            stop_errors = []
             for label in labels.values():
                 try:
                     ctl("bootout", f"gui/{uid}/{label}", check=False)
                 except Exception as stop_error:
-                    rollback_errors.append(f"stop {label}: {stop_error}")
-            if app_previous is None and app_swap_state:
-                app_previous = app_swap_state[-1]
-            rollback_errors.extend(rollback_app_bundle(app_previous))
-            rollback_errors.extend(rollback_program_paths(swaps))
-            if backup_root is not None and new_services_started:
+                    stop_errors.append(f"stop {label}: {stop_error}")
+
+            still_loaded = []
+            for label in labels.values():
                 try:
-                    restore_database_snapshot(backup_root)
-                except Exception as database_error:
-                    rollback_errors.append(f"restore database snapshot: {database_error}")
-            if not rollback_errors:
-                try:
-                    bootstrap_upgrade_agents()
-                except Exception as restart_error:
-                    rollback_errors.append(f"restart previous services: {restart_error}")
+                    if ctl("print", f"gui/{uid}/{label}", check=False).returncode == 0:
+                        still_loaded.append(label)
+                except Exception as verify_error:
+                    still_loaded.append(label)
+                    stop_errors.append(f"verify stopped {label}: {verify_error}")
+
+            if still_loaded:
+                # Never swap files or restore SQLite while a Pack writer may
+                # still be running. Preserve the current code, backup and
+                # previous-version snapshots for manual recovery.
+                rollback_errors.extend(stop_errors)
+                rollback_errors.extend(f"Pack LaunchAgent still loaded: {label}" for label in still_loaded)
+            else:
+                if app_previous is None and app_swap_state:
+                    app_previous = app_swap_state[-1]
+                rollback_errors.extend(rollback_app_bundle(app_previous))
+                rollback_errors.extend(rollback_program_paths(swaps))
+                if backup_root is not None and new_services_started:
+                    try:
+                        restore_database_snapshot(backup_root)
+                    except Exception as database_error:
+                        rollback_errors.append(f"restore database snapshot: {database_error}")
+                if not rollback_errors:
+                    try:
+                        bootstrap_upgrade_agents()
+                    except Exception as restart_error:
+                        rollback_errors.append(f"restart previous services: {restart_error}")
         if app_stage is not None:
             try:
                 remove_path(app_stage)

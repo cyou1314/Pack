@@ -143,10 +143,10 @@ class UpgradeFixture:
         }.items():
             self.patches.enter_context(patch.object(manager, name, value))
 
-    def fake_ctl(self, fail_watch_once=False, mutate_db_on_hub_bootstrap=False, mutate_db_on_first_bootout=False):
+    def fake_ctl(self, fail_watch_once=False, mutate_db_on_hub_bootstrap=False, mutate_db_on_first_bootout=False, keep_hub_loaded_on_rollback=False):
         loaded = set(self.labels.values())
         calls = []
-        state = {"fail_watch_once": fail_watch_once, "mutate_db": mutate_db_on_hub_bootstrap, "mutate_on_bootout": mutate_db_on_first_bootout}
+        state = {"fail_watch_once": fail_watch_once, "mutate_db": mutate_db_on_hub_bootstrap, "mutate_on_bootout": mutate_db_on_first_bootout, "bootout_counts": {}}
 
         def ctl(*args, check=True):
             args = tuple(str(value) for value in args)
@@ -155,10 +155,14 @@ class UpgradeFixture:
                 label = args[1].split("/")[-1]
                 return SimpleNamespace(returncode=0 if label in loaded else 1)
             if args[0] == "bootout":
+                label = args[1].split("/")[-1]
+                state["bootout_counts"][label] = state["bootout_counts"].get(label, 0) + 1
                 if state["mutate_on_bootout"]:
                     write_text(self.hub / "pack.db", "written-before-backup")
                     state["mutate_on_bootout"] = False
-                loaded.discard(args[1].split("/")[-1])
+                if keep_hub_loaded_on_rollback and label.endswith("-hub") and state["bootout_counts"][label] > 1:
+                    return SimpleNamespace(returncode=1)
+                loaded.discard(label)
                 return SimpleNamespace(returncode=0)
             if args[0] == "bootstrap":
                 label = Path(args[2]).stem
@@ -426,6 +430,32 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual(live_db.read_text(encoding="utf-8"), "original-db")
         self.assertFalse(list(state.glob("pack.db.failed-*")))
         self.assertFalse(list(f.hub.glob(".pack.db.rollback-*")))
+
+    def test_rollback_refuses_to_swap_files_while_new_hub_is_still_loaded(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl(
+            fail_watch_once=True,
+            mutate_db_on_hub_bootstrap=True,
+            keep_hub_loaded_on_rollback=True,
+        )
+        run, _ = f.fake_subprocess_run()
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_hub_ready", return_value=None),
+            patch.object(manager, "wait_for_port", return_value=None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "rollback needs attention"):
+                manager.upgrade()
+
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "new-hub")
+        self.assertTrue((f.app_path / "new-app.txt").is_file())
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "mutated-by-new-hub")
+        self.assertIn(f.labels["hub"], loaded)
+        self.assertEqual(sum(call[0] == "bootstrap" for call in calls), 2)
+        self.assertTrue(list(f.base.glob(".pack-upgrade-*/previous/hub/hub.py")))
+        self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
 
     def test_reporting_failure_after_commit_does_not_roll_back_healthy_upgrade(self):
         f = self.fixture
