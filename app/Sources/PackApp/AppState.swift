@@ -166,6 +166,7 @@ final class AppState: ObservableObject {
     var discoveryInProgress = false
     var clientGeneration = 0
     var consecutiveRefreshFailures = 0
+    var messageRefreshState = MessageRefreshState()
     let hubDiscoveryInterval: TimeInterval = 60
     let hubDiscoveryTimeout: TimeInterval = 5
     let taskListPageSize = 100
