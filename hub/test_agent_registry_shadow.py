@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Tests for the read-only Agent Registry shadow report."""
+import hashlib
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from core.migrations import apply_migrations
 from core.storage import connect
-from services.agent_registry_shadow import build_shadow_report
+from services.agent_registry_shadow import build_shadow_report, main
 
 
 class AgentRegistryShadowTests(unittest.TestCase):
@@ -55,6 +58,36 @@ class AgentRegistryShadowTests(unittest.TestCase):
                 self.assertEqual(connection.total_changes, before_changes)
             finally:
                 connection.close()
+
+
+    def test_cli_opens_database_read_only_and_omits_sensitive_member_fields(self):
+        with tempfile.TemporaryDirectory(prefix="pack-agent-shadow-cli-") as directory:
+            connection = self._database(directory)
+            path = Path(directory) / "shadow.db"
+            connection.execute(
+                "ALTER TABLE members ADD COLUMN token_hash TEXT"
+            )
+            connection.execute(
+                "ALTER TABLE members ADD COLUMN profile TEXT"
+            )
+            connection.execute(
+                "UPDATE members SET token_hash=?, profile=? WHERE id=1",
+                ("token-hash-must-not-appear", "private-profile-must-not-appear"),
+            )
+            connection.commit()
+            connection.close()
+
+            before = hashlib.sha256(path.read_bytes()).hexdigest()
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = main(["--db", str(path)])
+            after = hashlib.sha256(path.read_bytes()).hexdigest()
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(before, after)
+            self.assertIn('"mismatch_count": 0', output.getvalue())
+            self.assertNotIn("token-hash-must-not-appear", output.getvalue())
+            self.assertNotIn("private-profile-must-not-appear", output.getvalue())
 
     def test_report_detects_mapping_drift_and_non_member_mapping(self):
         with tempfile.TemporaryDirectory(prefix="pack-agent-shadow-") as directory:
