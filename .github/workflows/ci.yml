@@ -127,6 +127,9 @@ jobs:
       - name: Installer regression on macOS
         run: |
           bash -n installer/mac-inventory.sh
+          bash installer/mac-inventory.sh "$RUNNER_TEMP/pack-inventory.txt"
+          test -s "$RUNNER_TEMP/pack-inventory.txt"
+          grep -q "Keychain=not queried" "$RUNNER_TEMP/pack-inventory.txt"
           python installer/test_launch_agent_safety.py
           python installer/test_upgrade_safety.py
           python installer/test_dmg_manifest.py
