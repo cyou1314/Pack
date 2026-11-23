@@ -44,18 +44,16 @@ kill_port() {
   for pid in $pids; do
     kill "$pid" 2>/dev/null || true
   done
-  if [[ -n "$pids" ]]; then
-    for _ in $(seq 1 20); do
-      port_ready "$port" || return 0
-      sleep 0.1
-    done
-    echo "ERROR: listener on port $port did not stop" >&2
-    return 1
-  fi
+  for _ in $(seq 1 20); do
+    port_ready "$port" || return 0
+    sleep 0.1
+  done
+  echo "ERROR: listener on port $port did not stop (pids: ${pids:-unknown})" >&2
+  return 1
 }
 
 fresh_db() {
-  kill_port 18798
+  kill_port 18798 || exit 72
   rm -f pack.db pack.db-wal pack.db-shm .dispatcher_token .room_watch_state.json \
         test_fixtures.json
   rm -rf attachments __pycache__
@@ -86,49 +84,49 @@ start_hub() {
 # ---- segment 1: staging56 new suite ----
 fresh_db
 start_hub 56a
-$PY test_staging56.py; RC56=$?
+"$PY" test_staging56.py; RC56=$?
 kill_port 18798
 
 # ---- segment 2: migration (self-contained dual server) ----
-$PY test_migration56.py; RCMIG=$?
+"$PY" test_migration56.py; RCMIG=$?
 
 # ---- segment 3: staging51/52 regression chain ----
 fresh_db
 start_hub 56b
-$PY test_staging51.py; RC1=$?
-$PY test_fixes51.py; RC6=$?
-$PY test_concurrency.py; RC2=$?
-$PY test_watcher.py; RC3=$?
-$PY test_staging52.py; RC7=$?
-$PY test_agent_script.py; RC8=$?
+"$PY" test_staging51.py; RC1=$?
+"$PY" test_fixes51.py; RC6=$?
+"$PY" test_concurrency.py; RC2=$?
+"$PY" test_watcher.py; RC3=$?
+"$PY" test_staging52.py; RC7=$?
+"$PY" test_agent_script.py; RC8=$?
 kill_port 18798
 
 # ---- segment 4: staging53 + question_state ----
 fresh_db
 start_hub 56c
-$PY test_staging53.py; RC53=$?
-$PY test_question_state.py; RCQS=$?
+"$PY" test_staging53.py; RC53=$?
+"$PY" test_question_state.py; RCQS=$?
 kill_port 18798
 
 # ---- segment 5: staging54 ----
 fresh_db
 start_hub 56d
-$PY test_staging54.py; RC54=$?
+"$PY" test_staging54.py; RC54=$?
 kill_port 18798
 
 # ---- segment 6: staging55 ----
 fresh_db
 start_hub 56e
-$PY test_staging55.py; RC55=$?
+"$PY" test_staging55.py; RC55=$?
 kill_port 18798
 
 # ---- segment 7: in-process direct suite ----
-$PY test_direct.py; RC5=$?
+"$PY" test_direct.py; RC5=$?
 
 # ---- segment 8: load probe (fresh DB) ----
 fresh_db
 start_hub 56f
-$PY test_load53.py; RC9=$?
+"$PY" test_load53.py; RC9=$?
 kill_port 18798
 
 echo "== staging56=$RC56 migration=$RCMIG | main51=$RC1 fixes=$RC6 concurrency=$RC2 watcher=$RC3 inbox52=$RC7 script=$RC8 | staging53=$RC53 qstate=$RCQS staging54=$RC54 staging55=$RC55 | direct=$RC5 load=$RC9"
