@@ -253,6 +253,7 @@
 - 快照状态同时绑定 room generation 与 client generation。房间切换或重连后的首次刷新失败时，不会错误复用旧房间的时间戳/游标；消息追赶过程中切换房间会提前终止旧请求链。
 - 增量读取按 200 条分页，最多连续读取 5 页；仍然满页时退回最新 200 条 tail，避免高消息量下长期停留在较旧窗口，导致最新提问或审批消息被隐藏。
 - 增量结果按消息 ID 合并并保留最新 200 条。其他客户端的旧消息编辑/删除由 60 秒完整快照收敛，本地编辑/删除则立即强制完整快照。
-- PackCore 新增 MessageRefreshState 与测试，覆盖首次/强制/超时快照、room/client generation 变化、失败后的重试条件和分页边界。
+- 每次刷新分配递增 request generation；较旧请求的成功结果和失败状态都会被丢弃。编辑/删除会先使快照失效，只有完整读取及关联状态刷新全部成功后才重新记录快照，失败后下一轮仍会执行完整读取。
+- PackCore 新增 MessageRefreshState 与测试，覆盖首次/强制/超时快照、room/client generation 变化、刷新请求排序、失败后的重试条件和分页边界。
 - 不改 Hub room_read_new 参数、MCP 契约、SQLite Schema 或用户数据；沿用现有 since_id、limit、tail。
 - 该优化的 Swift/macOS CI 通过前不得合并；CI 通过也不等同于真实 Mac 上的负载/交互验收。
