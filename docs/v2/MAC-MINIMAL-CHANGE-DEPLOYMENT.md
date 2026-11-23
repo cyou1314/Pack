@@ -27,3 +27,25 @@
 
 - 本轮修改仓库中的 Hub Python 服务/模块、SwiftUI App 内部结构、DMG 安装器的非破坏式 upgrade 命令、自动化测试、CI 与文档；不执行真实 Mac 安装/升级，不改动用户 Mac 上的 LaunchAgent、Keychain service/account、配置、数据库、附件及登录态数据。
 - 部署前先运行 `bash installer/mac-inventory.sh` 生成脱敏只读盘点；报告不包含 Token/Keychain 值，也不启停服务或写入 Pack 数据。随后在隔离 Mac 验证升级前预检、停机后在线备份、程序文件替换、认证 Hub/Engine 健康检查、失败回滚及 Keychain/登录态保留；仓库测试不能替代真实 Mac 验收。备份在所有 Pack 写服务停止后生成，以包含 staging 期间已接受的写入；仅新服务启动失败才恢复该快照，失败版本的 DB/WAL/SHM 保留在备份目录。
+
+
+## 隔离 Mac 验收操作
+
+仅在**可丢弃的测试 Mac 或专用 macOS 用户账户**执行。`PACK_INSTALL_TEST_ROOT` 会把 Pack 数据目录、Engine 数据和 App Bundle 放入测试根目录，并使用独立端口 18795/47822、独立 LaunchAgent 标签 `com.pack.installer-test-*`；但 LaunchAgent plist 仍写入当前用户的 `~/Library/LaunchAgents`，因此不要在生产会话中执行。
+
+```bash
+DMG_OLD="/Volumes/Pack-old"
+DMG_NEW="/Volumes/Pack-candidate"
+export PACK_INSTALL_TEST_ROOT="$HOME/commander-work/pack-upgrade-acceptance"
+
+# 在测试根目录安装旧包，创建一套可升级的测试数据
+"$DMG_OLD/python/bin/python3" "$DMG_OLD/manager.py" install
+
+# 使用候选 DMG 执行真实 macOS 文件替换、LaunchAgent 启停与健康检查
+"$DMG_NEW/python/bin/python3" "$DMG_NEW/manager.py" upgrade
+
+# 完成后停止并移除测试服务/程序；测试数据库、附件、Token、配置和备份仍保留
+"$DMG_NEW/python/bin/python3" "$DMG_NEW/manager.py" uninstall
+```
+
+验收时检查测试根目录下的 `local-hub/backups/upgrade-*`、SQLite 完整性、附件数量、Engine data、四个测试 LaunchAgent 和 18795/47822 端口。测试安装不会验证真实 App Keychain 迁移或生产登录态；这两项仍需单独做人工验收。测试数据目录不会自动删除，只有确认不再需要后才手动清理。
