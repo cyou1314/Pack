@@ -162,6 +162,9 @@ class HubQueryIndexTests(unittest.TestCase):
                         (12, 1, "task-twelve", "body", 1, 2, "open", 1.0, 2.0),
                     ],
                 )
+                connection.execute(
+                    "INSERT INTO rooms(name,created_at) VALUES('room-b',1)"
+                )
                 task_rows = []
                 for number in range(1000, 4000):
                     status = ("open", "claimed", "working", "done")[number % 4]
@@ -169,7 +172,7 @@ class HubQueryIndexTests(unittest.TestCase):
                     lease = float(number) if status in ("claimed", "working") else None
                     due = float(number) if status == "open" and assignee is not None else None
                     task_rows.append((
-                        number, 1, f"task-{number}", "body", 1, assignee, status,
+                        number, 1 if number % 2 else 2, f"task-{number}", "body", 1, assignee, status,
                         None, lease, 0, None, None, None, None, due, 0.0,
                         number % 2, 1.0, 2.0,
                     ))
@@ -207,6 +210,18 @@ class HubQueryIndexTests(unittest.TestCase):
                     "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
                     "VALUES(1,1,'decision','批准 任务#1',1,?)",
                     [(float(n),) for n in range(10, 1010)],
+                )
+                connection.executemany(
+                    "INSERT INTO audit(ts,actor,action,detail,task_id) VALUES(?,?,?,?,?)",
+                    [
+                        (float(n), "worker", "task_update", f"task {n}: indexed", n % 50)
+                        for n in range(100, 2100)
+                    ],
+                )
+                connection.executemany(
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
+                    "VALUES(1,1,'approval_request','申请 任务#1',1,?)",
+                    [(float(n),) for n in range(2000, 3000)],
                 )
                 connection.execute("ANALYZE")
 
