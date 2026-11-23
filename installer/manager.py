@@ -526,8 +526,8 @@ def upgrade():
                     still_loaded.append(f"{service} port {port} remains occupied")
 
             if still_loaded:
-                # Never swap files or restore SQLite while a Pack writer may
-                # still be running or a service port remains occupied.
+                # Never swap files while a Pack writer may still be running
+                # or a service port remains occupied.
                 # Preserve the current code, backup and previous-version
                 # snapshots for manual recovery.
                 rollback_errors.extend(stop_errors)
