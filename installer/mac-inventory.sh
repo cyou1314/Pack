@@ -113,8 +113,27 @@ for kind in hub watch backup engine; do
     line "Plist=missing-or-symlink"
   fi
   state="$(launchctl print "gui/$USER_ID/$label" 2>/dev/null | awk '/state =/ {print $3; exit}' || true)"
-  printf 'LoadedState=%s\n' "${state:-not-loaded}" >> "$OUT"
+  printf 'LoadedState=%s\n' "\${state:-not-loaded}" >> "$OUT"
 done
+
+# This legacy runtime is outside the Pack installer ownership boundary.
+legacy_label="com.muse.pack-runtime"
+legacy_plist="$AGENTS/$legacy_label.plist"
+printf '[%s]\n' "$legacy_label" >> "$OUT"
+if [[ -f "$legacy_plist" && ! -L "$legacy_plist" ]]; then
+  legacy_program0="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$legacy_plist" 2>/dev/null || true)"
+  legacy_program1="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$legacy_plist" 2>/dev/null || true)"
+  if [[ "$(basename "\${legacy_program0:-unknown}")" == "node" && "$(basename "\${legacy_program1:-unknown}")" == "runtime.mjs" ]]; then
+    line "EntryPointValidation=expected-basename"
+  else
+    line "EntryPointValidation=mismatch"
+  fi
+  printf 'Umask=%s\n' "$(/usr/libexec/PlistBuddy -c 'Print :Umask' "$legacy_plist" 2>/dev/null || printf missing)" >> "$OUT"
+else
+  line "Plist=missing-or-symlink"
+fi
+legacy_state="$(launchctl print "gui/$USER_ID/$legacy_label" 2>/dev/null | awk '/state =/ {print $3; exit}' || true)"
+printf 'LoadedState=%s\n' "\${legacy_state:-not-loaded}" >> "$OUT"
 
 section "Local listeners (PID and process name only; no command arguments)"
 for port in 8794 47821; do

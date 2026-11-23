@@ -74,6 +74,7 @@ class DmgManifestTests(unittest.TestCase):
     def test_mac_inventory_is_read_only_and_does_not_emit_secret_values(self):
         source = (ROOT / "installer" / "mac-inventory.sh").read_text(encoding="utf-8")
         self.assertIn("launchctl print", source)
+        self.assertIn("com.muse.pack-runtime", source)
         self.assertIn("sqlite3 -readonly", source)
         self.assertNotIn("-maxdepth", source)
         self.assertIn("EntryPointValidation=expected-basename", source)
