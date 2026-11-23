@@ -36,7 +36,33 @@ def inspect(env):
     return json.loads(result.stdout)
 
 
+def test_failed_install_rollback():
+    sys.path.insert(0, str(HERE))
+    import manager
+
+    with tempfile.TemporaryDirectory(prefix="pack-installer-rollback-test-") as tmp:
+        root = pathlib.Path(tmp)
+        hub = root / "local-hub"
+        engine = root / "local-engine"
+        config = root / "config.json"
+        socket_dir = root / "handoff-socket"
+        agents = root / "LaunchAgents"
+        agents.mkdir()
+        for path in (hub, engine, socket_dir):
+            path.mkdir()
+            (path / "partial-install-marker").write_text("owned")
+        config.write_text("partial")
+        plist = agents / "com.pack.installer-test-hub.plist"
+        plist.write_text("partial")
+        manager._remove_owned_path(plist)
+        for path in (config, socket_dir, engine, hub):
+            manager._remove_owned_path(path)
+        assert not any(path.exists() for path in (hub, engine, config, socket_dir, plist))
+        assert agents.is_dir(), "pre-existing LaunchAgents directory must be preserved"
+
+
 def main():
+    test_failed_install_rollback()
     with tempfile.TemporaryDirectory(prefix="pack-installer-path-test-") as tmp:
         home = pathlib.Path(tmp)
         test_root = home / "commander-work" / "isolated-installer-check"
