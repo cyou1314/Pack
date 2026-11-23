@@ -54,7 +54,7 @@ class PairingServiceTests(unittest.TestCase):
     def response(self, body, status_code=200):
         return PairResponse(body, status_code)
 
-    def redeem(self, context=None, code=None, **overrides):
+    def redeem(self, code=None, context=None, **overrides):
         args = {
             "json_response": self.response,
             "hash_token": hub.hash_token,

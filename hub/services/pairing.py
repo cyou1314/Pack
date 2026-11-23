@@ -1,6 +1,8 @@
 """External pairing redemption with cross-process code and throttle serialization."""
 from __future__ import annotations
 
+import json
+
 
 def redeem_pair(context, code, *, json_response, hash_token, token_factory,
                 external_enabled, avatar_for, used_combos, make_avatar_combo,
@@ -149,7 +151,7 @@ def redeem_pair(context, code, *, json_response, hash_token, token_factory,
                     "VALUES(?,'member',?,NULL,?,?,?,?,?,?,?)",
                     (
                         row["member_name"], hash_token(token), now,
-                        __import__("json").dumps(avatar), row["provider"] or None,
+                        json.dumps(avatar), row["provider"] or None,
                         "external", row["display_name"] or row["member_name"],
                         room["id"], joined,
                     ),
