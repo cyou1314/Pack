@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Safety checks for Pack's macOS LaunchAgent installers and uninstallers."""
 import importlib.util
+import os
 import plistlib
 import shutil
 import tempfile
@@ -218,6 +219,27 @@ class InstallRollbackTests(unittest.TestCase):
 
     def test_copy_failure_preserves_preexisting_launch_agents(self):
         self._run_injected_copy_failure(agents_preexisting=True)
+
+
+
+class InstallerLockTests(unittest.TestCase):
+    def test_concurrent_install_attempt_is_rejected_until_lock_released(self):
+        with tempfile.TemporaryDirectory(prefix="pack-install-lock-") as directory:
+            home = Path(directory)
+            with patch.object(manager, "HOME", home):
+                first_fd = manager._acquire_install_lock()
+                try:
+                    with self.assertRaisesRegex(SystemExit, "already running"):
+                        manager._acquire_install_lock()
+                finally:
+                    os.close(first_fd)
+
+                second_fd = manager._acquire_install_lock()
+                os.close(second_fd)
+                lock_path = home / ".pack-install.lock"
+                self.assertTrue(lock_path.is_file())
+                self.assertEqual(lock_path.stat().st_mode & 0o077, 0)
+
 
 
 
