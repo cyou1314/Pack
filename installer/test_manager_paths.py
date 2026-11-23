@@ -54,11 +54,29 @@ def test_failed_install_rollback():
         config.write_text("partial")
         plist = agents / "com.pack.installer-test-hub.plist"
         plist.write_text("partial")
-        manager._remove_owned_path(plist)
-        for path in (config, socket_dir, engine, hub):
-            manager._remove_owned_path(path)
+        original_ctl = manager.ctl
+        manager.ctl = lambda *args, **kwargs: None
+        try:
+            manager._rollback_install(
+                [plist], (config, socket_dir, engine, hub), agents, True
+            )
+        finally:
+            manager.ctl = original_ctl
         assert not any(path.exists() for path in (hub, engine, config, socket_dir, plist))
         assert agents.is_dir(), "pre-existing LaunchAgents directory must be preserved"
+
+        fresh_agents = root / "FreshLaunchAgents"
+        fresh_agents.mkdir()
+        partial_hub = root / "fresh-local-hub"
+        partial_hub.mkdir()
+        (partial_hub / "partial-install-marker").write_text("owned")
+        manager.ctl = lambda *args, **kwargs: None
+        try:
+            manager._rollback_install([], (partial_hub,), fresh_agents, False)
+        finally:
+            manager.ctl = original_ctl
+        assert not partial_hub.exists()
+        assert not fresh_agents.exists(), "new empty LaunchAgents directory must be removed"
 
 
 def main():
