@@ -93,6 +93,27 @@ jobs:
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots
         run: python hub/export_contracts.py --check
+      - name: Debug SQLite contract differences
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          sys.path.insert(0, "hub")
+          import export_contracts
+          for legacy, filename in ((False, "sqlite-fresh.json"), (True, "sqlite-legacy-migrated.json")):
+              actual = export_contracts.export_sqlite_schema(legacy)
+              expected = json.loads((Path("hub/contracts") / filename).read_text())
+              expected_tables = {item["name"]: item for item in expected["tables"]}
+              print("CONTRACT", filename)
+              for item in actual["tables"]:
+                  old = expected_tables.get(item["name"])
+                  if old != item:
+                      print("TABLE_DIFF", item["name"])
+                      print(json.dumps(item, ensure_ascii=False, indent=2, sort_keys=True))
+              print("ACTUAL_TABLES", [item["name"] for item in actual["tables"]])
+              print("EXPECTED_TABLES", [item["name"] for item in expected["tables"]])
+          PY
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
 
