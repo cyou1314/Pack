@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 swift build
-APP=Pack.app
+APP="${1:-Pack.app}"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/debug/PackApp "$APP/Contents/MacOS/PackApp"
