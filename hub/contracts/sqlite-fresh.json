@@ -536,10 +536,29 @@
           "notnull": false,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "name": "task_id",
+          "type": "INTEGER",
+          "notnull": false,
+          "default": null,
+          "primary_key_position": 0
         }
       ],
       "foreign_keys": [],
-      "indexes": [],
+      "indexes": [
+        {
+          "name": "idx_audit_task",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            "task_id",
+            "id"
+          ],
+          "sql": "CREATE INDEX idx_audit_task ON audit(task_id, id)"
+        }
+      ],
       "name": "audit"
     },
     {
@@ -1239,6 +1258,28 @@
       "foreign_keys": [],
       "indexes": [
         {
+          "name": "idx_messages_approval_task",
+          "unique": false,
+          "origin": "c",
+          "partial": true,
+          "columns": [
+            "task_id",
+            "id"
+          ],
+          "sql": "CREATE INDEX idx_messages_approval_task ON messages(task_id, id DESC) WHERE kind='approval_request'"
+        },
+        {
+          "name": "idx_messages_dispatch_decisions",
+          "unique": false,
+          "origin": "c",
+          "partial": true,
+          "columns": [
+            "author_id",
+            "id"
+          ],
+          "sql": "CREATE INDEX idx_messages_dispatch_decisions ON messages(author_id, id) WHERE kind IN ('chat','decision')"
+        },
+        {
           "columns": [
             "room_id",
             "id"
@@ -1527,7 +1568,19 @@
         }
       ],
       "foreign_keys": [],
-      "indexes": [],
+      "indexes": [
+        {
+          "name": "idx_review_log_task_time",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            "task_id",
+            "created_at"
+          ],
+          "sql": "CREATE INDEX idx_review_log_task_time ON review_log(task_id, created_at)"
+        }
+      ],
       "name": "review_log"
     },
     {
@@ -1978,6 +2031,17 @@
       "foreign_keys": [],
       "indexes": [
         {
+          "name": "idx_task_transfers_pending_expiry",
+          "unique": false,
+          "origin": "c",
+          "partial": true,
+          "columns": [
+            "expires_at",
+            "id"
+          ],
+          "sql": "CREATE INDEX idx_task_transfers_pending_expiry ON task_transfers(expires_at, id) WHERE status='pending' AND expires_at IS NOT NULL"
+        },
+        {
           "columns": [
             "task_id",
             "id"
@@ -2128,7 +2192,76 @@
         }
       ],
       "foreign_keys": [],
-      "indexes": [],
+      "indexes": [
+        {
+          "name": "idx_tasks_active_queue",
+          "unique": false,
+          "origin": "c",
+          "partial": true,
+          "columns": [
+            "urgent",
+            "id",
+            "assignee"
+          ],
+          "sql": "CREATE INDEX idx_tasks_active_queue ON tasks(urgent DESC, id ASC, assignee) WHERE status IN ('open','claimed','working')"
+        },
+        {
+          "name": "idx_tasks_assignee_urgent_id",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            "assignee",
+            "urgent",
+            "id"
+          ],
+          "sql": "CREATE INDEX idx_tasks_assignee_urgent_id ON tasks(assignee, urgent DESC, id ASC)"
+        },
+        {
+          "name": "idx_tasks_lease_expiry",
+          "unique": false,
+          "origin": "c",
+          "partial": true,
+          "columns": [
+            "lease_expires"
+          ],
+          "sql": "CREATE INDEX idx_tasks_lease_expiry ON tasks(lease_expires) WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL"
+        },
+        {
+          "name": "idx_tasks_room_urgent_id",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            "room_id",
+            "urgent",
+            "id"
+          ],
+          "sql": "CREATE INDEX idx_tasks_room_urgent_id ON tasks(room_id, urgent DESC, id ASC)"
+        },
+        {
+          "name": "idx_tasks_unclaimed_due",
+          "unique": false,
+          "origin": "c",
+          "partial": true,
+          "columns": [
+            "assignee",
+            "next_claim_at"
+          ],
+          "sql": "CREATE INDEX idx_tasks_unclaimed_due ON tasks(assignee, next_claim_at) WHERE status='open' AND assignee IS NOT NULL"
+        },
+        {
+          "name": "idx_tasks_urgent_id",
+          "unique": false,
+          "origin": "c",
+          "partial": false,
+          "columns": [
+            "urgent",
+            "id"
+          ],
+          "sql": "CREATE INDEX idx_tasks_urgent_id ON tasks(urgent DESC, id ASC)"
+        }
+      ],
       "name": "tasks"
     }
   ],
