@@ -89,11 +89,12 @@ def _rollback_install(agent_plists, owned_paths, agents_dir, agents_preexisting)
 
 
 def install():
-    if hub.exists() or engine.exists() or config.exists(): raise SystemExit('Existing service data or App config found; refusing to overwrite.')
+    destinations = (hub, engine, config, socket_dir)
+    if any(path.exists() or path.is_symlink() for path in destinations):
+        raise SystemExit('Existing service data, App config, or handoff socket path found; refusing to overwrite.')
     if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
     for label in labels.values():
         if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0: raise SystemExit('A service label is already in use.')
-    if socket_dir.exists(): raise SystemExit('Existing handoff socket directory; refusing to overwrite.')
     agent_plists = [agents/(label+'.plist') for label in labels.values()]
     if any(path.exists() or path.is_symlink() for path in agent_plists):
         raise SystemExit('A service LaunchAgent plist already exists; refusing to overwrite.')
