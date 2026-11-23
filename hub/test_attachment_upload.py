@@ -245,5 +245,58 @@ class AttachmentUploadTests(unittest.TestCase):
         self.assertEqual(list(self.root.rglob(".pack-upload-*")), [])
 
 
+    def test_independent_contexts_cannot_both_pass_external_daily_cap(self):
+        other = HubContext(
+            base_dir=self.context.base_dir,
+            db_path=self.context.db_path,
+            attachment_dir=self.context.attachment_dir,
+            lock=threading.Lock(), clock=lambda: 12000.0,
+        )
+        barrier = threading.Barrier(2)
+        outcomes = []
+        def upload(context):
+            barrier.wait(timeout=5)
+            try:
+                self.put(context=context, member=self.guest, daily_uploads=1)
+                outcomes.append("ok")
+            except ValueError as error:
+                outcomes.append(str(error))
+        threads = [
+            threading.Thread(target=upload, args=(self.context,)),
+            threading.Thread(target=upload, args=(other,)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(outcomes.count("ok"), 1)
+        self.assertEqual(sum("daily upload cap" in x for x in outcomes), 1)
+        self.assertEqual(self.count("attachments"), 1)
+        self.assertEqual(self.db.execute(
+            "SELECT COUNT(*) FROM audit WHERE action='external_attachment_quota'"
+        ).fetchone()[0], 1)
+
+    def test_parent_directory_alias_is_accepted_without_shard_escape(self):
+        # macOS may resolve /var through /private/var; accept a parent
+        # alias without allowing the attachment shard itself to be a link.
+        from services.attachments import _publish_upload
+        real = self.root / "real-parent"
+        real.mkdir()
+        alias = self.root / "parent-alias"
+        alias.symlink_to(real, target_is_directory=True)
+        ctx = HubContext(
+            base_dir=self.context.base_dir,
+            db_path=self.context.db_path,
+            attachment_dir=str(alias / "attachments"),
+            lock=threading.Lock(), clock=lambda: 12000.0,
+        )
+        target = alias / "attachments" / "aa" / "sample.png"
+        self.assertTrue(_publish_upload(ctx, str(target), PNG))
+        self.assertEqual(target.read_bytes(), PNG)
+        self.assertFalse(_publish_upload(ctx, str(target), PNG))
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
