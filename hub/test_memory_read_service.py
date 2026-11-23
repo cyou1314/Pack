@@ -141,7 +141,7 @@ class MemoryReadServiceTests(unittest.TestCase):
         )
 
     def test_only_dispatcher_can_include_version_text(self):
-        result = self.versions(actor=self.dispatcher, include_text=True)
+        result = self.versions(actor=self.dispatcher, include_text=True, member="alice")
         self.assertEqual(
             [item["text"] for item in result["versions"]],
             ["second version", "first version"],
