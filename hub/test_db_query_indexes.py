@@ -88,7 +88,7 @@ def main():
                 (4, 4, 'alice', 'other', 'task 1x is not a task prefix'),
                 (5, 5, 'alice', 'member_register', 'task 9223372036854775808'),
                 (6, 6, 'alice', 'member_register',
-                 'task ' || replace(printf('%5000s', 'x'), ' ', '9'));
+                 'task ' || replace(printf('%5000s', ' '), ' ', '9'));
 
             CREATE TABLE messages(
                 id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
