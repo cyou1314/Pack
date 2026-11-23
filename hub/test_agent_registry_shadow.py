@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the read-only Agent Registry shadow report."""
 import hashlib
+import sqlite3
 import io
 import tempfile
 import unittest
@@ -50,6 +51,9 @@ class AgentRegistryShadowTests(unittest.TestCase):
                 self.assertTrue(report["ok"])
                 self.assertTrue(report["ready"])
                 self.assertTrue(report["migration_checksum_matches"])
+                self.assertTrue(report["database_integrity_ok"])
+                self.assertEqual(report["foreign_key_violation_count"], 0)
+                self.assertEqual(report["foreign_key_violation_tables"], [])
                 self.assertEqual(report["legacy_member_count"], 1)
                 self.assertEqual(report["mapped_member_count"], 1)
                 self.assertEqual(report["unmapped_member_count"], 0)
@@ -88,6 +92,44 @@ class AgentRegistryShadowTests(unittest.TestCase):
             self.assertIn('"mismatch_count": 0', output.getvalue())
             self.assertNotIn("token-hash-must-not-appear", output.getvalue())
             self.assertNotIn("private-profile-must-not-appear", output.getvalue())
+
+
+    def test_report_refuses_readiness_when_foreign_keys_are_violated(self):
+        with tempfile.TemporaryDirectory(prefix="pack-agent-shadow-fk-") as directory:
+            path = Path(directory) / "shadow.db"
+            connection = self._database(directory)
+            connection.close()
+
+            # Simulate a database written by a legacy connection that did not
+            # enable SQLite FK enforcement. The report itself remains read-only.
+            legacy_writer = sqlite3.connect(path)
+            try:
+                legacy_writer.execute("PRAGMA foreign_keys=OFF")
+                legacy_writer.execute(
+                    "INSERT INTO agent_connections("
+                    "connection_id,agent_id,mode,auth_kind,status,created_at,updated_at"
+                    ") VALUES('orphan-connection','missing-agent','official_api',"
+                    "'api_key','connected',100,100)"
+                )
+                legacy_writer.commit()
+            finally:
+                legacy_writer.close()
+
+            readonly = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                before_changes = readonly.total_changes
+                report = build_shadow_report(readonly)
+                self.assertFalse(report["ok"])
+                self.assertFalse(report["ready"])
+                self.assertEqual(report["reason"], "database_integrity_check_failed")
+                self.assertTrue(report["database_integrity_ok"])
+                self.assertEqual(report["foreign_key_violation_count"], 1)
+                self.assertEqual(
+                    report["foreign_key_violation_tables"], ["agent_connections"]
+                )
+                self.assertEqual(readonly.total_changes, before_changes)
+            finally:
+                readonly.close()
 
     def test_report_detects_mapping_drift_and_non_member_mapping(self):
         with tempfile.TemporaryDirectory(prefix="pack-agent-shadow-") as directory:
