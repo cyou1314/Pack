@@ -22,7 +22,6 @@ def connect(
     # before any transaction begins. Existing Hub tables remain unchanged; the
     # additive Agent Registry uses these constraints for new relationships.
     connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA journal_mode=WAL")
     connection.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
     return connection
 
