@@ -51,6 +51,22 @@ def build_shadow_report(connection: sqlite3.Connection) -> dict[str, Any]:
             "mismatches": [],
         }
 
+    applied_versions = {
+        row["version"]
+        for row in connection.execute("SELECT version FROM hub_schema_migrations")
+    }
+    known_versions = {item.version for item in MIGRATIONS}
+    unsupported_versions = sorted(applied_versions - known_versions)
+    if unsupported_versions:
+        return {
+            "ok": False,
+            "ready": False,
+            "reason": "unsupported_migration_versions",
+            "unsupported_migration_versions": unsupported_versions,
+            "mismatch_count": 0,
+            "mismatches": [],
+        }
+
     migration = connection.execute(
         "SELECT version,name,checksum FROM hub_schema_migrations WHERE version=?",
         (MIGRATIONS[0].version,),
