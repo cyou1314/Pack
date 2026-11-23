@@ -6,7 +6,6 @@ checksum so repeated or concurrent initialization is safe.
 """
 from __future__ import annotations
 
-import ast
 import hashlib
 import inspect
 import json
@@ -99,6 +98,16 @@ _REGISTRY_V1 = Migration(
 )
 
 
+def _normalized_function_source(function: Callable[..., object]) -> str:
+    """Return a Python-version-independent representation of a function body."""
+    lines = inspect.getsource(function).splitlines()
+    return "\n".join(
+        line.rstrip()
+        for line in lines
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+
+
 def _checksum(migration: Migration) -> str:
     payload: dict[str, object] = {
         "version": migration.version,
@@ -107,18 +116,13 @@ def _checksum(migration: Migration) -> str:
     }
     if migration.version == 1:
         # The v1 migration includes a data backfill, not just DDL. Cover the
-        # normalization table and normalized AST of every helper that changes
-        # backfill behavior, so edits cannot silently reuse an old ledger hash.
+        # provider mapping and normalized source of every helper that changes
+        # backfill behavior. Avoid AST dumps: their representation can differ
+        # across supported Python versions and block startup on interpreter upgrades.
         payload["data_migration"] = {
             "provider_labels": _PROVIDER_LABELS,
-            "provider_for_ast": ast.dump(
-                ast.parse(inspect.getsource(_provider_for)),
-                include_attributes=False,
-            ),
-            "apply_registry_v1_ast": ast.dump(
-                ast.parse(inspect.getsource(_apply_registry_v1)),
-                include_attributes=False,
-            ),
+            "provider_for_source": _normalized_function_source(_provider_for),
+            "apply_registry_v1_source": _normalized_function_source(_apply_registry_v1),
         }
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
