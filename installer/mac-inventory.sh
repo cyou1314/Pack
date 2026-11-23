@@ -92,8 +92,17 @@ for kind in hub watch backup engine; do
     printf 'PlistLabel=%s\n' "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist" 2>/dev/null || printf invalid)" >> "$OUT"
     program0="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist" 2>/dev/null || true)"
     program1="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$plist" 2>/dev/null || true)"
-    printf 'Program0=%s\n' "$(basename "${program0:-unknown}")" >> "$OUT"
-    printf 'Program1=%s\n' "$(basename "${program1:-unknown}")" >> "$OUT"
+    case "$kind" in
+      hub) expected0="python3"; expected1="hub.py" ;;
+      watch) expected0="python3"; expected1="room_watch.py" ;;
+      backup) expected0="bash"; expected1="backup-db.sh" ;;
+      engine) expected0="Electron"; expected1="app" ;;
+    esac
+    if [[ "$(basename "${program0:-unknown}")" == "$expected0" && "$(basename "${program1:-unknown}")" == "$expected1" ]]; then
+      line "EntryPointValidation=expected-basename"
+    else
+      line "EntryPointValidation=mismatch"
+    fi
     printf 'Umask=%s\n' "$(/usr/libexec/PlistBuddy -c 'Print :Umask' "$plist" 2>/dev/null || printf missing)" >> "$OUT"
   else
     line "Plist=missing-or-symlink"
