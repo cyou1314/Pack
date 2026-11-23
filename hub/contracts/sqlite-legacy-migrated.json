@@ -1276,7 +1276,7 @@
             "task_id",
             "id"
           ],
-          "sql": "CREATE INDEX idx_messages_approval_task ON messages(task_id, id DESC) WHERE kind='approval_request'"
+          "sql": "CREATE INDEX idx_messages_approval_task\n       ON messages(task_id, id DESC) WHERE kind='approval_request'"
         },
         {
           "name": "idx_messages_dispatch_decisions",
@@ -1287,7 +1287,7 @@
             "author_id",
             "id"
           ],
-          "sql": "CREATE INDEX idx_messages_dispatch_decisions ON messages(author_id, id) WHERE kind IN ('chat','decision')"
+          "sql": "CREATE INDEX idx_messages_dispatch_decisions\n       ON messages(author_id, id) WHERE kind IN ('chat','decision')"
         },
         {
           "columns": [
@@ -2049,7 +2049,7 @@
             "expires_at",
             "id"
           ],
-          "sql": "CREATE INDEX idx_task_transfers_pending_expiry ON task_transfers(expires_at, id) WHERE status='pending' AND expires_at IS NOT NULL"
+          "sql": "CREATE INDEX idx_task_transfers_pending_expiry\n           ON task_transfers(expires_at, id)\n           WHERE status='pending' AND expires_at IS NOT NULL"
         },
         {
           "columns": [
@@ -2213,7 +2213,7 @@
             "id",
             "assignee"
           ],
-          "sql": "CREATE INDEX idx_tasks_active_queue ON tasks(urgent DESC, id ASC, assignee) WHERE status IN ('open','claimed','working')"
+          "sql": "CREATE INDEX idx_tasks_active_queue\n           ON tasks(urgent DESC, id ASC, assignee)\n           WHERE status IN ('open','claimed','working')"
         },
         {
           "name": "idx_tasks_assignee_urgent_id",
@@ -2235,7 +2235,7 @@
           "columns": [
             "lease_expires"
           ],
-          "sql": "CREATE INDEX idx_tasks_lease_expiry ON tasks(lease_expires) WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL"
+          "sql": "CREATE INDEX idx_tasks_lease_expiry\n           ON tasks(lease_expires)\n           WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL"
         },
         {
           "name": "idx_tasks_room_urgent_id",
@@ -2258,7 +2258,7 @@
             "assignee",
             "next_claim_at"
           ],
-          "sql": "CREATE INDEX idx_tasks_unclaimed_due ON tasks(assignee, next_claim_at) WHERE status='open' AND assignee IS NOT NULL"
+          "sql": "CREATE INDEX idx_tasks_unclaimed_due\n           ON tasks(assignee, next_claim_at)\n           WHERE status='open' AND assignee IS NOT NULL"
         },
         {
           "name": "idx_tasks_urgent_id",
