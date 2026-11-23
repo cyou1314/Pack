@@ -39,3 +39,32 @@
 5. 以上仓库整改和 CI 稳定后，才进入 Mac 安装、保留账号/Keychain/登录态的差异升级和回滚验收。
 
 **本轮决策：参考 PiBot 的架构与验证纪律，不引入 PiBot 代码或更换 Pack 产品方向。**
+
+
+## 5. 2026-11-23 源码级复核补充
+
+### ChatGPT 登录不等于继承 ChatGPT App 的私人上下文
+
+- `packages/agent/src/auth/chatgpt-login.ts` 实现 Sign in with ChatGPT：PKCE、state/nonce、ID Token 验证、账号 subject/client 绑定及 refresh token 轮换；使用 `chatgpt.tokens.use.direct` scope。
+- `chatgpt-provider.ts` 将 ChatGPT 计划作为独立 Provider，与 OpenAI API Key Provider 分开。它让 PiBot 自己的 Bot 对话使用 ChatGPT 计划模型额度，不是复用 ChatGPT App 的现有聊天窗口，也没有读取 ChatGPT App 的历史对话、Saved Memories 或自定义 GPT 的接口证据。
+- PiBot 隐私说明称，ChatGPT 计划 Bot 的对话直接发送给 OpenAI，登录令牌加密保存在本机：[Outbound connections](https://github.com/w01fb0ss/PiBot/blob/main/docs/privacy/en/outbound-connections.md)。
+- 因此，这种能力可以作为 Pack 的 ChatGPT 计划认证研究样本，但不能作为“保留 ChatGPT 个人记忆/工具/历史”的实现证明；接入前仍需独立验证 OpenAI 授权资格、服务条款、令牌刷新和模型路由。
+
+### Provider 覆盖边界
+
+- 当前 PiBot 对 Claude subscription token（`sk-ant-oat`）显式拒绝，Claude 使用 API Key；详见 [claude-subscription.ts](https://github.com/w01fb0ss/PiBot/blob/main/packages/agent/src/auth/claude-subscription.ts) 与中文模型指南。
+- 在当前主分支源码检索中未发现 Doubao/Volcengine 专属 Adapter。自定义 OpenAI-compatible endpoint 不等于豆包 App 个人账号登录，也不能继承豆包 App 记忆/会话。
+- README 中的 “subscription sign-ins” 不能理解为所有厂商都支持个人订阅登录。
+
+### 记忆与权限架构
+
+- `MemoryService` 将 PiBot 自己管理的记忆分为 user、bot、group、project scope；项目记忆按工作目录关联，群记忆要求成员资格。它是 PiBot 本地维护的记忆，不是 ChatGPT/Doubao 账户内记忆的同步副本。
+- `@pibot/policy` 是不依赖 Electron/pi 的纯策略包；`@pibot/execution` 负责命令/文件/网页执行但不自行决定权限；brain 的 `ApprovalService` 统一串联 Policy、审批、授权范围与审计。
+- 检查点会保留历史前缀 hash、写入路径、命令和结果证据；macOS 文件改动可审查并恢复。可借鉴其“证据先于成功声明”的纪律，但 Pack 仍应使用自己的 Hub/SwiftUI/Runtime 边界。
+
+### 对 Pack 的最终决策
+
+1. 继续采用 Pack 的 SwiftUI + Hub + Local Runtime + Provider Adapter 架构，不引入 Pi SDK、Electron 或 PiBot 运行时依赖。
+2. 优先复用其单一 Policy/Approval/Audit 执行链、文件变更 manifest/checkpoint、用户/Bot/项目/房间记忆分层思想。
+3. Provider Adapter 必须把“原生个人 Agent 会话”“官方订阅授权模型调用”“官方 API Key”分成不同能力等级；不得因 OAuth 成功就宣称获得该产品的个人记忆或原生工具。
+4. PiBot 仓库于 2026-11-21 创建，v0.0.3 于 2026-11-22 发布；目前只作为设计参考，不作为 Pack 的生产依赖或安全实现背书。

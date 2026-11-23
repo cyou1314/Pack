@@ -1,6 +1,6 @@
 # Pack Phase 4：模块边界与渐进拆分方案
 
-> 状态：执行中；policy/schema/storage/context 已提取，HubContext 已贯通服务入口、工具闭包和后台 sweeper；rooms 读服务已迁出首批函数；其他领域模块迁移待完成。  
+> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Members/Rooms/Tasks 扩展；Connection/Refresh、Chat/Approval、Settings 等状态逻辑仍待继续拆分。  
 > 原则：先冻结协议与数据契约，再按领域提取模块；不做大爆炸式重写。
 
 ## 1. 当前代码边界
@@ -9,11 +9,11 @@
 
 | 区域 | 当前文件 | 规模 | 现状 |
 |---|---|---:|---|
-| Hub 服务端 | `hub/hub.py` | 约 5,200 行 | 配置、DB、鉴权、审计和 75 个 MCP tool 注册仍集中在服务入口/闭包；policy/schema/storage/context 已外提，领域逻辑仍待迁移 |
-| App 状态与入口 | `app/Sources/PackApp/PackApp.swift` | 约 1,366 行 | App 启动、AppState 和多个跨域状态操作集中 |
-| App 视图 | `app/Sources/PackApp/Views.swift` | 约 1,618 行 | ContentView 与大量功能视图/组件集中 |
-| 网络客户端 | `app/Sources/PackApp/HubClient.swift` | 约 362 行 | JSON-RPC 请求、连接、重试/超时等传输职责 |
-| 领域模型 | `app/Sources/PackApp/Models.swift` | 约 357 行 | 任务、成员、房间等模型与 App 目标耦合 |
+| Hub 服务端 | `hub/hub.py` | 约 2,874 行 | 保留 FastMCP 入口、认证/工具注册与兼容 helper；多数成员、房间、任务、规则、附件、记忆、技能、桌面和配对业务已迁入 `hub/services/` |
+| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 897 行 | 启动入口已独立；Members/Rooms/Tasks 方法已分别迁入扩展文件，连接、刷新及其余跨域状态仍集中在 AppState |
+| App 视图 | `Views.swift` + Feature Views | 233 + 430/448/285/64 行 | 主窗口、Chat、Tasks、Settings、TaskDetail 和 Components 已按声明边界拆分；本批仅移动声明，不改布局/行为 |
+| 网络客户端 | `HubClient.swift` / `Networking/HubTransport.swift` | 107 / 74 行 | HubClient 保留 MCP session、JSON-RPC、SSE 解析与会话恢复；HTTP 请求、Bearer Header、超时和同源重定向策略独立在 HubTransport |
+| 领域模型 | `app/Sources/PackApp/Models.swift` | 276 行 | 仍有 App 侧消息/任务/成员模型；PackCore 保持独立且不依赖 SwiftUI |
 | 成员交接 | `app/Sources/PackApp/MemberHandoff.swift` | 约 200 行 | 本机交接/IPC 辅助能力 |
 | 其他功能 | `SearchPanel.swift`、`AddressSource.swift` | 约 98 行 | 搜索和地址来源辅助 |
 | Core | `app/Sources/PackCore/` | 3 个文件 | 当前包含 PackConfig、HubEndpoint、ApprovalRuleScope；应继续保持无 SwiftUI 依赖 |
@@ -469,3 +469,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 将成员选择、成员任务/技能加载、头像编辑、登录状态、引擎状态检查/交接、成员注册/移除等约 220 行方法迁入 `AppState+Members.swift` 的 `@MainActor extension AppState`。
 - 仅将被扩展访问的 `client` 从 private 调整为 PackApp module 内部可见；不改成员状态属性、异步任务、Keychain、Hub tool 调用和错误处理。
 - 不新增 Store、actor 或状态框架；先按领域逐块迁移，待依赖稳定后再评估独立 Store。
+
+
+### macOS App 网络层与状态域拆分（2026-11-23）
+
+- 新增 `app/Sources/PackApp/Networking/HubTransport.swift`，集中处理 Hub URL 校验、Bearer 请求头、20 秒请求超时、ephemeral URLSession、禁止 Cookie、同源重定向和 HTTP 状态检查。
+- `HubClient.swift` 只保留 MCP session 初始化/恢复、JSON-RPC id、SSE data 行解析、tools/call 结果解析和 Session not found 重试；不改变现有协议版本、请求字段或错误分类。
+- 新增 `AppState+Rooms.swift`，迁出房间切换、创建/重命名和归档；新增 `AppState+Tasks.swift`，迁出任务创建、批准/拒绝、验收、详情、加急和取消；此前已迁出 `AppState+Members.swift`。
+- `AppState.swift` 从约 1,129 行缩至约 897 行。仅将跨文件扩展需要访问的 `roomGeneration`、`decisionRooms`、`act` 和 `createTaskFromDraft` 调整为 PackApp module 内部可见；没有新增 Swift Package target/dependency。
+- 不修改 Keychain service/account、`~/.pack` 配置、Hub URL 发现、LaunchAgent、MCP schema、SQLite schema 或真实用户数据。
+- CI 证据：Run [#45099614364](https://github.com/cyou1314/Pack/actions/runs/45099614364)（Transport + Rooms）三个 Job 全部通过；Run [#45099953048](https://github.com/cyou1314/Pack/actions/runs/45099953048) 的 Runtime、macOS Build/Unit Tests/App Bundle、Hub 单测及契约快照通过，Default staging regression 截至记录时仍在运行。未将 staging 标记为通过。
