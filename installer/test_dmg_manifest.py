@@ -41,6 +41,20 @@ class DmgManifestTests(unittest.TestCase):
         self.assertIn('hdiutil verify "$OUT"', source)
         self.assertIn('shasum -a 256 "$OUT"', source)
 
+    def test_dmg_build_requires_release_and_arm64_payloads(self):
+        source = (ROOT / "installer" / "build-dmg.sh").read_text(encoding="utf-8")
+        bundle = (ROOT / "app" / "make-bundle.sh").read_text(encoding="utf-8")
+        self.assertIn('PACK_BUILD_CONFIGURATION=release bash "$ROOT/app/make-bundle.sh"', source)
+        self.assertIn('CONFIGURATION="${PACK_BUILD_CONFIGURATION:-debug}"', bundle)
+        self.assertIn('swift build -c "$CONFIGURATION"', bundle)
+        self.assertIn('cp ".build/$CONFIGURATION/PackApp"', bundle)
+        self.assertIn('[[ "$(uname -m)" == "arm64" ]]', source)
+        self.assertIn('lipo -archs "$ENGINE_BIN"', source)
+        self.assertIn('lipo -archs "$STAGE/Pack.app/Contents/MacOS/PackApp"', source)
+        for key in ("HostArchitecture=", "AppBuildConfiguration=release", "AppArchitectures=",
+                    "PythonArchitecture=", "EngineArchitectures="):
+            self.assertIn(key, source)
+
     def test_dmg_payload_guard_rejects_known_user_data_and_secrets(self):
         source = (ROOT / "installer" / "build-dmg.sh").read_text(encoding="utf-8")
         for pattern in (

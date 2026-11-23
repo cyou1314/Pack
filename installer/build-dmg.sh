@@ -6,11 +6,25 @@ VENV="${PACK_BUILD_VENV:-$HOME/.pack/local-hub/.venv}"
 ENGINE="${PACK_BUILD_ENGINE:-$HOME/pack-headless-l2}"
 OUT="${1:-$HOME/commander-work/Pack-local-installer.dmg}"
 [[ ! -e "$OUT" && ! -L "$OUT" ]] || { echo 'Output exists; choose a new path.' >&2; exit 1; }
+[[ "$(uname -m)" == "arm64" ]] || { echo 'Build the Apple Silicon DMG on an arm64 Mac.' >&2; exit 1; }
 "$PYROOT/bin/python3" -c 'import sys; assert sys.version_info[:2] == (3,12)'
+PYTHON_ARCH=$("$PYROOT/bin/python3" -c 'import platform; print(platform.machine())')
+VENV_ARCH=$("$VENV/bin/python" -c 'import platform; print(platform.machine())')
+[[ "$PYTHON_ARCH" == "arm64" && "$VENV_ARCH" == "arm64" ]] || {
+  echo "Python runtime architecture mismatch: base=$PYTHON_ARCH venv=$VENV_ARCH (expected arm64)." >&2
+  exit 1
+}
 "$VENV/bin/python" -m pip freeze | sort | diff -u "$ROOT/installer/python-requirements.lock" -
+ENGINE_BIN="$ENGINE/Electron.app/Contents/MacOS/Electron"
+[[ -x "$ENGINE_BIN" ]] || { echo "Missing executable Engine binary: $ENGINE_BIN" >&2; exit 1; }
+ENGINE_ARCHS="$(lipo -archs "$ENGINE_BIN")"
+[[ " $ENGINE_ARCHS " == *" arm64 "* ]] || {
+  echo "Engine binary does not contain arm64: $ENGINE_ARCHS" >&2
+  exit 1
+}
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-installer-stage.XXXXXX")"
 mkdir -p "$STAGE/python/bin" "$STAGE/python/lib/python3.12/site-packages" "$STAGE/hub" "$STAGE/engine/app"
-bash "$ROOT/app/make-bundle.sh" "$STAGE/Pack.app"
+PACK_BUILD_CONFIGURATION=release bash "$ROOT/app/make-bundle.sh" "$STAGE/Pack.app"
 rsync -a --exclude='site-packages' --exclude='__pycache__' "$PYROOT/lib/python3.12/" "$STAGE/python/lib/python3.12/"
 rsync -a "$PYROOT/bin/python3.12" "$STAGE/python/bin/"
 ln -s python3.12 "$STAGE/python/bin/python3"
@@ -24,6 +38,11 @@ ditto "$ENGINE/Electron.app" "$STAGE/engine/Electron.app"
 codesign --force --sign - "$STAGE/Pack.app" >/dev/null
 codesign --verify --deep --strict "$STAGE/Pack.app"
 plutil -lint "$STAGE/Pack.app/Contents/Info.plist" >/dev/null
+APP_ARCHS="$(lipo -archs "$STAGE/Pack.app/Contents/MacOS/PackApp")"
+[[ " $APP_ARCHS " == *" arm64 "* ]] || {
+  echo "Pack.app binary does not contain arm64: $APP_ARCHS" >&2
+  exit 1
+}
 for f in manager.py install.command upgrade.command uninstall.command README.txt python-requirements.lock; do cp "$ROOT/installer/$f" "$STAGE/$f"; done
 ln -s /Applications "$STAGE/Applications"
 # The hub and engine payload must contain no user databases, tokens or sessions.
@@ -40,9 +59,14 @@ cat > "$STAGE/BUILD-MANIFEST.txt" <<EOF
 PackVersion=$APP_VERSION
 PackBuild=$APP_BUILD
 MinimumMacOS=$MIN_MACOS
+HostArchitecture=$(uname -m)
+AppBuildConfiguration=release
+AppArchitectures=$APP_ARCHS
 PythonVersion=$PYTHON_VERSION
+PythonArchitecture=$PYTHON_ARCH
 FastMCPVersion=$FASTMCP_VERSION
 EngineVersion=$ENGINE_VERSION
+EngineArchitectures=$ENGINE_ARCHS
 SourceRevision=$SOURCE_REV
 EOF
 mkdir -p "$(dirname "$OUT")"

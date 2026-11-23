@@ -2,7 +2,7 @@ Pack 本地版（Apple Silicon / macOS 14 或更新）
 
 本包为 ad-hoc 签名，未做 Apple 开发者签名或公证。首次打开安装脚本和 App 如被系统拦截，请在 Finder 中右键选择「打开」，按系统提示操作；不要关闭系统安全设置。
 
-磁盘映像根目录包含 BUILD-MANIFEST.txt，记录 App 版本/构建号、最低 macOS 版本、内嵌 Python/FastMCP 版本、引擎版本和源码提交。构建结束后会验证 DMG 并输出 SHA-256。
+磁盘映像根目录包含 BUILD-MANIFEST.txt，记录 App 版本/构建号、最低 macOS 版本、arm64 架构、Release 构建配置、内嵌 Python/FastMCP 版本、引擎版本和源码提交。DMG 构建会拒绝非 arm64 主机或不含 arm64 的 Python/App/Engine 二进制；构建结束后会验证 DMG 并输出 SHA-256。
 
 首次使用：
 1. 将 Pack.app 拖到 Applications。右键打开「install.command」，完成本地服务安装。脚本使用包内 Python，不要求预装 Python 或联网安装依赖。

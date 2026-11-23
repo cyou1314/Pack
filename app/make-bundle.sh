@@ -9,10 +9,15 @@ APP="${1:-$ROOT/Pack.app}"
 [[ "$APP" == /* ]] || APP="$ROOT/$APP"
 [[ "$APP" == *.app ]] || { echo "Output must end in .app: $APP" >&2; exit 1; }
 [[ ! -e "$APP" && ! -L "$APP" ]] || { echo "Output exists; choose a new path: $APP" >&2; exit 1; }
+CONFIGURATION="${PACK_BUILD_CONFIGURATION:-debug}"
+case "$CONFIGURATION" in
+  debug|release) ;;
+  *) echo "PACK_BUILD_CONFIGURATION must be debug or release." >&2; exit 1 ;;
+esac
 
-swift build
+swift build -c "$CONFIGURATION"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/avatars"
-cp .build/debug/PackApp "$APP/Contents/MacOS/PackApp"
+cp ".build/$CONFIGURATION/PackApp" "$APP/Contents/MacOS/PackApp"
 cp Info.plist "$APP/Contents/Info.plist"
 cp ui-mock/avatars/dispatcher.webp ui-mock/avatars/absent.webp "$APP/Contents/Resources/avatars/"
 cp ui-mock/mark.png "$APP/Contents/Resources/mark.png"
