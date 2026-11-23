@@ -69,6 +69,25 @@ def _remove_owned_path(path):
         shutil.rmtree(path)
 
 
+def _rollback_install(agent_plists, owned_paths, agents_dir, agents_preexisting):
+    """Best-effort rollback limited to paths verified absent before installation."""
+    for label in labels.values():
+        try:
+            ctl('bootout', f'gui/{uid}/{label}', check=False)
+        except OSError:
+            pass
+    for path in (*agent_plists, *owned_paths):
+        try:
+            _remove_owned_path(path)
+        except OSError:
+            pass
+    if not agents_preexisting:
+        try:
+            agents_dir.rmdir()
+        except OSError:
+            pass
+
+
 def install():
     if hub.exists() or engine.exists() or config.exists(): raise SystemExit('Existing service data or App config found; refusing to overwrite.')
     if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
@@ -79,14 +98,14 @@ def install():
     if any(path.exists() or path.is_symlink() for path in agent_plists):
         raise SystemExit('A service LaunchAgent plist already exists; refusing to overwrite.')
     agents_preexisting = agents.exists()
-    os.umask(0o077); hub.mkdir(parents=True,mode=0o700); engine.mkdir(parents=True,mode=0o700); agents.mkdir(parents=True,exist_ok=True)
-    shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
-    for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
-    shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
-    subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
-    (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
-    py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
     try:
+        os.umask(0o077); hub.mkdir(parents=True,mode=0o700); engine.mkdir(parents=True,mode=0o700); agents.mkdir(parents=True,exist_ok=True)
+        shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
+        for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
+        shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
+        subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
+        (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
+        py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
         write_agent('hub',[py,hub/'hub.py','serve'],{**common,'PACK_HUB_HOST':'127.0.0.1','PACK_HUB_PORT':str(hp)},True)
         for _ in range(120):
             try:
@@ -106,18 +125,9 @@ def install():
             except OSError: time.sleep(.25)
         else: raise RuntimeError('Local engine did not start')
     except Exception:
-        # This was a fresh install (all destinations were checked absent above).
-        # Roll back only paths owned by this attempt so a failed first install
-        # cannot leave stale LaunchAgents that block every subsequent retry.
-        for label in labels.values():
-            ctl('bootout',f'gui/{uid}/{label}',check=False)
-        for path in agent_plists:
-            _remove_owned_path(path)
-        for path in (config, socket_dir, engine, hub):
-            _remove_owned_path(path)
-        if not agents_preexisting:
-            try: agents.rmdir()
-            except OSError: pass
+        # Every destination below was confirmed absent before this attempt.
+        # Roll back even when staging/copying fails before any service starts.
+        _rollback_install(agent_plists, (config, socket_dir, engine, hub), agents, agents_preexisting)
         raise
     print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
     print('Open Pack to migrate the private local credentials into Keychain.')
