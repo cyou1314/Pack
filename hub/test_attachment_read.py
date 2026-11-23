@@ -48,7 +48,7 @@ class AttachmentReadTests(unittest.TestCase):
         self.db.close()
         self.temp.cleanup()
 
-    def add_attachment(self, *, data=b"\\x89PNG\\r\\n\\x1a\\nreal-image",
+    def add_attachment(self, *, data=bytes.fromhex("89504e470d0a1a0a") + b"real-image",
                        room_id=1, created_at=11999, message_id=None):
         sha = hashlib.sha256(data).hexdigest()
         path = Path(hub._attach_path(sha, "image/png", self.context))
@@ -84,7 +84,7 @@ class AttachmentReadTests(unittest.TestCase):
         self.assertEqual(result["filename"], "photo.png")
         self.assertEqual(
             base64.b64decode(result["data_base64"]),
-            b"\\x89PNG\\r\\n\\x1a\\nreal-image",
+            bytes.fromhex("89504e470d0a1a0a") + b"real-image",
         )
         self.assertEqual(self.db.execute(
             "SELECT COUNT(*) FROM audit WHERE action='attachment_get'"
