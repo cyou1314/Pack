@@ -143,10 +143,10 @@ class UpgradeFixture:
         }.items():
             self.patches.enter_context(patch.object(manager, name, value))
 
-    def fake_ctl(self, fail_watch_once=False):
+    def fake_ctl(self, fail_watch_once=False, mutate_db_on_hub_bootstrap=False):
         loaded = set(self.labels.values())
         calls = []
-        state = {"fail_watch_once": fail_watch_once}
+        state = {"fail_watch_once": fail_watch_once, "mutate_db": mutate_db_on_hub_bootstrap}
 
         def ctl(*args, check=True):
             args = tuple(str(value) for value in args)
@@ -159,6 +159,11 @@ class UpgradeFixture:
                 return SimpleNamespace(returncode=0)
             if args[0] == "bootstrap":
                 label = Path(args[2]).stem
+                if state["mutate_db"] and label.endswith("-hub"):
+                    write_text(self.hub / "pack.db", "mutated-by-new-hub")
+                    write_text(self.hub / "pack.db-wal", "new-wal")
+                    write_text(self.hub / "pack.db-shm", "new-shm")
+                    state["mutate_db"] = False
                 if state["fail_watch_once"] and label.endswith("-watch"):
                     state["fail_watch_once"] = False
                     raise subprocess.CalledProcessError(1, args)
@@ -183,7 +188,8 @@ class UpgradeFixture:
                         raise subprocess.CalledProcessError(1, args)
                     backup_dir = Path(kwargs["env"]["PACK_BACKUP_DIR"])
                     backup_dir.mkdir(parents=True, exist_ok=True)
-                    write_text(backup_dir / "pack-test.db", "snapshot")
+                    live_db = Path(kwargs["env"]["PACK_HUB_DIR"]) / "pack.db"
+                    write_text(backup_dir / "pack-test.db", live_db.read_text(encoding="utf-8"))
                     write_text(backup_dir / "attachments-test.tar.gz", "archive")
                     write_text(backup_dir / "manifest-test.sha256", "manifest")
                 return SimpleNamespace(returncode=0)
@@ -272,7 +278,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         backups = list((f.hub / "backups").glob("upgrade-*"))
         self.assertEqual(len(backups), 1)
         backup = backups[0]
-        self.assertEqual((backup / "database" / "pack-test.db").read_text(encoding="utf-8"), "snapshot")
+        self.assertEqual((backup / "database" / "pack-test.db").read_text(encoding="utf-8"), "original-db")
         self.assertEqual((backup / "code" / "hub" / "hub.py").read_text(encoding="utf-8"), "old-hub")
         self.assertTrue((backup / "Pack.app" / "old-app.txt").is_file())
         self.assertEqual((backup / "state" / "config.json").stat().st_mode & 0o777, 0o600)
@@ -284,7 +290,7 @@ class UpgradeSafetyTests(unittest.TestCase):
 
     def test_failed_restart_restores_previous_program_and_app(self):
         f = self.fixture
-        ctl, calls, loaded = f.fake_ctl(fail_watch_once=True)
+        ctl, calls, loaded = f.fake_ctl(fail_watch_once=True, mutate_db_on_hub_bootstrap=True)
         run, _ = f.fake_subprocess_run()
         with (
             patch.object(manager, "ctl", side_effect=ctl),
@@ -301,7 +307,13 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertTrue((f.app_path / "old-app.txt").is_file())
         self.assertFalse((f.app_path / "new-app.txt").exists())
         self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
+        self.assertFalse((f.hub / "pack.db-wal").exists())
+        self.assertFalse((f.hub / "pack.db-shm").exists())
         self.assertEqual((f.engine / "data" / "local" / "session.json").read_text(encoding="utf-8"), "original-session")
+        rollback_states = list((f.hub / "backups").glob("upgrade-*/state"))
+        self.assertTrue(any(list(state.glob("pack.db.failed-*")) for state in rollback_states))
+        self.assertTrue(any(list(state.glob("pack.db-wal.failed-*")) for state in rollback_states))
+        self.assertTrue(any(list(state.glob("pack.db-shm.failed-*")) for state in rollback_states))
         self.assertEqual(loaded, set(f.labels.values()))
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
         self.assertTrue(any(call[0] == "bootout" for call in calls))

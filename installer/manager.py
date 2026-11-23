@@ -395,6 +395,60 @@ def rollback_app_bundle(previous):
         return [f"{app_path}: {type(exc).__name__}: {exc}"]
 
 
+
+def restore_database_snapshot(backup_root):
+    database_dir = pathlib.Path(backup_root) / "database"
+    snapshots = sorted(database_dir.glob("pack-*.db"))
+    if len(snapshots) != 1:
+        raise RuntimeError(f"Expected one verified database snapshot in {database_dir}; found {len(snapshots)}")
+    snapshot = snapshots[0]
+    require_regular_file(snapshot, "verified upgrade database snapshot")
+
+    state_root = pathlib.Path(backup_root) / "state"
+    require_real_directory(state_root, "upgrade rollback state directory")
+    live_db = hub / "pack.db"
+    require_regular_file(live_db, "live Hub database during rollback")
+
+    stamp = time.time_ns()
+    failed_db = state_root / f"pack.db.failed-{stamp}"
+    temporary_db = hub / f".pack.db.rollback-{stamp}"
+    sidecars = []
+    for suffix in ("-wal", "-shm"):
+        sidecar = pathlib.Path(str(live_db) + suffix)
+        if sidecar.is_symlink():
+            raise RuntimeError(f"Refusing symlinked SQLite sidecar during rollback: {sidecar}")
+        if sidecar.exists():
+            if not sidecar.is_file():
+                raise RuntimeError(f"Invalid SQLite sidecar during rollback: {sidecar}")
+            sidecars.append((sidecar, state_root / f"{sidecar.name}.failed-{stamp}"))
+
+    shutil.copy2(snapshot, temporary_db)
+    temporary_db.chmod(0o600)
+    moved_db = False
+    moved_sidecars = []
+    try:
+        os.replace(live_db, failed_db)
+        moved_db = True
+        for source, destination in sidecars:
+            os.replace(source, destination)
+            moved_sidecars.append((source, destination))
+        os.replace(temporary_db, live_db)
+        temporary_db = None
+    except Exception:
+        if live_db.exists() or live_db.is_symlink():
+            remove_path(live_db)
+        if moved_db and failed_db.exists():
+            os.replace(failed_db, live_db)
+        for source, destination in reversed(moved_sidecars):
+            if destination.exists() or destination.is_symlink():
+                os.replace(destination, source)
+        raise
+    finally:
+        if temporary_db is not None and (temporary_db.exists() or temporary_db.is_symlink()):
+            remove_path(temporary_db)
+    return failed_db
+
+
 def wait_for_port(port, timeout=30):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -465,10 +519,16 @@ def upgrade():
                     rollback_errors.append(f"stop {label}: {stop_error}")
             rollback_errors.extend(rollback_app_bundle(app_previous))
             rollback_errors.extend(rollback_program_paths(swaps))
-            try:
-                bootstrap_upgrade_agents()
-            except Exception as restart_error:
-                rollback_errors.append(f"restart previous services: {restart_error}")
+            if backup_root is not None:
+                try:
+                    restore_database_snapshot(backup_root)
+                except Exception as database_error:
+                    rollback_errors.append(f"restore database snapshot: {database_error}")
+            if not rollback_errors:
+                try:
+                    bootstrap_upgrade_agents()
+                except Exception as restart_error:
+                    rollback_errors.append(f"restart previous services: {restart_error}")
         if app_stage is not None:
             try:
                 remove_path(app_stage)
@@ -486,7 +546,7 @@ def upgrade():
             ) from exc
         if backup_root is not None:
             raise RuntimeError(
-                f"Upgrade failed; previous program files were restored. "
+                f"Upgrade failed; previous program files and database snapshot were restored. "
                 f"Verified backup retained at {backup_root}: {type(exc).__name__}: {exc}"
             ) from exc
         raise
