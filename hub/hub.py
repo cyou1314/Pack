@@ -68,6 +68,7 @@ if __package__:
     from .core.schema import SCHEMA
     from .core.context import HubContext
     from .core.migrations import apply_migrations as _apply_hub_migrations
+    from .core.task_ids import bounded_task_id as _bounded_task_id
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
         action_tag, approval_rule_candidates, backoff_seconds as _backoff_seconds,
@@ -83,6 +84,7 @@ else:
     from core.schema import SCHEMA
     from core.context import HubContext
     from core.migrations import apply_migrations as _apply_hub_migrations
+    from core.task_ids import bounded_task_id as _bounded_task_id
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
 
@@ -217,7 +219,9 @@ def _approval_gate(conn, room_id, msg_id, body, poster=None,
     match = TASK_REF_RE.search(body or "")
     if not match:
         return {}
-    task_id = int(match.group(1))
+    task_id = _bounded_task_id(match)
+    if task_id is None:
+        return {}
     task = conn.execute(
         """SELECT t.title, t.assignee, mb.name AS assignee_name FROM tasks t
            LEFT JOIN members mb ON mb.id=t.assignee WHERE t.id=?""", (task_id,)).fetchone()
@@ -315,15 +319,20 @@ def _approval_state(conn, task_id):
     没有返回 None；decided_by 为其后已出现的决议来源
     （'message' = 调度员决议消息，kind='decision'（规则引擎/独立审查）或历史
     kind='chat' 决议均认；'review' = 先前审查留痕），未决议为 None。"""
-    req = None
-    rows = conn.execute(
-        "SELECT * FROM messages WHERE kind='approval_request' ORDER BY id DESC").fetchall()
-    for r in rows:
-        if r["task_id"] == task_id:
-            req = r
+    req = conn.execute(
+        """SELECT * FROM messages
+           WHERE kind='approval_request' AND task_id=?
+           ORDER BY id DESC LIMIT 1""", (task_id,)).fetchone()
+    # Preserve compatibility with direct legacy writes that still leave
+    # messages.task_id NULL after the one-time backfill.
+    for r in conn.execute(
+            """SELECT * FROM messages
+               WHERE kind='approval_request' AND task_id IS NULL
+               ORDER BY id DESC"""):
+        if req is not None and r["id"] <= req["id"]:
             break
-        m = TASK_REF_RE.search(r["body"] or "")
-        if m and int(m.group(1)) == task_id:
+        match = TASK_REF_RE.search(r["body"] or "")
+        if _bounded_task_id(match) == task_id:
             req = r
             break
     if not req:
@@ -680,7 +689,30 @@ def _used_combos(conn) -> set:
 def init(context: HubContext | None = None):
     context = context or _DEFAULT_CONTEXT
     conn = context.connect()
+    # WAL is persistent database state: configure it once during Hub init,
+    # not on every request connection.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+
+    # Older production databases predate audit.task_id. Add it before the
+    # dispatcher bootstrap can write an audit row through HubContext.audit.
+    audit_cols = {row[1] for row in conn.execute("PRAGMA table_info(audit)")}
+    if "task_id" not in audit_cols:
+        conn.execute("ALTER TABLE audit ADD COLUMN task_id INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_task ON audit(task_id, id)")
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_messages_approval_task
+           ON messages(task_id, id DESC) WHERE kind='approval_request'"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_messages_dispatch_decisions
+           ON messages(author_id, id) WHERE kind IN ('chat','decision')"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_review_log_task_time "
+        "ON review_log(task_id, created_at)"
+    )
+
     conn.execute(
         "INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)",
         (context.clock(),),
@@ -725,6 +757,31 @@ def init(context: HubContext | None = None):
         conn.execute("ALTER TABLE task_transfers ADD COLUMN accepted_at REAL")
     if "expires_at" not in xcols:
         conn.execute("ALTER TABLE task_transfers ADD COLUMN expires_at REAL")
+
+    # staging58 query indexes: create only after legacy columns have been
+    # added so the first init on an older database cannot fail.
+    for index_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_tasks_urgent_id "
+        "ON tasks(urgent DESC, id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_assignee_urgent_id "
+        "ON tasks(assignee, urgent DESC, id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_room_urgent_id "
+        "ON tasks(room_id, urgent DESC, id ASC)",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_active_queue
+           ON tasks(urgent DESC, id ASC, assignee)
+           WHERE status IN ('open','claimed','working')""",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_lease_expiry
+           ON tasks(lease_expires)
+           WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_unclaimed_due
+           ON tasks(assignee, next_claim_at)
+           WHERE status='open' AND assignee IS NOT NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_task_transfers_pending_expiry
+           ON task_transfers(expires_at, id)
+           WHERE status='pending' AND expires_at IS NOT NULL""",
+    ):
+        conn.execute(index_sql)
+
     msgcols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
     if "deleted_at" not in msgcols:
         conn.execute("ALTER TABLE messages ADD COLUMN deleted_at REAL")
@@ -780,6 +837,37 @@ def init(context: HubContext | None = None):
         conn.execute("ALTER TABLE members ADD COLUMN access_mode TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO hub_settings(key,value) VALUES('external_enabled','1')")
+
+    # staging57: one-time backfill for structured task audit ownership and
+    # legacy approval_request.task_id. Markers make repeated init idempotent.
+    if not conn.execute(
+            "SELECT 1 FROM hub_settings WHERE key='audit_task_id_backfill_v1'").fetchone():
+        for row in conn.execute(
+                "SELECT id,detail FROM audit WHERE task_id IS NULL").fetchall():
+            task_id = _audit_task_id(row["detail"])
+            if task_id is not None:
+                conn.execute("UPDATE audit SET task_id=? WHERE id=?",
+                             (task_id, row["id"]))
+        conn.execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value) "
+            "VALUES('audit_task_id_backfill_v1','1')"
+        )
+    if not conn.execute(
+            "SELECT 1 FROM hub_settings WHERE key='approval_task_id_backfill_v1'").fetchone():
+        for row in conn.execute(
+                "SELECT id,body FROM messages "
+                "WHERE kind='approval_request' AND task_id IS NULL").fetchall():
+            task_id = _bounded_task_id(TASK_REF_RE.search(row["body"] or ""))
+            if task_id is not None:
+                conn.execute(
+                    "UPDATE messages SET task_id=? WHERE id=? AND task_id IS NULL",
+                    (task_id, row["id"]),
+                )
+        conn.execute(
+            "INSERT OR REPLACE INTO hub_settings(key,value) "
+            "VALUES('approval_task_id_backfill_v1','1')"
+        )
+
     # H2 房间归档标记。
     rcols = [r[1] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
     if "archived_at" not in rcols:
