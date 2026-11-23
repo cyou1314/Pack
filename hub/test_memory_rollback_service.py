@@ -53,7 +53,7 @@ class MemoryRollbackServiceTests(unittest.TestCase):
         self.temp.cleanup()
 
     def rollback(self, actor=None, scope="private", key="notes",
-                 version_id=None, member=""):
+                 version_id=None, member="alice"):
         return rollback_memory(
             self.context, actor or self.dispatcher, scope, key,
             self.v1 if version_id is None else version_id, member,
