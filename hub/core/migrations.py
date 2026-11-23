@@ -161,11 +161,11 @@ def _apply_registry_v1(connection: sqlite3.Connection, now: float) -> None:
 
     optional = {
         name: (name if name in columns else f"NULL AS {name}")
-        for name in ("removed_at", "provider", "display_name", "kind")
+        for name in ("removed_at", "provider", "display_name", "kind", "login_state")
     }
     rows = connection.execute(
         "SELECT id,name,role,created_at,"
-        + ",".join(optional[name] for name in ("removed_at", "provider", "display_name", "kind"))
+        + ",".join(optional[name] for name in ("removed_at", "provider", "display_name", "kind", "login_state"))
         + " FROM members WHERE role='member' ORDER BY id"
     ).fetchall()
 
@@ -173,7 +173,19 @@ def _apply_registry_v1(connection: sqlite3.Connection, now: float) -> None:
         provider_id, _ = _provider_for(row["provider"])
         external = (row["kind"] or "").strip().lower() == "external"
         removed = row["removed_at"] is not None
-        status = "removed" if removed else ("active" if external else "legacy_unclassified")
+        login_state = (row["login_state"] or "").strip().lower()
+        if removed:
+            status = "removed"
+        elif external:
+            status = "active"
+        elif login_state in ("pending", "logged_in"):
+            # logged_in means the account login succeeded, but the Agent
+            # Runtime/adapter is not yet connected.
+            status = "pending"
+        elif login_state == "expired":
+            status = "disconnected"
+        else:
+            status = "legacy_unclassified"
         connection.execute(
             """INSERT INTO agents(
                 agent_id,provider_id,legacy_member_id,display_name,connection_mode,
