@@ -31,3 +31,8 @@ PY=python ./run-all-suites.sh --list
 ## 文件纪律
 
 测试目录只保存源码、夹具和必要的复核文档。数据库、token、附件、日志、测试输出和临时目录均由运行器在临时副本中生成，并由 `.gitignore` 排除。
+
+
+## Hub 数据层回归
+
+Hub 的模块化服务测试由 `.github/workflows/ci.yml` 单独驱动，不属于历史 staging 快照目录。`hub/test_db_query_indexes.py` 验证 audit/approval 的结构化 task_id 回填、WAL 初始化时机，以及任务队列、审计、审批和转交过期查询的索引计划；测试只使用临时 SQLite 数据库。
