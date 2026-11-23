@@ -8,8 +8,10 @@ OUT="${1:-$HOME/commander-work/Pack-local-installer.dmg}"
 [ ! -e "$OUT" ] || { echo 'Output exists; choose a new path.' >&2; exit 1; }
 "$PYROOT/bin/python3" -c 'import sys; assert sys.version_info[:2] == (3,12)'
 "$VENV/bin/python" -m pip freeze | sort | diff -u "$ROOT/installer/python-requirements.lock" -
-xcrun swift build --package-path "$ROOT/app"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-installer-stage.XXXXXX")"
+# Build the .app directly into the disposable staging directory. A clean
+# clone has no app/Pack.app yet, and we must not delete a developer's bundle.
+bash "$ROOT/app/make-bundle.sh" "$STAGE/Pack.app"
 mkdir -p "$STAGE/python/bin" "$STAGE/python/lib/python3.12/site-packages" "$STAGE/hub" "$STAGE/engine/app"
 rsync -a --exclude='site-packages' --exclude='__pycache__' "$PYROOT/lib/python3.12/" "$STAGE/python/lib/python3.12/"
 rsync -a "$PYROOT/bin/python3.12" "$STAGE/python/bin/"
@@ -18,8 +20,6 @@ rsync -a --exclude='pip' --exclude='pip-*' --exclude='__pycache__' "$VENV/lib/py
 for f in hub.py room_watch.py backup-db.sh verify-backup.sh; do cp "$ROOT/hub/$f" "$STAGE/hub/$f"; done
 for f in headless.cjs gateway-page.js package.json; do cp "$ENGINE/app/$f" "$STAGE/engine/app/$f"; done
 ditto "$ENGINE/Electron.app" "$STAGE/engine/Electron.app"
-ditto "$ROOT/app/Pack.app" "$STAGE/Pack.app"
-cp "$ROOT/app/.build/debug/PackApp" "$STAGE/Pack.app/Contents/MacOS/PackApp"
 /usr/libexec/PlistBuddy -c 'Add :PackInstallerMarker string com.cyou.pack.installer.v1' "$STAGE/Pack.app/Contents/Info.plist"
 codesign --force --sign - "$STAGE/Pack.app" >/dev/null
 codesign --verify --deep --strict "$STAGE/Pack.app"
