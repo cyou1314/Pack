@@ -524,3 +524,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 保持原 HubClient tool 名称、参数、结果字段、错误提示、模板创建后关闭目录和清空参数的行为不变。
 - 不新增 Store、依赖、Swift Package target 或数据库/MCP 变更；Catalog extension 仍运行在同一个 `@MainActor AppState` 上。
 - Settings 相关状态属性与其他跨域状态暂留 AppState；只有明确的所有权和测试收益出现后再拆独立 Store。
+
+
+### Codex App Server 审批响应可靠性（2026-11-23）
+
+- `respondToApproval` 先向 App Server 写入明确的 accept/decline/cancel 决议，只有写入成功后才清除本地 pending 状态和超时器。
+- 若进程 stdin 已关闭或响应写入失败，审批仍保留为 pending，超时器继续生效，避免 UI 显示审批已结束但 App Server 实际未收到决议。
+- 新增回归测试：模拟审批请求到达后 stdin 关闭，验证响应失败不会提前删除 pending approval；随后断开连接可正常清理状态。
+- 不改变 Codex 协议方法、决议枚举、Pack Agent Event schema 或 MCP/SQLite 契约。
