@@ -98,12 +98,17 @@ class MemberRegistrationServiceTests(unittest.TestCase):
 
     def test_custom_avatar_combo_is_applied(self):
         result = self.register(avatar_combo=self.combo)
+        expected = json.loads(self.combo)
         self.assertEqual(
             {key: result["avatar"][key] for key in
              ("species", "palette", "accessory", "bg")},
-            {"species": "fox", "palette": "ocean", "accessory": "cap", "bg": "peach"},
+            expected,
         )
-        self.assertEqual(result["avatar"]["combo"], "fox|ocean|cap|peach")
+        self.assertEqual(
+            result["avatar"]["combo"],
+            "|".join(expected[key] for key in
+                     ("species", "palette", "accessory", "bg")),
+        )
 
     def test_invalid_avatar_json_shape_and_fields_are_rejected(self):
         for value, expected in (
