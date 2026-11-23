@@ -162,7 +162,7 @@ def main():
                 ORDER BY id DESC LIMIT 1""", (1,), "idx_messages_approval_task"),
             ("legacy approval fallback",
              """SELECT * FROM messages WHERE kind='approval_request' AND task_id IS NULL
-                ORDER BY id DESC""", (), "idx_messages_approval_legacy"),
+                ORDER BY id DESC""", (), "idx_messages_approval_task"),
             ("dispatcher decision lookup",
              """SELECT body FROM messages WHERE id>? AND kind IN ('chat','decision')
                 AND author_id=? ORDER BY id""", (1, dispatcher_id),
