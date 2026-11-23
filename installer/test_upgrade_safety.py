@@ -170,6 +170,7 @@ class UpgradeFixture:
                     write_text(self.hub / "pack.db", "mutated-by-new-hub")
                     write_text(self.hub / "pack.db-wal", "new-wal")
                     write_text(self.hub / "pack.db-shm", "new-shm")
+                    write_text(self.hub / "attachments" / "new-from-new-hub.bin", "accepted-upload")
                     state["mutate_db"] = False
                 if state["fail_watch_once"] and label.endswith("-watch"):
                     state["fail_watch_once"] = False
@@ -406,31 +407,6 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual(len(list(f.app_path.parent.glob(".Pack.app.previous-*"))), 1)
         self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
 
-    def test_restore_refuses_a_backup_that_fails_reverification(self):
-        f = self.fixture
-        backup_root = f.hub / "backups" / "upgrade-reverify"
-        database = backup_root / "database"
-        state = backup_root / "state"
-        old_code = backup_root / "code" / "hub"
-        database.mkdir(parents=True)
-        state.mkdir()
-        old_code.mkdir(parents=True)
-        write_text(database / "pack-test.db", "snapshot")
-        write_text(old_code / "verify-backup.sh", "#!/bin/bash\nexit 0\n")
-
-        def fail_verification(args, **kwargs):
-            self.assertEqual(Path(args[1]).name, "verify-backup.sh")
-            raise subprocess.CalledProcessError(1, args)
-
-        live_db = f.hub / "pack.db"
-        with patch.object(manager.subprocess, "run", side_effect=fail_verification):
-            with self.assertRaises(subprocess.CalledProcessError):
-                manager.restore_database_snapshot(backup_root)
-
-        self.assertEqual(live_db.read_text(encoding="utf-8"), "original-db")
-        self.assertFalse(list(state.glob("pack.db.failed-*")))
-        self.assertFalse(list(f.hub.glob(".pack.db.rollback-*")))
-
     def test_rollback_refuses_to_swap_files_while_service_port_remains_occupied(self):
         f = self.fixture
         ctl, calls, loaded = f.fake_ctl(
@@ -506,7 +482,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
         self.assertEqual(sum(call[0] == "bootout" for call in calls), len(f.labels))
 
-    def test_failed_restart_restores_previous_program_and_app(self):
+    def test_failed_restart_restores_programs_but_preserves_live_data(self):
         f = self.fixture
         ctl, calls, loaded = f.fake_ctl(fail_watch_once=True, mutate_db_on_hub_bootstrap=True)
         run, subprocess_calls = f.fake_subprocess_run()
@@ -517,7 +493,7 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "wait_for_hub_ready", return_value=None),
             patch.object(manager, "wait_for_port", return_value=None),
         ):
-            with self.assertRaisesRegex(RuntimeError, "previous program files and database snapshot were restored"):
+            with self.assertRaisesRegex(RuntimeError, "previous program files were restored and live user data was preserved"):
                 manager.upgrade()
 
         self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
@@ -525,19 +501,20 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual((f.engine / "app" / "headless.cjs").read_text(encoding="utf-8"), "old-engine")
         self.assertTrue((f.app_path / "old-app.txt").is_file())
         self.assertFalse((f.app_path / "new-app.txt").exists())
-        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
-        self.assertFalse((f.hub / "pack.db-wal").exists())
-        self.assertFalse((f.hub / "pack.db-shm").exists())
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "mutated-by-new-hub")
+        self.assertEqual((f.hub / "pack.db-wal").read_text(encoding="utf-8"), "new-wal")
+        self.assertEqual((f.hub / "pack.db-shm").read_text(encoding="utf-8"), "new-shm")
+        self.assertEqual((f.hub / "attachments" / "new-from-new-hub.bin").read_text(encoding="utf-8"), "accepted-upload")
         self.assertEqual((f.engine / "data" / "local" / "session.json").read_text(encoding="utf-8"), "original-session")
         rollback_states = list((f.hub / "backups").glob("upgrade-*/state"))
-        self.assertTrue(any(list(state.glob("pack.db.failed-*")) for state in rollback_states))
-        self.assertTrue(any(list(state.glob("pack.db-wal.failed-*")) for state in rollback_states))
-        self.assertTrue(any(list(state.glob("pack.db-shm.failed-*")) for state in rollback_states))
+        self.assertFalse(any(list(state.glob("pack.db.failed-*")) for state in rollback_states))
+        self.assertFalse(any(list(state.glob("pack.db-wal.failed-*")) for state in rollback_states))
+        self.assertFalse(any(list(state.glob("pack.db-shm.failed-*")) for state in rollback_states))
         self.assertEqual(loaded, set(f.labels.values()))
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
         self.assertEqual(
             sum(Path(call[1]).name == "verify-backup.sh" for call in subprocess_calls if call[0] == "/bin/bash"),
-            2,
+            1,
         )
         self.assertTrue(any(call[0] == "bootout" for call in calls))
 
