@@ -136,7 +136,7 @@ class InboxReadTests(unittest.TestCase):
             self.pull(guest, room="other-room")
 
     def test_window_limit_and_has_more(self):
-        old = self.seed(ts=1)
+        old = self.seed(ts=-1_000_000)
         for i in range(hub.INBOX_PULL_LIMIT + 1):
             self.seed(body=f"recent-{i}")
         result = self.pull()
