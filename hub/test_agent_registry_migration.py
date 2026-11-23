@@ -2,6 +2,7 @@
 """Regression tests for the additive Agent Registry schema migration."""
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -150,6 +151,48 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 migrations._PROVIDER_LABELS.clear()
                 migrations._PROVIDER_LABELS.update(original)
                 connection.close()
+
+
+    def test_concurrent_migration_initialization_is_serialized(self):
+        with tempfile.TemporaryDirectory(prefix="pack-agent-registry-concurrent-") as directory:
+            seed = self._database(directory)
+            path = Path(directory) / "registry.db"
+            seed.close()
+            barrier = threading.Barrier(2)
+            errors = []
+
+            def migrate():
+                connection = None
+                try:
+                    connection = connect(path)
+                    barrier.wait(timeout=5)
+                    apply_migrations(connection, clock=lambda: 100.0)
+                except Exception as error:
+                    errors.append(error)
+                finally:
+                    if connection is not None:
+                        connection.close()
+
+            workers = [threading.Thread(target=migrate) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=15)
+
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            self.assertEqual(errors, [])
+            verify = connect(path)
+            try:
+                self.assertEqual(
+                    verify.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    verify.execute("SELECT COUNT(*) FROM agents").fetchone()[0],
+                    6,
+                )
+            finally:
+                verify.close()
 
     def test_failed_migration_rolls_back_schema_and_ledger(self):
         with tempfile.TemporaryDirectory(prefix="pack-agent-registry-") as directory:

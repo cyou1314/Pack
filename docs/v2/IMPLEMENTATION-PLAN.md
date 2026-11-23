@@ -46,7 +46,7 @@
 - 新建增量迁移。
 - 为旧成员生成兼容映射，不改变原 token。
 - 影子读取比对旧成员与新 Agent 视图。
-- 设计文档已完成：`docs/v2/AGENT-REGISTRY-MIGRATION-DESIGN.md`；当前仅为设计稿，尚未新增表或运行迁移。
+- M1a 增量 schema、版本化迁移和 legacy backfill 已通过 PR #21 合入 v2 Foundation；M1b 只读 shadow report/CLI 已通过 PR #22 合入。CLI 仅在手动运行时读取指定数据库，尚未对用户 Mac 数据库执行。
 
 回滚：关闭新读路径，保留新增表，不删除旧数据。
 
@@ -176,7 +176,7 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 ## 8. 2026-11-23 实施状态校准
 
 - **M0 Agent Core Foundation：** Descriptor / Registry / Event Envelope / Context Package / Codex App Server Adapter 与 mock contract tests 已存在；这只代表基础骨架完成，不代表已装配到生产 Runtime。
-- **M1 Agent Registry：** 兼容映射与 additive schema 设计稿已完成（`docs/v2/AGENT-REGISTRY-MIGRATION-DESIGN.md`）；DDL、migration ledger、legacy backfill、foreign-key enforcement 和 shadow read 均未实施。
+- **M1 Agent Registry：** M1a DDL、migration ledger、legacy backfill 与 foreign-key enforcement 已合入 v2 Foundation；M1b 手动只读 shadow CLI 已合入并通过 CI。尚未对用户 Mac 数据库执行 shadow report；并发初始化与 CLI 只读性强化测试正在独立 PR 中。
 - **M2 Runtime / Event Gateway：** 尚未实施。当前 `runtime/runtime.mjs` 仍是 Muse ego v1 主循环；AgentAdapterRegistry/Codex Adapter 未进入生产入口，事件仍为进程内回调，没有 durable Inbox/Outbox、游标恢复和 Hub/App 审批闭环。
 - **M3 Provider Adapter：** Codex Adapter 有 mock 测试，但真实 Mac App Server 登录、Session/Turn、断线恢复和审批闭环未验收；ChatGPT、Doubao 等 Adapter 仍按 Provider Matrix 单独验证。
 - **安全门槛：** 在 M2 Event Gateway、Hub Permission/Approval/Audit 与 SwiftUI 人工审批闭环完成前，不开放 Codex command/file 高风险工具自动执行。
@@ -189,7 +189,7 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 - 已实现 providers / agents / connections / sessions 表、外键与索引。
 - 已实现旧 member 稳定映射；保留原 members 行、token hash、任务/消息引用与私有记忆。
 - 已启用逐连接 SQLite foreign key enforcement，并加入测试和 schema contract snapshot。
-- 当前在独立分支等待 CI/审查；未合入 Foundation、未部署。M1b shadow read 未开始。
+- M1a 已合入 v2 Foundation（PR #21）；M1b shadow CLI 已合入（PR #22）。M1b hardening PR 正补充并发初始化与只读 CLI 安全测试；尚未部署到用户 Mac。
 
 
 ### M1a 已合入 / M1b 影子读取
