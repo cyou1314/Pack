@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Hub query-index regression: migration, correctness, and SQLite query plans."""
+import asyncio
 import importlib.util
+import json
 import os
+import socket
 import sqlite3
 import tempfile
+import threading
+import time
+
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HUB_PATH = os.path.join(HERE, "hub.py")
@@ -31,6 +39,36 @@ def plan_uses(conn, sql, args, index_name):
     return index_name in detail, detail
 
 
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def wait_port(port, timeout=10):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket() as sock:
+            sock.settimeout(0.2)
+            if sock.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(0.05)
+    return False
+
+
+async def call_task_audit(port, token, task_id):
+    transport = StreamableHttpTransport(
+        f"http://127.0.0.1:{port}/mcp",
+        headers={"Authorization": f"Bearer {token}"})
+    async with Client(transport) as client:
+        result = await client.call_tool("task_audit", {"task_id": task_id})
+        if getattr(result, "isError", False):
+            raise AssertionError(str(result.content))
+        if getattr(result, "structured_content", None):
+            return result.structured_content
+        return json.loads(result.content[0].text)
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="pack-hub-index-") as temp:
         db_path = os.path.join(temp, "pack.db")
@@ -47,7 +85,10 @@ def main():
                 (1, 1, 'alice', 'task_create', 'task 1: legacy event'),
                 (2, 2, 'bob', 'task_claim', 'task 12 legacy event'),
                 (3, 3, 'alice', 'message_post', 'message 1'),
-                (4, 4, 'alice', 'other', 'task 1x is not a task prefix');
+                (4, 4, 'alice', 'other', 'task 1x is not a task prefix'),
+                (5, 5, 'alice', 'member_register', 'task 9223372036854775808'),
+                (6, 6, 'alice', 'member_register',
+                 'task ' || replace(printf('%5000s', 'x'), ' ', '9'));
 
             CREATE TABLE messages(
                 id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
@@ -79,7 +120,7 @@ def main():
             for r in conn.execute("SELECT id, task_id FROM audit WHERE id <= 4")
         }
         check("legacy audit rows backfilled by exact task prefix",
-              legacy_audit == {1: 1, 2: 12, 3: None, 4: None},
+              legacy_audit == {1: 1, 2: 12, 3: None, 4: None, 5: None, 6: None},
               str(legacy_audit))
 
         approval_rows = conn.execute(
@@ -138,6 +179,12 @@ def main():
         hub.audit(conn, "alice", "task_claim", "task 1")
         hub.audit(conn, "bob", "task_transfer", "task 12: to bob")
         hub.audit(conn, "alice", "message_post", "message 1")
+        hub.audit(conn, "alice", "member_register", "task 9223372036854775808")
+        overflow = conn.execute(
+            "SELECT task_id, detail FROM audit WHERE action='member_register' "
+            "AND detail='task 9223372036854775808'").fetchone()
+        check("new out-of-range task-like detail remains safely unassociated",
+              overflow is not None and overflow["task_id"] is None)
         events1, trunc1 = hub._task_audit_events(conn, 1)
         events12, trunc12 = hub._task_audit_events(conn, 12)
         check("new task audit writes populate task_id",
@@ -186,9 +233,49 @@ def main():
         audit_count = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
         approval_count = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE kind='approval_request'").fetchone()[0]
-        check("init rerun is idempotent", audit_count == 209 and approval_count == 6,
+        check("init rerun is idempotent", audit_count == 212 and approval_count == 6,
               f"audit={audit_count} approvals={approval_count}")
         conn.close()
+
+        # Exercise the registered MCP task_audit tool, not only its SQL helper.
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        room_id = conn.execute(
+            "SELECT id FROM rooms WHERE name='pack-main'").fetchone()["id"]
+        dispatcher_id = conn.execute(
+            "SELECT id FROM members WHERE role='dispatcher'").fetchone()["id"]
+        now = time.time()
+        cur = conn.execute(
+            """INSERT INTO tasks(room_id,title,body,created_by,assignee,status,
+                                 created_at,updated_at)
+               VALUES(?,?,?,?,NULL,'open',?,?)""",
+            (room_id, "query-index integration", "test", dispatcher_id, now, now))
+        integration_task_id = cur.lastrowid
+        hub.audit(conn, "dispatcher", "task_create",
+                  f"task {integration_task_id}: actual MCP tool path")
+        conn.commit()
+        conn.close()
+
+        port = free_port()
+        server = hub.build_server()
+        thread = threading.Thread(
+            target=server.run,
+            kwargs={"transport": "http", "host": "127.0.0.1",
+                    "port": port, "path": "/mcp"},
+            daemon=True)
+        thread.start()
+        server_ready = wait_port(port)
+        check("MCP test server starts", server_ready, f"port={port}")
+        if server_ready:
+            token = open(os.path.join(temp, ".dispatcher_token")).read().strip()
+            result = asyncio.run(call_task_audit(port, token, integration_task_id))
+            check("registered task_audit tool returns indexed event",
+                  result["task"]["id"] == integration_task_id
+                  and any(e["detail"] == f"task {integration_task_id}: actual MCP tool path"
+                          for e in result["events"]),
+                  str(result.get("events", [])[-3:]))
+            check("registered task_audit preserves truncation field",
+                  result["events_truncated"] is False)
 
     print(f"\n{PASSED} passed, {FAILED} failed")
     return 1 if FAILED else 0
