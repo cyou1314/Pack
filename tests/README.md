@@ -20,3 +20,8 @@
 
 - `python hub/test_db_query_indexes.py` 在临时旧版数据库上验证历史数据迁移、审批请求/决议查询、任务审计归属和 200 条截断语义。
 - 测试同时检查 SQLite `EXPLAIN QUERY PLAN`，确认查询实际命中新增索引；不连接生产数据库。
+
+## Runtime 单元回归
+
+- GitHub Actions 使用 Node 22 执行 `node --test runtime/tests/*.test.mjs`，同时保留全量 `node --check` 语法检查。
+- 测试覆盖地址来源、聊天策略、额度策略和 Hub 网络故障处理；不需要外部 API 凭据。
