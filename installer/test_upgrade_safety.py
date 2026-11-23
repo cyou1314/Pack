@@ -246,6 +246,7 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "ctl", side_effect=ctl),
             patch.object(manager.subprocess, "run", side_effect=run),
             patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_hub_ready", return_value=None),
             patch.object(manager, "wait_for_port", return_value=None),
         ):
             with self.assertRaisesRegex(RuntimeError, "Partial backup retained"):
@@ -266,6 +267,7 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "ctl", side_effect=ctl),
             patch.object(manager.subprocess, "run", side_effect=run),
             patch.object(manager, "available", return_value=False),
+            patch.object(manager, "wait_for_hub_ready", return_value=None),
             patch.object(manager, "wait_for_port", return_value=None),
         ):
             with self.assertRaisesRegex(RuntimeError, "service port is still occupied"):
@@ -287,6 +289,7 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "ctl", side_effect=ctl),
             patch.object(manager.subprocess, "run", side_effect=run),
             patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_hub_ready") as hub_ready,
             patch.object(manager, "wait_for_port", return_value=None),
             redirect_stdout(output),
         ):
@@ -314,6 +317,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertTrue((backup / "Pack.app" / "old-app.txt").is_file())
         self.assertEqual((backup / "state" / "config.json").stat().st_mode & 0o777, 0o600)
         self.assertIn("UPGRADE OK", output.getvalue())
+        hub_ready.assert_called_once()
         self.assertEqual(loaded, set(f.labels.values()))
         self.assertTrue(any(args[0] == "/usr/bin/ditto" for args in subprocess_calls))
         self.assertTrue(any(call[0] == "bootout" for call in calls))
@@ -406,6 +410,7 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "ctl", side_effect=ctl),
             patch.object(manager.subprocess, "run", side_effect=run),
             patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_hub_ready", return_value=None),
             patch.object(manager, "wait_for_port", return_value=None),
         ):
             with self.assertRaisesRegex(RuntimeError, "previous program files and database snapshot were restored"):

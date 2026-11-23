@@ -449,13 +449,50 @@ def wait_for_port(port, timeout=30):
     raise RuntimeError(f"Pack service did not become ready on 127.0.0.1:{port}")
 
 
+def wait_for_hub_ready(timeout=30):
+    """Require an authenticated, read-only MCP call; a listening port alone is insufficient."""
+    script = f"""
+import asyncio
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+
+async def main():
+    token = open(".dispatcher_token", encoding="utf-8").read().strip()
+    url = "http://127.0.0.1:{hp}/mcp"
+    deadline = asyncio.get_running_loop().time() + {timeout}
+    last_error = None
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            async with Client(StreamableHttpTransport(
+                url, headers={{"Authorization": "Bearer " + token}}
+            )) as client:
+                result = await client.call_tool("room_list", {{}})
+                if getattr(result, "is_error", False):
+                    raise RuntimeError("Hub room_list returned an error")
+                return
+        except Exception as exc:
+            last_error = exc
+            await asyncio.sleep(0.5)
+    raise RuntimeError("Hub authenticated MCP readiness check failed: " + str(last_error))
+
+asyncio.run(main())
+"""
+    subprocess.run(
+        [str(hub / "python" / "bin" / "python3"), "-c", script],
+        cwd=str(hub),
+        env={**os.environ, "PYTHONNOUSERSITE": "1"},
+        check=True,
+        timeout=timeout + 10,
+    )
+
+
 def bootstrap_upgrade_agents():
     for kind in ("hub", "watch", "backup", "engine"):
         label = labels[kind]
         target = f"gui/{uid}/{label}"
         if ctl("print", target, check=False).returncode != 0:
             ctl("bootstrap", f"gui/{uid}", str(agents / (label + ".plist")))
-    wait_for_port(hp)
+    wait_for_hub_ready()
     wait_for_port(ep)
 
 
