@@ -1,6 +1,6 @@
 # Agent Registry 数据层迁移设计
 
-- 状态：M1a 实施候选；已在独立分支加入增量 schema、版本化迁移与 legacy 映射，等待 CI/代码审查；尚未合入 Foundation 或部署到用户 Mac
+- 状态：M1a 已合入 v2 Foundation（PR #21）；M1b 只读影子比对正在独立 PR 实施；尚未部署到用户 Mac
 - 日期：2026-11-23
 - 目标基线：Pack v2 M1（Agent Registry 数据层）
 - 约束：保持 v1 members / rooms / messages / tasks / runs / audit / member_memory 的现有语义
@@ -151,8 +151,16 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 - `hub/core/storage.py` 每个连接启用 `PRAGMA foreign_keys=ON`；现有旧表不添加/重写外键，旧 token、任务、消息、记忆和房间绑定不改。
 - `hub.init()` 在既有兼容列迁移提交后运行独立版本化迁移；不由 DMG 安装器执行，不读取 Keychain，不触碰 Provider 账号。
 - 新增迁移单测覆盖 legacy 映射、重复执行、外键拒绝非法引用和失败回滚；CI 增加该测试，SQLite fresh/legacy snapshots 更新。
-- **M1a 验收仍需 CI 与代码审查通过。** M1b shadow read、差异报告和并发 init 专项测试尚未实施；此阶段没有启用新读路径。
+- **M1a 已通过 CI/代码审查并合入 Foundation。** M1b shadow read 与差异报告正在实施；此阶段没有启用新读路径。
 
 - Codex 审查修正：Provider 身份与 external connection mode 独立归一；迁移 checksum 已纳入回填逻辑规范化源码与 Provider 映射表，并避免 Python 版本相关 AST 表示，防止数据迁移规则变化却复用旧 checksum。
 
 - 迁移版本冻结规则：M1a/v1 合入并发布后，不得直接修改其 DDL、Provider 映射或回填逻辑；任何后续数据行为变化必须新增 migration version。checksum 不匹配时 Hub 初始化 fail-closed，避免旧库静默跳过或新旧库映射漂移。
+
+
+## 9. M1b 影子读取实施边界
+
+- `hub/services/agent_registry_shadow.py` 提供只读比较：按 legacy member ID 比对稳定 Agent ID、Provider、展示名、connection mode、状态、原始 Provider 标签和创建时间。
+- 报告只输出计数、legacy member ID 与 mismatch 字段名；不读取或输出 token hash、profile、消息正文、任务正文或私有记忆。发现未知 migration version 或 checksum 不匹配时必须返回 not-ready，不能给出可通过的报告。
+- `python -m services.agent_registry_shadow` 是手动诊断 CLI（从已安装 Hub 目录执行），通过 SQLite URI `mode=ro` 与 `PRAGMA query_only=ON` 打开数据库；不加入 Hub MCP 工具、不在启动时自动执行、不自动修复数据。
+- M1b 的目的仅是验证 M1a backfill 的一致性；只有人工检查报告全部为零差异，才评估后续 read-only API。旧 `members` 仍是唯一读写事实来源。

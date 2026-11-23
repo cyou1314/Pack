@@ -190,3 +190,10 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 - 已实现旧 member 稳定映射；保留原 members 行、token hash、任务/消息引用与私有记忆。
 - 已启用逐连接 SQLite foreign key enforcement，并加入测试和 schema contract snapshot。
 - 当前在独立分支等待 CI/审查；未合入 Foundation、未部署。M1b shadow read 未开始。
+
+
+### M1a 已合入 / M1b 影子读取
+
+- M1a PR #21 已 squash 合入 `codex/pack-v2-foundation-20261121`，提交 `51128b954764b3e9e59d0e00eb802d24fea2684e`。
+- M1a PR 的 Hub regression、SQLite/MCP snapshots、staging regression、Runtime tests、macOS installer/Swift release build/unit tests/app bundle 验证全部通过；Codex 最新代码审查无发现。
+- M1b 在独立分支实现只读 shadow report 与手动只读 CLI；不加 MCP 工具、不接入 member_list、不启用新读路径、不自动修复。

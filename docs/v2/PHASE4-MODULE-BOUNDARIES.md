@@ -559,3 +559,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - M1a 已在独立候选分支实现：版本化迁移 ledger/checksum、事务化增量 DDL、members → agents 稳定映射、逐连接 FK enforcement、迁移回滚测试与 schema snapshots。
 - 当前尚待该分支 CI 与 Codex 审查；未合入 Foundation，未在用户 Mac/生产数据库运行。
 - M1b shadow read 与并发初始化专项验证尚未开始；旧 members 仍是唯一读写事实来源。
+
+
+### Agent Registry M1a/M1b 状态更新（2026-11-23）
+
+- M1a 已合入 v2 Foundation，合并提交 `51128b954764b3e9e59d0e00eb802d24fea2684e`；PR #21 全部 CI 通过，Codex 代码审查无发现。
+- M1b 只读影子比对正在独立 PR 开发；通过手动只读 CLI 输出映射差异，不加入 Hub MCP，不切换旧读写路径。
+- 用户 Mac/生产数据库仍未运行迁移；实际部署继续后置。
