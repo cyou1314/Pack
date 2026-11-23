@@ -24,6 +24,7 @@ class AttachmentAuditTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="pack-attachment-audit-")
         self.root = Path(self.temporary.name)
+        (self.root / "attachments").mkdir()
         self.context = HubContext(
             base_dir=str(self.root), db_path=str(self.root / "pack.db"),
             attachment_dir=str(self.root / "attachments"),
