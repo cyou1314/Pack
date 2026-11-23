@@ -532,3 +532,23 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 若进程 stdin 已关闭或响应写入失败，审批仍保留为 pending，超时器继续生效，避免 UI 显示审批已结束但 App Server 实际未收到决议。
 - 新增回归测试：模拟审批请求到达后 stdin 关闭，验证响应失败不会提前删除 pending approval；随后断开连接可正常清理状态。
 - 不改变 Codex 协议方法、决议枚举、Pack Agent Event schema 或 MCP/SQLite 契约。
+
+
+### Agent Core 生产集成审计（2026-11-23）
+
+**当前状态：M0 合约骨架已存在；生产 Runtime 集成尚未完成。**
+
+- `runtime/agent-core` 已有 Descriptor、Registry、Event Envelope、敏感字段检查、Context Package 和 Codex App Server Adapter；当前覆盖以 Node mock/process 测试为主。
+- 当前 `runtime/runtime.mjs` 仍是 Muse ego 的 v1 轮询/任务执行入口，未装配 `AgentAdapterRegistry` 或 Codex App Server Adapter。`registerCodexAppServerAdapter` 的现有调用只在 Runtime 测试中出现；不能将“Adapter 单测通过”描述为 Pack 已能在产品里添加/运行 Codex Agent。
+- `subscribe()` 事件目前只在 Adapter 进程内回调，没有持久化 Inbox/Outbox、重放游标、Hub Event Gateway 或 App Activity/Approval 闭环。
+- Context Package 当前有白名单与隔离单测，但还没有由 Hub 授权服务生成并交给生产 Runtime 的端到端路径。
+- Codex 审批目前可转换为 `approval.requested` 并由 Adapter 写回决定；尚未连接 Hub 持久化审批、SwiftUI 人工确认与审计记录。不得在未接入统一 Permission/Approval Service 前启用真实高风险工具。
+- 当前无真实 Mac Codex App Server 登录/恢复验收；mock process 仅证明协议适配器局部行为。
+
+**下一步严格按 M1 → M2 执行：**
+
+1. 先完成 Agent Registry 的 additive schema/migration、legacy member mapping 与 shadow read（见 `AGENT-REGISTRY-MIGRATION-DESIGN.md`）；不切换旧 members 读写。
+2. 再实现 Runtime Supervisor、Session Manager、可靠 Event Inbox/Outbox 和 Event Gateway；先接 mock adapter 做幂等、顺序、取消、超时、断线重放测试。
+3. 将 Codex Adapter 注册到 Supervisor，而不是让 Hub MCP handler 直接启动 Provider 进程；连接/断开、Session 生命周期和事件持久化必须由 Supervisor 管理。
+4. 在统一 Permission/Approval Service 与 SwiftUI 审批闭环验收前，Codex command/file approval 默认不自动接受，真实工具执行保持关闭或显式人工 gate。
+5. 完成以上后才做 Codex 本机登录、真实 Thread/Turn、审批和恢复验收；不触碰真实 Mac 用户数据或部署。
