@@ -35,6 +35,7 @@ jobs:
           bash -n installer/upgrade.command
           bash -n installer/mac-inventory.sh
           bash -n app/make-bundle.sh
+          bash -n app/test-make-bundle.sh
           bash -n local/install-local.sh
           bash -n local/uninstall-local.sh
       - name: Python compile
@@ -93,6 +94,7 @@ jobs:
           python hub/test_pairing_service.py
           python hub/test_runs_service.py
           python hub/test_packaging.py
+          bash app/test-make-bundle.sh
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots
         run: python hub/export_contracts.py --check

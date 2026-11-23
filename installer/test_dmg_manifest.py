@@ -18,11 +18,23 @@ class DmgManifestTests(unittest.TestCase):
 
     def test_bundle_builder_uses_explicit_non_destructive_output(self):
         source = (ROOT / "app" / "make-bundle.sh").read_text(encoding="utf-8")
-        self.assertIn('APP="${1:-$ROOT/Pack.app}"', source)
-        self.assertIn('[[ ! -e "$APP" && ! -L "$APP" ]]', source)
-        self.assertNotIn('rm -rf "$APP"', source)
+        self.assertIn('APP_INPUT="${1:-$SCRIPT_DIR/Pack.app}"', source)
+        self.assertIn('if [ -e "$APP" ] || [ -L "$APP" ]; then', source)
+        self.assertIn('if ! mkdir "$APP"; then', source)
+        self.assertIn("Output path appeared during build", source)
+        self.assertIn('TMP_APP="$TMP_ROOT/Pack.app"', source)
         self.assertIn("codesign --verify --deep --strict", source)
         self.assertTrue(os.access(ROOT / "app" / "make-bundle.sh", os.X_OK))
+
+    def test_app_iconset_uses_distinct_retina_dimensions(self):
+        source = (ROOT / "app" / "make-bundle.sh").read_text(encoding="utf-8")
+        for spec in (
+            '"256:256x256"',
+            '"512:256x256@2x"',
+            '"512:512x512"',
+            '"1024:512x512@2x"',
+        ):
+            self.assertIn(spec, source)
 
     def test_dmg_builder_creates_bundle_from_source_and_records_manifest(self):
         source = (ROOT / "installer" / "build-dmg.sh").read_text(encoding="utf-8")
