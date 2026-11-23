@@ -1,6 +1,6 @@
 # Pack Phase 4：模块边界与渐进拆分方案
 
-> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks 扩展；Refresh 主循环、Chat/Approval、Settings 等状态逻辑仍待继续拆分。  
+> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks/Notifications 扩展；Refresh 主循环、Chat/Approval、Settings 等状态逻辑仍待继续拆分。  
 > 原则：先冻结协议与数据契约，再按领域提取模块；不做大爆炸式重写。
 
 ## 1. 当前代码边界
@@ -10,7 +10,7 @@
 | 区域 | 当前文件 | 规模 | 现状 |
 |---|---|---:|---|
 | Hub 服务端 | `hub/hub.py` | 约 2,874 行 | 保留 FastMCP 入口、认证/工具注册与兼容 helper；多数成员、房间、任务、规则、附件、记忆、技能、桌面和配对业务已迁入 `hub/services/` |
-| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 786 行 | 启动入口已独立；Connection/Members/Rooms/Tasks 方法已分别迁入扩展文件；Refresh 主循环与其余状态仍集中在 AppState |
+| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 696 行 | 启动入口已独立；Connection/Members/Rooms/Tasks/Notifications 方法已分别迁入扩展文件；Refresh 主循环与其余状态仍集中在 AppState |
 | App 视图 | `Views.swift` + Feature Views | 233 + 430/448/285/64 行 | 主窗口、Chat、Tasks、Settings、TaskDetail 和 Components 已按声明边界拆分；本批仅移动声明，不改布局/行为 |
 | 网络客户端 | `HubClient.swift` / `Networking/HubTransport.swift` | 107 / 74 行 | HubClient 保留 MCP session、JSON-RPC、SSE 解析与会话恢复；HTTP 请求、Bearer Header、超时和同源重定向策略独立在 HubTransport |
 | 领域模型 | `app/Sources/PackApp/Models.swift` | 276 行 | 仍有 App 侧消息/任务/成员模型；PackCore 保持独立且不依赖 SwiftUI |
@@ -488,3 +488,12 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - `AppState.swift` 从上一批约 897 行缩至约 786 行。跨文件访问所需的 `ownerClient`、Hub URL 状态、generation 和 discovery interval/timeout 调整为 PackApp module 内部可见；`persistHubURL`、`installHubClients`、`rebuildHubClients` 仍限制在 Connection extension 内部。
 - 不新增 Swift Package target/dependency，不改变配置格式、Keychain、LaunchAgent、Hub API、SQLite schema 或用户数据。
 - CI 证据：Run [#45100628949](https://github.com/cyou1314/Pack/actions/runs/45100628949) 的 Runtime、Swift Build、Swift Unit Tests 和 App Bundle 已通过；Hub 单测及契约快照通过，Default staging regression 截至记录时仍在运行。未将完整 Run 标记为全绿。
+
+
+### AppState 通知与未读状态拆分（2026-11-23）
+
+- 新增 `AppState+Notifications.swift`，迁出通知快照处理、通知点击深链、Dock badge、审批/验收/成员离线提醒、未读数查询与延迟标记已读。
+- 保留原通知 kind/room/id/member 字段、`notificationDiff` 变化判定、`pack.lastSeen` 持久化键、未读延迟和当前房间 generation 防串房逻辑。
+- 因 `refresh()` 与 Room extension 需要调用，`processNotificationSnapshot`、`navigateNotification`、`refreshUnreadCounts`、`scheduleMarkRoomRead` 保持 module-internal；`notificationDiff` 与 `pendingNotification` 也仅在 PackApp module 内可见。
+- `AppState.swift` 从约 786 行缩至约 696 行。未改变通知权限、推送时机、Dock badge 计算或用户配置。
+- CI 证据：Run [#45101017194](https://github.com/cyou1314/Pack/actions/runs/45101017194) 的 Runtime、Swift Build、Swift Unit Tests、App Bundle、Hub 单测与契约快照已通过；Default staging regression 截至记录时仍在运行。此 run 的前一版曾因跨文件 extension 中 `navigateNotification` 仍为 private 而失败，已改为 module-internal 并触发新 run。
