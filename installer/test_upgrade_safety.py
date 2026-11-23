@@ -427,6 +427,29 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertFalse(list(state.glob("pack.db.failed-*")))
         self.assertFalse(list(f.hub.glob(".pack.db.rollback-*")))
 
+    def test_reporting_failure_after_commit_does_not_roll_back_healthy_upgrade(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl()
+        run, _ = f.fake_subprocess_run()
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=True),
+            patch.object(manager, "wait_for_hub_ready", return_value=None),
+            patch.object(manager, "wait_for_port", return_value=None),
+            patch("builtins.print", side_effect=BrokenPipeError("closed output pipe")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "new services are healthy"):
+                manager.upgrade()
+
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "new-hub")
+        self.assertTrue((f.app_path / "new-app.txt").is_file())
+        self.assertFalse((f.app_path / "old-app.txt").exists())
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
+        self.assertEqual(loaded, set(f.labels.values()))
+        self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
+        self.assertFalse(any(call[0] == "bootout" for call in calls))
+
     def test_failed_restart_restores_previous_program_and_app(self):
         f = self.fixture
         ctl, calls, loaded = f.fake_ctl(fail_watch_once=True, mutate_db_on_hub_bootstrap=True)

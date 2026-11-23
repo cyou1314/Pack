@@ -523,6 +523,7 @@ def upgrade():
     services_stopped = False
     backup_verified = False
     new_services_started = False
+    upgrade_committed = False
     try:
         validate_upgrade_installation()
         # Stage and smoke-test the new payload before taking services offline.
@@ -548,6 +549,9 @@ def upgrade():
         app_stage = None
         new_services_started = True
         bootstrap_upgrade_agents()
+        # From this point the new services passed readiness. Never roll back
+        # after old program snapshots have begun to be discarded.
+        upgrade_committed = True
 
         try:
             remove_path(app_previous)
@@ -561,6 +565,11 @@ def upgrade():
         stage_root = None
         print(f"UPGRADE OK: Pack program files updated; user data preserved. Backup: {backup_root}")
     except Exception as exc:
+        if upgrade_committed:
+            raise RuntimeError(
+                f"Upgrade completed and new services are healthy, but final reporting failed. "
+                f"Verified backup retained at {backup_root}: {type(exc).__name__}: {exc}"
+            ) from exc
         rollback_errors = []
         if services_stopped:
             for label in labels.values():
