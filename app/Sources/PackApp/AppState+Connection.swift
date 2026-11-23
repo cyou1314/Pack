@@ -78,26 +78,35 @@ extension AppState {
         return true
     }
 
-    func followPublishedHubURL(rebuildOnFailure: Bool = false) async -> Bool {
-        guard !discoveryInProgress, rebuildOnFailure || !manualHubURLSaved else { return false }
+    func followPublishedHubURL(
+        rebuildOnFailure: Bool = false,
+        expectedRefreshRequest: Int? = nil
+    ) async -> Bool {
+        func requestIsCurrent() -> Bool {
+            guard let expectedRefreshRequest else { return true }
+            return messageRefreshState.isCurrentRefresh(expectedRefreshRequest)
+        }
+        guard requestIsCurrent(),
+              !discoveryInProgress,
+              rebuildOnFailure || !manualHubURLSaved else { return false }
         if let host = URLComponents(string: storedHubURL)?.host?.lowercased(), ["127.0.0.1", "localhost", "::1", "[::1]"].contains(host) {
-            return rebuildOnFailure && rebuildHubClients()
+            return rebuildOnFailure && requestIsCurrent() && rebuildHubClients()
         }
         let now = ProcessInfo.processInfo.systemUptime
         if let last = lastHubDiscoveryUptime, now - last < hubDiscoveryInterval { return false }
         lastHubDiscoveryUptime = now
         discoveryInProgress = true
         defer { discoveryInProgress = false }
-        if manualHubURLSaved { return rebuildOnFailure && rebuildHubClients() }
+        if manualHubURLSaved { return rebuildOnFailure && requestIsCurrent() && rebuildHubClients() }
         let generation = clientGeneration
         if let value = await AddressSource.privateURL(timeout: hubDiscoveryTimeout) {
-            guard generation == clientGeneration, !manualHubURLSaved else { return false }
-            if value != storedHubURL, persistHubURL(value, manual: false) { return true }
-            if value == storedHubURL { return rebuildOnFailure && rebuildHubClients() }
+            guard generation == clientGeneration, !manualHubURLSaved, requestIsCurrent() else { return false }
+            if value != storedHubURL, requestIsCurrent(), persistHubURL(value, manual: false) { return true }
+            if value == storedHubURL { return rebuildOnFailure && requestIsCurrent() && rebuildHubClients() }
         }
-        guard generation == clientGeneration, !manualHubURLSaved else { return false }
+        guard generation == clientGeneration, !manualHubURLSaved, requestIsCurrent() else { return false }
         guard let source = URL(string: "https://raw.githubusercontent.com/cyou1314/Pack/main/runtime/hub-url.txt") else {
-            return rebuildOnFailure && rebuildHubClients()
+            return rebuildOnFailure && requestIsCurrent() && rebuildHubClients()
         }
         var request = URLRequest(url: source, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: hubDiscoveryTimeout)
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
@@ -105,16 +114,17 @@ extension AppState {
             let (data, response) = try await URLSession.shared.data(for: request)
             NSLog("地址源 raw.githubusercontent.com HTTP %d", (response as? HTTPURLResponse)?.statusCode ?? 0)
             // A manual save or another client change while the request was in flight wins.
-            guard generation == clientGeneration, !manualHubURLSaved else { return false }
+            guard generation == clientGeneration, !manualHubURLSaved, requestIsCurrent() else { return false }
             if let http = response as? HTTPURLResponse, http.statusCode == 200,
                let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                let parts = URLComponents(string: value), parts.scheme?.lowercased() == "https",
                let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
                parts.query == nil, parts.fragment == nil, value != storedHubURL,
-               persistHubURL(value, manual: false) { return true }
+               requestIsCurrent(), persistHubURL(value, manual: false) { return true }
         } catch {
-            guard generation == clientGeneration, !manualHubURLSaved else { return false }
+            guard generation == clientGeneration, !manualHubURLSaved, requestIsCurrent() else { return false }
         }
-        return rebuildOnFailure && generation == clientGeneration && rebuildHubClients()
+        return rebuildOnFailure && generation == clientGeneration &&
+            requestIsCurrent() && rebuildHubClients()
     }
 }

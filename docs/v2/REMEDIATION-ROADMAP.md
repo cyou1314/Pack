@@ -245,3 +245,15 @@
 - `installer/build-dmg.sh` 要求在原生 arm64 macOS 主机运行，并检查 Python、venv、Pack App 与 Electron App 均包含 arm64；不匹配时在生成 DMG 前失败。
 - `BUILD-MANIFEST.txt` 记录 Host/App/Python/Engine architecture 与 AppBuildConfiguration，便于验收产物和目标 Mac 是否一致。
 - macOS CI 增加独立 Swift Release 编译，并用 Release 配置构建/签名 App Bundle；完整 DMG 仍需隔离 Mac 的实际 Engine payload 和 `hdiutil` 验收。
+
+
+### App 消息增量刷新（2026-11-23）
+
+- 普通轮询从每次读取最新 200 条改为按当前房间最后消息 ID 增量读取；保留房间加载、Hub client generation 变化、每 60 秒和本地编辑/删除后的完整 latest-tail 快照。
+- 快照状态同时绑定 room generation 与 client generation。房间切换或重连后的首次刷新失败时，不会错误复用旧房间的时间戳/游标；消息追赶过程中切换房间会提前终止旧请求链。
+- 增量读取按 200 条分页，最多连续读取 5 页；仍然满页时退回最新 200 条 tail，避免高消息量下长期停留在较旧窗口，导致最新提问或审批消息被隐藏。
+- 增量结果按消息 ID 合并并保留最新 200 条。其他客户端的旧消息编辑/删除由 60 秒完整快照收敛，本地编辑/删除则立即强制完整快照。
+- 每次刷新分配递增 request generation；较旧请求的成功结果和失败状态都会被丢弃。编辑/删除会先使快照失效，只有完整读取及关联状态刷新全部成功后才重新记录快照，失败后下一轮仍会执行完整读取。
+- PackCore 新增 MessageRefreshState 与测试，覆盖首次/强制/超时快照、room/client generation 变化、刷新请求排序、失败后的重试条件和分页边界。
+- 不改 Hub room_read_new 参数、MCP 契约、SQLite Schema 或用户数据；沿用现有 since_id、limit、tail。
+- 该优化的 Swift/macOS CI 通过前不得合并；CI 通过也不等同于真实 Mac 上的负载/交互验收。

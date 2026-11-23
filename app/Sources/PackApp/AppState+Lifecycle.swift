@@ -39,19 +39,89 @@ extension AppState {
         }
     }
 
-    func refresh() async {
+    func refresh(forceFullMessageSnapshot: Bool = false) async {
         guard let client else { return }
+        if forceFullMessageSnapshot { messageRefreshState.invalidateSnapshot() }
+        let messageRefreshRequest = messageRefreshState.beginRefresh()
         let room = currentRoom
         let generation = roomGeneration
         let currentClientGeneration = clientGeneration
         do {
             let roomRes = try await client.call(name: "room_list")
-            let msgRes = try await client.call(name: "room_read_new",
-                                               args: ["room": room, "since_id": 0, "limit": 200, "tail": true])
+            let fullMessageRefresh = messageRefreshState.requiresFullSnapshot(
+                roomLoading: roomLoading,
+                force: forceFullMessageSnapshot,
+                now: ProcessInfo.processInfo.systemUptime,
+                clientGeneration: currentClientGeneration,
+                roomGeneration: generation
+            )
+            let messageRows: [[String: Any]]
+            var didFullMessageRefresh = fullMessageRefresh
+            if fullMessageRefresh {
+                let result = try await client.call(name: "room_read_new",
+                                                    args: ["room": room, "since_id": 0,
+                                                           "limit": 200, "tail": true])
+                guard let rows = result["messages"] as? [[String: Any]] else {
+                    throw HubError.badResponse("missing messages")
+                }
+                messageRows = rows
+            } else {
+                var rows: [[String: Any]] = []
+                var cursor = messages.last?.id ?? 0
+                var exhaustedPageBudget = false
+                for page in 0..<MessageRefreshState.maximumIncrementalPages {
+                    let result = try await client.call(
+                        name: "room_read_new",
+                        args: ["room": room, "since_id": cursor,
+                               "limit": MessageRefreshState.incrementalPageLimit, "tail": false]
+                    )
+                    guard room == currentRoom, generation == roomGeneration,
+                          currentClientGeneration == clientGeneration,
+                          messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
+                    guard let batch = result["messages"] as? [[String: Any]] else {
+                        throw HubError.badResponse("missing incremental messages")
+                    }
+                    rows.append(contentsOf: batch)
+                    guard MessageRefreshState.needsAnotherPage(receivedCount: batch.count) else {
+                        break
+                    }
+                    guard let last = batch.last else { break }
+                    let nextCursor = intVal(last["id"])
+                    guard nextCursor > cursor else {
+                        throw HubError.badResponse("message cursor did not advance")
+                    }
+                    cursor = nextCursor
+                    if page == MessageRefreshState.maximumIncrementalPages - 1 {
+                        exhaustedPageBudget = true
+                    }
+                }
+
+                if exhaustedPageBudget {
+                    // Sustained traffic can outpace incremental paging. Fall
+                    // back to the newest tail so current questions/approvals
+                    // cannot remain hidden behind an old cursor.
+                    let result = try await client.call(
+                        name: "room_read_new",
+                        args: ["room": room, "since_id": 0, "limit": 200, "tail": true]
+                    )
+                    guard let tail = result["messages"] as? [[String: Any]] else {
+                        throw HubError.badResponse("missing message tail")
+                    }
+                    messageRows = tail
+                    didFullMessageRefresh = true
+                } else {
+                    messageRows = rows
+                }
+            }
+            guard room == currentRoom, generation == roomGeneration,
+                  currentClientGeneration == clientGeneration,
+                  messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
             let taskRows = try await loadTaskPages(client, room: room)
             let memRes = try await client.call(name: "member_list")
             let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
-            guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
+            guard room == currentRoom, generation == roomGeneration,
+                  currentClientGeneration == clientGeneration,
+                  messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
             if let summaryRes { roomSummary = summaryVal(summaryRes) }
             if let arr = roomRes["rooms"] as? [[String: Any]] {
                 let updated = arr.map { RoomItem(id: intVal($0["id"]), name: ($0["name"] as? String) ?? "?", lastMessageId: intVal($0["last_message_id"])) }.reversed()
@@ -60,9 +130,8 @@ extension AppState {
                 }
                 rooms = Array(updated)
             }
-            guard let arr = msgRes["messages"] as? [[String: Any]] else { throw HubError.badResponse("missing messages") }
             do {
-                let parsedMessages = arr.map {
+                let parsedMessages = messageRows.map {
                     RoomMessage(id: intVal($0["id"]), author: ($0["author"] as? String) ?? "?",
                                 kind: ($0["kind"] as? String) ?? "chat", body: ($0["body"] as? String) ?? "",
                                 taskId: optIntVal($0["task_id"]), createdAt: doubleVal($0["created_at"]),
@@ -72,13 +141,28 @@ extension AppState {
                                     return MessageAttachment(id: id, mime: mime, size: intVal(item["size"]), filename: (item["filename"] as? String) ?? "图片")
                                 }, replyToId: optIntVal($0["reply_to_id"]), questionPayload: QuestionPayload.parse($0["payload"]))
                 }
-                if roomLoading { messages = parsedMessages }
-                else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
+                if didFullMessageRefresh {
+                    messageRefreshState.recordFullSnapshot(
+                        at: ProcessInfo.processInfo.systemUptime,
+                        clientGeneration: currentClientGeneration,
+                        roomGeneration: generation
+                    )
+                    if roomLoading { messages = parsedMessages }
+                    else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
+                } else if !parsedMessages.isEmpty {
+                    var mergedByID: [Int: RoomMessage] = [:]
+                    for message in messages { mergedByID[message.id] = message }
+                    for message in parsedMessages { mergedByID[message.id] = message }
+                    let merged = mergedByID.keys.sorted().suffix(200).compactMap { mergedByID[$0] }
+                    withAnimation(DesignTokens.animStd) { messages = merged }
+                }
             }
             if messages.contains(where: { $0.kind == "question" }) {
                 let answerClient = ownerClient ?? client
                 let identity = try? await answerClient.call(name: "heartbeat")
-                guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
+                guard room == currentRoom, generation == roomGeneration,
+                      currentClientGeneration == clientGeneration,
+                      messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
                 questionResponderName = identity?["member"] as? String
             }
             do {
@@ -153,13 +237,19 @@ extension AppState {
             }
             scheduleMarkRoomRead(room, generation: generation)
         } catch {
-            guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
+            guard room == currentRoom, generation == roomGeneration,
+                  currentClientGeneration == clientGeneration,
+                  messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
             roomLoading = false
             connected = false
             connectionFailed = true
             connectionNote = "连接中断，重试中"
             consecutiveRefreshFailures += 1
-            if consecutiveRefreshFailures >= 2, await followPublishedHubURL(rebuildOnFailure: true) { await refresh() }
+            if consecutiveRefreshFailures >= 2 {
+                let rebuilt = await followPublishedHubURL(rebuildOnFailure: true, expectedRefreshRequest: messageRefreshRequest)
+                guard messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
+                if rebuilt { await refresh() }
+            }
         }
     }
 
