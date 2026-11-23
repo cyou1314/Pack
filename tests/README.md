@@ -25,3 +25,5 @@
 
 - GitHub Actions 使用 Node 22 执行 `node --test runtime/tests/*.test.mjs`，同时保留全量 `node --check` 语法检查。
 - 测试覆盖地址来源、聊天策略、额度策略和 Hub 网络故障处理；不需要外部 API 凭据。
+
+- Hub 热路径索引回归同时覆盖任务板排序/按成员和房间过滤、活跃队列排序、租约与未认领巡检、待接受转交过期扫描；旧 tasks / task_transfers 表迁移后再建索引。
