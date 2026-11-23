@@ -2920,7 +2920,6 @@ def build_server(context: HubContext | None = None):
             append_version=lambda conn, target, scope, key, text, author, origin, refs:
                 _mem_append_version(
                     conn, target, scope, key, text, author, origin, refs,
-                    context=context,
                 ),
             core_limit_bytes=MEM_CORE_LIMIT_BYTES,
             shared_limit_bytes=MEM_SHARED_LIMIT_BYTES,
