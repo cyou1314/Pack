@@ -33,6 +33,7 @@ jobs:
           bash -n run-all-suites.sh
           bash -n tests/hub-staging56/run_tests.sh
           bash -n installer/build-dmg.sh
+          bash -n app/make-bundle.sh
       - name: Python compile
         run: python -m compileall -q hub tests
       - name: Unit tests
