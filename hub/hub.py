@@ -108,7 +108,6 @@ _lock = threading.Lock()
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
@@ -878,6 +877,9 @@ def _used_combos(conn) -> set:
 
 def init():
     conn = db()
+    # WAL is a persistent database mode: set it once at initialization rather
+    # than issuing a journal-mode transition check for every tool connection.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
     # audit() is used while init creates the dispatcher, so the additive column
     # must exist before any initialization audit event can be written.

@@ -110,6 +110,15 @@ def main():
         old.close()
 
         hub.init()
+        runtime_conn = hub.db()
+        journal_mode = runtime_conn.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = runtime_conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        check("init enables persistent WAL mode", journal_mode.lower() == "wal",
+              str(journal_mode))
+        check("runtime DB connections retain busy timeout", busy_timeout == 30000,
+              str(busy_timeout))
+        runtime_conn.close()
+
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
