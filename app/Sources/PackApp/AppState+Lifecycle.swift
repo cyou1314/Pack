@@ -73,6 +73,8 @@ extension AppState {
                         args: ["room": room, "since_id": cursor,
                                "limit": MessageRefreshState.incrementalPageLimit, "tail": false]
                     )
+                    guard room == currentRoom, generation == roomGeneration,
+                          currentClientGeneration == clientGeneration else { return }
                     guard let batch = result["messages"] as? [[String: Any]] else {
                         throw HubError.badResponse("missing incremental messages")
                     }
@@ -108,6 +110,8 @@ extension AppState {
                     messageRows = rows
                 }
             }
+            guard room == currentRoom, generation == roomGeneration,
+                  currentClientGeneration == clientGeneration else { return }
             let taskRows = try await loadTaskPages(client, room: room)
             let memRes = try await client.call(name: "member_list")
             let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
