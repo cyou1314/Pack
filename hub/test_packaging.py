@@ -35,6 +35,7 @@ class HubPackageLayoutTests(unittest.TestCase):
             self.assertTrue((root / "core" / "context.py").is_file())
             self.assertTrue((root / "services" / "rooms.py").is_file())
             self.assertTrue((root / "services" / "members.py").is_file())
+            self.assertTrue((root / "services" / "agent_registry_shadow.py").is_file())
             self.assertTrue((root / "services" / "tasks.py").is_file())
             self.assertTrue((root / "services" / "messages.py").is_file())
             self.assertTrue((root / "services" / "attachments.py").is_file())
