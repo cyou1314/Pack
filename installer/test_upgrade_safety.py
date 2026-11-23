@@ -4,7 +4,9 @@ import json
 import os
 import plistlib
 import shutil
+import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
