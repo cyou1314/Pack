@@ -348,3 +348,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 默认只读输出 JSON，`--strict` 仅影响退出码；**不会删除、移动或修改任何附件**。未引用文件按默认 24 小时宽限区分近期与陈旧候选，但陈旧不等于可删除：备份/回滚、并发上传、停机时序仍需人工复核。
 - 新增 `hub/test_attachment_audit.py` 10 项隔离测试：健康引用、重复引用、孤儿新旧分类、旧临时文件、缺失/同长篡改、符号链接、异常元数据、CLI 只读，以及执行 `backup-db.sh`/`verify-backup.sh` 后恢复数据库和附件到隔离目录并验证。测试不访问真实用户数据。
 - 原备份脚本未改；在线 SQLite 快照和附件 tar 并非严格同一时刻的跨资源原子快照，后续仍需设计停机窗口/双阶段一致性验证与 Mac 恢复演练。
+
+### 批准与出口规则服务化（2026-11-23）
+
+- 将 `rule_list/rule_upsert/rule_delete` 及 `egress_rule_list/egress_rule_upsert/egress_rule_delete` 六个 dispatcher-only 工具的数据库主体迁出 `hub.py` 至 `hub/services/rules.py`，保持原 MCP 名称、参数、docstring、鉴权与结果格式，规则求值纯策略仍在 `core/policy.py`。
+- 写入和审计使用共享 `HubContext.lock` 与 SQLite `BEGIN IMMEDIATE`，保证同一规则的跨进程增删/更新互斥；事务失败显式 rollback 且统一关闭连接。域名归一使用已有 `egress_pattern` 策略，未复制实现。
+- 新增 `hub/test_rules_service.py` 13 项隔离测试，覆盖列表、key 标准化、重复 upsert、停用规则重启用、参数拒绝、删除/不存在、审计失败导致的增删回滚，以及两个独立 HubContext 同键并发更新。接入 CI 和复制运行时 smoke。
+- 这批未修改 `egress_check` 的调用频率和判定逻辑，后续应单独加强外部 Agent 高并发出口频控；不改变 75 MCP tools / 24 SQLite tables、Mac 安装/登录/真实用户数据。

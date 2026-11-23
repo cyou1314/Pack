@@ -1494,6 +1494,12 @@ def build_server(context: HubContext | None = None):
         from .services.attachments import get_attachment as _get_attachment
         from .services.attachments import put_attachment as _put_attachment
         from .services.attachments import list_attachments as _list_attachments
+        from .services.rules import list_approval_rules as _list_approval_rules
+        from .services.rules import upsert_approval_rule as _upsert_approval_rule
+        from .services.rules import delete_approval_rule as _delete_approval_rule
+        from .services.rules import list_egress_rules as _list_egress_rules
+        from .services.rules import upsert_egress_rule as _upsert_egress_rule
+        from .services.rules import delete_egress_rule as _delete_egress_rule
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1511,6 +1517,12 @@ def build_server(context: HubContext | None = None):
         from services.attachments import get_attachment as _get_attachment
         from services.attachments import put_attachment as _put_attachment
         from services.attachments import list_attachments as _list_attachments
+        from services.rules import list_approval_rules as _list_approval_rules
+        from services.rules import upsert_approval_rule as _upsert_approval_rule
+        from services.rules import delete_approval_rule as _delete_approval_rule
+        from services.rules import list_egress_rules as _list_egress_rules
+        from services.rules import upsert_egress_rule as _upsert_egress_rule
+        from services.rules import delete_egress_rule as _delete_egress_rule
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2770,12 +2782,7 @@ def build_server(context: HubContext | None = None):
         """调度员查看批准规则库（附录 G.1）：全部规则，含已停用的。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        rows = conn.execute(
-            "SELECT id, action, target, effect, source, enabled, created_by, created_at "
-            "FROM approval_rules ORDER BY id").fetchall()
-        conn.close()
-        return {"rules": [dict(r) for r in rows]}
+        return _list_approval_rules(context)
 
     @mcp.tool
     def rule_upsert(action: str, target: str, effect: str, source: str = "") -> dict:
@@ -2784,37 +2791,14 @@ def build_server(context: HubContext | None = None):
         成员。effect=allow|block。同键重复调用即更新该规则（翻转）。"""
         me = authenticate()
         require(me, "dispatcher")
-        if effect not in ("allow", "block"):
-            raise ValueError("effect must be 'allow' or 'block'")
-        action, target = action.strip(), target.strip()
-        conn = db()
-        conn.execute(
-            """INSERT INTO approval_rules(action,target,effect,source,enabled,created_by,created_at)
-               VALUES(?,?,?,?,1,?,?)
-               ON CONFLICT(action,target) DO UPDATE SET
-                 effect=excluded.effect, source=excluded.source, enabled=1""",
-            (action, target, effect, source, me["name"], context.clock()))
-        row = conn.execute("SELECT id FROM approval_rules WHERE action=? AND target=?",
-                           (action, target)).fetchone()
-        audit(conn, me["name"], "rule_upsert", f"{action}->{target} = {effect}")
-        conn.commit()
-        conn.close()
-        return {"rule_id": row["id"], "action": action, "target": target, "effect": effect}
+        return _upsert_approval_rule(context, me, action, target, effect, source)
 
     @mcp.tool
     def rule_delete(rule_id: int) -> dict:
         """调度员删除一条批准规则；删后同键动作恢复走原有弹问流程。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        cur = conn.execute("DELETE FROM approval_rules WHERE id=?", (rule_id,))
-        if cur.rowcount != 1:
-            conn.close()
-            raise ValueError(f"no such rule: {rule_id}")
-        audit(conn, me["name"], "rule_delete", f"rule#{rule_id}")
-        conn.commit()
-        conn.close()
-        return {"deleted": rule_id}
+        return _delete_approval_rule(context, me, rule_id)
 
     @mcp.tool
     def egress_rule_list() -> dict:
@@ -2822,12 +2806,7 @@ def build_server(context: HubContext | None = None):
         与 rule_list（批准规则库）同构，那套管「动作批不批」，这套管「站点抓不抓」"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        rows = conn.execute(
-            "SELECT id, pattern, effect, source, enabled, created_by, created_at "
-            "FROM egress_rules ORDER BY id").fetchall()
-        conn.close()
-        return {"rules": [dict(r) for r in rows]}
+        return _list_egress_rules(context)
 
     @mcp.tool
     def egress_rule_upsert(pattern: str, effect: str, source: str = "") -> dict:
@@ -2836,37 +2815,14 @@ def build_server(context: HubContext | None = None):
         ask（明示每次要问，压过群主点名）。同 pattern 重复调用即更新（翻转）。"""
         me = authenticate()
         require(me, "dispatcher")
-        if effect not in ("allow", "ask"):
-            raise ValueError("effect must be 'allow' or 'ask'")
-        pattern = _egress_pattern(pattern)
-        conn = db()
-        conn.execute(
-            """INSERT INTO egress_rules(pattern,effect,source,enabled,created_by,created_at)
-               VALUES(?,?,?,1,?,?)
-               ON CONFLICT(pattern) DO UPDATE SET
-                 effect=excluded.effect, source=excluded.source, enabled=1""",
-            (pattern, effect, source, me["name"], context.clock()))
-        row = conn.execute("SELECT id FROM egress_rules WHERE pattern=?",
-                           (pattern,)).fetchone()
-        audit(conn, me["name"], "egress_rule_upsert", f"{pattern} = {effect}")
-        conn.commit()
-        conn.close()
-        return {"rule_id": row["id"], "pattern": pattern, "effect": effect}
+        return _upsert_egress_rule(context, me, pattern, effect, source)
 
     @mcp.tool
     def egress_rule_delete(rule_id: int) -> dict:
         """调度员删除一条出口站点规则；删后该站点恢复走点名/弹问判定。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        cur = conn.execute("DELETE FROM egress_rules WHERE id=?", (rule_id,))
-        if cur.rowcount != 1:
-            conn.close()
-            raise ValueError(f"no such egress rule: {rule_id}")
-        audit(conn, me["name"], "egress_rule_delete", f"egress_rule#{rule_id}")
-        conn.commit()
-        conn.close()
-        return {"deleted": rule_id}
+        return _delete_egress_rule(context, me, rule_id)
 
     @mcp.tool
     def egress_check(url: str, task_id: int = 0) -> dict:
