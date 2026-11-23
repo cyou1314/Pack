@@ -1,7 +1,10 @@
 """Read-only comparison of legacy Hub members and Agent Registry rows."""
 from __future__ import annotations
 
+import argparse
+import json
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from core.migrations import MIGRATIONS, _checksum, _provider_for
@@ -155,3 +158,38 @@ def build_shadow_report(connection: sqlite3.Connection) -> dict[str, Any]:
         "mismatch_count": mismatch_count,
         "mismatches": mismatches,
     }
+
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the shadow comparison against a database opened strictly read-only."""
+    parser = argparse.ArgumentParser(description="Read-only Agent Registry shadow report")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path(__file__).resolve().parents[1] / "pack.db",
+        help="Hub SQLite database path (opened read-only)",
+    )
+    args = parser.parse_args(argv)
+    connection = None
+    try:
+        uri = args.db.expanduser().resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        report = build_shadow_report(connection)
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        if report.get("ok"):
+            return 0
+        return 2 if report.get("ready") else 3
+    except Exception as error:
+        # Do not echo a database path or any stored data into diagnostic output.
+        print(json.dumps({"ok": False, "error": type(error).__name__}, sort_keys=True))
+        return 1
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
