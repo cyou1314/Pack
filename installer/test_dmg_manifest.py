@@ -22,6 +22,7 @@ class DmgManifestTests(unittest.TestCase):
         self.assertIn('[[ ! -e "$APP" && ! -L "$APP" ]]', source)
         self.assertNotIn('rm -rf "$APP"', source)
         self.assertIn("codesign --verify --deep --strict", source)
+        self.assertTrue(os.access(ROOT / "app" / "make-bundle.sh", os.X_OK))
 
     def test_dmg_builder_creates_bundle_from_source_and_records_manifest(self):
         source = (ROOT / "installer" / "build-dmg.sh").read_text(encoding="utf-8")
