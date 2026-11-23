@@ -7,6 +7,7 @@
 - PROVIDER-MATRIX.md：各 Provider 的已知能力、待验证事项和限制。
 - IMPLEMENTATION-PLAN.md：迁移策略、实施批次、任务优先级和架构决策。
 - REMEDIATION-ROADMAP.md：仓库级安全、部署、打包与验收整改路线。
+- MAINLINE-RECONCILIATION-AUDIT.md：main 与 v2 Foundation 的基线差异、冲突风险和分批移植队列。
 - PHASE4-MODULE-BOUNDARIES.md：Hub 与 macOS App 的模块边界和拆分进度。
 - MAC-MINIMAL-CHANGE-DEPLOYMENT.md：Mac 既有安装保护、升级/回滚和隔离验收要求。
 - PIBOT-REFERENCE-ASSESSMENT.md：PiBot 源码级参考评估、可借鉴模式与不引入边界。
