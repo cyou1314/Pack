@@ -430,3 +430,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 在检查组合占用之前执行 `BEGIN IMMEDIATE`，跨 Hub 进程保证全员 avatar combo 唯一；允许成员保持自己的当前组合，保留 glyph/渐变色，只更新 species/palette/accessory/bg/combo。
 - 新增 `hub/test_member_avatar_service.py` 7 项隔离测试，覆盖换头像、本人组合幂等、JSON/字段校验、重复组合、成员状态、审计失败回滚与独立 HubContext 并发抢占。接入 CI。
 - 不新增表或工具，member_register 与 member_avatar_set 共用同一成员服务模块。
+
+### Pair redemption 服务化与跨进程一次性兑换（2026-11-23）
+
+- 将公开 `POST /pair` 路由的兑换业务迁入 `hub/services/pairing.py:redeem_pair`；HTTP 层仍负责解析 JSON 并返回原 `JSONResponse`，不改变 endpoint、状态码或响应字段。
+- 在失败滑窗统计之前执行 `BEGIN IMMEDIATE`，把全局失败计数、external 总开关、配对码状态、成员创建/reclaim、已读水位、redeemed 标记、attempt 与审计串成一个写事务。两个 Hub 进程并发兑换同一码只允许一个创建/轮换 token，另一个读取到已兑换状态并走模糊失败。
+- 保持无效码统一错误、全局 429、external gate 403、按码锁定、token 只存哈希、审计不记录 code/token、reclaim 只轮换 token/provider 且不改 room/joined_msg/read cursor。
+- 新增 `hub/test_pairing_service.py` 8 项隔离测试，覆盖成功建号与游标、缺失/未知/重复码、external gate/全局限流、reclaim、内部名字冲突、过期/吊销/锁定、审计失败回滚及独立 HubContext 并发兑换。接入 CI 与安装包 smoke。
+- 配对码的创建/查询/吊销 MCP 工具仍留在 Hub 入口，下一步继续迁入同一 pairing 服务并补充与兑换的并发测试。

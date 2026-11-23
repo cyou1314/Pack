@@ -83,6 +83,7 @@ jobs:
           python hub/test_templates_service.py
           python hub/test_member_registration_service.py
           python hub/test_member_avatar_service.py
+          python hub/test_pairing_service.py
           python hub/test_packaging.py
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots

@@ -1518,6 +1518,7 @@ def build_server(context: HubContext | None = None):
         from .services.templates import list_templates as _list_templates
         from .services.templates import delete_template as _delete_template
         from .services.templates import fire_template as _fire_template
+        from .services.pairing import redeem_pair as _redeem_pair
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1559,6 +1560,7 @@ def build_server(context: HubContext | None = None):
         from services.templates import list_templates as _list_templates
         from services.templates import delete_template as _delete_template
         from services.templates import fire_template as _fire_template
+        from services.pairing import redeem_pair as _redeem_pair
     if __package__:
         from .services.members import list_members as _list_members
         from .services.members import register_member as _register_member
@@ -2974,154 +2976,19 @@ def build_server(context: HubContext | None = None):
         code = payload.get("code") if isinstance(payload, dict) else None
         if isinstance(code, str):
             code = code.strip()
-        now = context.clock()
-        with _lock:
-            conn = db()
-            try:
-                fails = conn.execute(
-                    "SELECT COUNT(*) AS n FROM pair_attempts"
-                    " WHERE success=0 AND ts>=?",
-                    (now - PAIR_GLOBAL_FAIL_WINDOW,)).fetchone()["n"]
-                if fails >= PAIR_GLOBAL_FAIL_MAX:
-                    audit(conn, "pair", "pair_global_throttle",
-                          f"fails={fails} window={PAIR_GLOBAL_FAIL_WINDOW}s")
-                    conn.commit()
-                    return JSONResponse(
-                        {"error": "too many failed attempts; try again later"},
-                        status_code=429)
-                if not _external_enabled(conn):
-                    audit(conn, "pair", "pair_rejected_gate_off", "")
-                    conn.commit()
-                    return JSONResponse(
-                        {"error": "pairing is currently disabled"},
-                        status_code=403)
-                if not code or not isinstance(code, str):
-                    conn.execute(
-                        "INSERT INTO pair_attempts(ts,success) VALUES(?,0)",
-                        (now,))
-                    audit(conn, "pair", "pair_failed", "reason=missing_code")
-                    conn.commit()
-                    return JSONResponse({"error": "invalid pair code"},
-                                        status_code=400)
-                row = conn.execute(
-                    "SELECT * FROM pair_codes WHERE code_hash=?",
-                    (hash_token(code),)).fetchone()
-                if not row:
-                    conn.execute(
-                        "INSERT INTO pair_attempts(ts,success) VALUES(?,0)",
-                        (now,))
-                    audit(conn, "pair", "pair_failed", "reason=unknown_code")
-                    conn.commit()
-                    return JSONResponse({"error": "invalid pair code"},
-                                        status_code=400)
-
-                def known_fail(reason):
-                    fc = row["fail_count"] + 1
-                    newly_locked = (fc >= PAIR_CODE_FAIL_LOCK
-                                    and not row["locked_at"])
-                    if newly_locked:
-                        conn.execute(
-                            "UPDATE pair_codes SET fail_count=?, locked_at=?"
-                            " WHERE id=?", (fc, now, row["id"]))
-                    else:
-                        conn.execute(
-                            "UPDATE pair_codes SET fail_count=? WHERE id=?",
-                            (fc, row["id"]))
-                    conn.execute(
-                        "INSERT INTO pair_attempts(ts,success) VALUES(?,0)",
-                        (now,))
-                    audit(conn, "pair", "pair_failed",
-                          f"code_id={row['id']} reason={reason} fail_count={fc}")
-                    if newly_locked:
-                        # 锁死写高优先级审计：持码者本人也兑不了，
-                        # 只能调度员吊销重发（运营后果已接受）。
-                        audit(conn, "pair", "pair_code_locked",
-                              f"code_id={row['id']} member={row['member_name']}"
-                              f" fail_count={fc}")
-                    conn.commit()
-                    return JSONResponse({"error": "invalid pair code"},
-                                        status_code=400)
-
-                if row["revoked_at"]:
-                    return known_fail("revoked")
-                if row["redeemed_at"]:
-                    return known_fail("already_redeemed")
-                if row["locked_at"]:
-                    return known_fail("locked")
-                if row["expires_at"] <= now:
-                    return known_fail("expired")
-                old = conn.execute("SELECT * FROM members WHERE name=?",
-                                   (row["member_name"],)).fetchone()
-                reclaiming = False
-                if old is not None:
-                    if old["removed_at"] is not None:
-                        return known_fail("name_reserved")
-                    if (old["kind"] or "") != "external":
-                        return known_fail("name_taken")
-                    if not row["reclaim"]:
-                        return known_fail("name_active_external")
-                    reclaiming = True
-                room_row = conn.execute(
-                    "SELECT id, name FROM rooms WHERE id=?",
-                    (row["bound_room_id"],)).fetchone()
-                if not room_row:
-                    return known_fail("room_missing")
-                tok = "pk-mem-" + secrets.token_urlsafe(32)
-                if reclaiming:
-                    # 只轮换 token_hash：joined_msg_id、已读游标、头像、
-                    # 入群时刻全部保持原值（件一 reclaim 口径）。
-                    mid = old["id"]
-                    conn.execute(
-                        "UPDATE members SET token_hash=?, provider=?"
-                        " WHERE id=?",
-                        (hash_token(tok), row["provider"] or old["provider"],
-                         mid))
-                    disp_name = old["display_name"] or old["name"]
-                    resp_room = conn.execute(
-                        "SELECT name FROM rooms WHERE id=?",
-                        (old["bound_room_id"],)).fetchone()
-                    resp_room_name = resp_room["name"] if resp_room \
-                        else room_row["name"]
-                else:
-                    joined = conn.execute(
-                        "SELECT COALESCE(MAX(id),0) AS m FROM messages"
-                        " WHERE room_id=?",
-                        (room_row["id"],)).fetchone()["m"]
-                    av = avatar_for(row["member_name"])
-                    av.update(_avatar_combo(row["member_name"],
-                                            _used_combos(conn)))
-                    cur = conn.execute(
-                        "INSERT INTO members(name,role,token_hash,profile,"
-                        "created_at,avatar,provider,kind,display_name,"
-                        "bound_room_id,joined_msg_id)"
-                        " VALUES(?,'member',?,NULL,?,?,?,?,?,?,?)",
-                        (row["member_name"], hash_token(tok), now,
-                         json.dumps(av), row["provider"] or None, "external",
-                         row["display_name"] or row["member_name"],
-                         room_row["id"], joined))
-                    mid = cur.lastrowid
-                    # 已读游标初始值 = joined_msg_id（水位）。
-                    conn.execute(
-                        "INSERT OR REPLACE INTO member_read_cursors"
-                        "(member_id,room_id,cursor_id) VALUES(?,?,?)",
-                        (mid, room_row["id"], joined))
-                    disp_name = row["display_name"] or row["member_name"]
-                    resp_room_name = room_row["name"]
-                conn.execute(
-                    "UPDATE pair_codes SET redeemed_member_id=?, redeemed_at=?"
-                    " WHERE id=? AND redeemed_at IS NULL",
-                    (mid, now, row["id"]))
-                conn.execute(
-                    "INSERT INTO pair_attempts(ts,success) VALUES(?,1)", (now,))
-                audit(conn, "pair", "pair_redeem",
-                      f"code_id={row['id']} member={row['member_name']}"
-                      f" member_id={mid} reclaim={1 if reclaiming else 0}")
-                conn.commit()
-                return JSONResponse({
-                    "member": row["member_name"], "display_name": disp_name,
-                    "member_id": mid, "token": tok, "room": resp_room_name})
-            finally:
-                conn.close()
+        return _redeem_pair(
+            context, code,
+            json_response=JSONResponse,
+            hash_token=hash_token,
+            token_factory=lambda: "pk-mem-" + secrets.token_urlsafe(32),
+            external_enabled=_external_enabled,
+            avatar_for=avatar_for,
+            used_combos=_used_combos,
+            make_avatar_combo=_avatar_combo,
+            global_fail_window=PAIR_GLOBAL_FAIL_WINDOW,
+            global_fail_max=PAIR_GLOBAL_FAIL_MAX,
+            code_fail_lock=PAIR_CODE_FAIL_LOCK,
+        )
 
     return mcp
 
