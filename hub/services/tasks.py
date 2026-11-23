@@ -1363,3 +1363,24 @@ def inspect_unclaimed_tasks(context, conn, now: float, *,
                 f"task {task['id']} assignee_id={task['assignee']} "
                 f"assignee={task['a_name']} cond={cond_tag} ",
             )
+
+
+def list_runs(context, task_id: int = 0, limit: int = 50) -> dict:
+    """List execution-fence records, optionally scoped to one task."""
+    conn = context.connect()
+    try:
+        query = (
+            "SELECT r.id,r.task_id,mb.name AS member,r.fence,r.status,r.outcome,"
+            "r.detail,r.started_at,r.ended_at FROM runs r "
+            "JOIN members mb ON mb.id=r.member_id WHERE 1=1"
+        )
+        args = []
+        if task_id:
+            query += " AND r.task_id=?"
+            args.append(task_id)
+        query += " ORDER BY r.id DESC LIMIT ?"
+        args.append(limit)
+        rows = conn.execute(query, args).fetchall()
+        return {"runs": [dict(row) for row in rows]}
+    finally:
+        conn.close()

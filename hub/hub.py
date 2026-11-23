@@ -1599,6 +1599,7 @@ def build_server(context: HubContext | None = None):
         from .services.tasks import list_task_transfers as _list_task_transfers
         from .services.tasks import get_task_audit as _get_task_audit
         from .services.tasks import list_tasks as _list_tasks
+        from .services.tasks import list_runs as _list_runs
         from .services.tasks import create_task as _create_task
         from .services.tasks import set_task_urgent as _set_task_urgent
         from .services.tasks import schedule_task as _schedule_task
@@ -1618,6 +1619,7 @@ def build_server(context: HubContext | None = None):
         from services.tasks import list_task_transfers as _list_task_transfers
         from services.tasks import get_task_audit as _get_task_audit
         from services.tasks import list_tasks as _list_tasks
+        from services.tasks import list_runs as _list_runs
         from services.tasks import create_task as _create_task
         from services.tasks import set_task_urgent as _set_task_urgent
         from services.tasks import schedule_task as _schedule_task
@@ -2518,19 +2520,7 @@ def build_server(context: HubContext | None = None):
         cancelled/reaped）。task_id=0 查全部任务，倒序、默认最近 50 条。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        q = """SELECT r.id, r.task_id, mb.name AS member, r.fence, r.status, r.outcome,
-                      r.detail, r.started_at, r.ended_at
-               FROM runs r JOIN members mb ON mb.id=r.member_id WHERE 1=1"""
-        args = []
-        if task_id:
-            q += " AND r.task_id=?"
-            args.append(task_id)
-        q += " ORDER BY r.id DESC LIMIT ?"
-        args.append(limit)
-        rows = conn.execute(q, args).fetchall()
-        conn.close()
-        return {"runs": [dict(x) for x in rows]}
+        return _list_runs(context, task_id, limit)
 
     @mcp.tool
     def rule_list() -> dict:

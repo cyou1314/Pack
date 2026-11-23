@@ -445,3 +445,9 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - pair_code_create/revoke 与 external_gate 写操作均使用 `BEGIN IMMEDIATE`，使发码时的名字/房间/reclaim 检查、吊销与兑换之间跨进程串行，减少「已吊销码仍被并发兑换」或「为已占用名字发出多个码」窗口。
 - 扩展 `hub/test_pairing_service.py`，覆盖一次性明文/哈希、身份/provider/room/reclaim 校验、gate、状态台账、吊销、审计失败回滚；与 redemption 的跨进程并发测试共同构成 pairing 领域回归。
 - pairing 服务覆盖公开兑换和三个管理工具；无新增工具/表，保持原 75-tool / 24-table 契约。
+
+### Run 台账读取服务化（2026-11-23）
+
+- 将 dispatcher-only `run_list` 的只读查询迁入 `hub/services/tasks.py:list_runs`；Hub 入口继续认证和角色校验，原筛选/倒序/limit 参数及返回字段保持不变。
+- 新增 `hub/test_runs_service.py` 4 项隔离测试，覆盖全量倒序、成员名 join、task_id 过滤、limit 和空结果；接入 CI/安装包 smoke。
+- Hub MCP 工具入口目前不再直接执行数据库查询；`_holder` 是 Desktop 服务注入的共享校验 helper，不是 MCP 工具主体。
