@@ -224,7 +224,7 @@ class UpgradeSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "outside the Pack service directory"):
                 manager.upgrade()
 
-        self.assertEqual(sum(call[0] == "bootout" for call in calls), len(f.labels))
+        self.assertFalse(any(call[0] == "bootout" for call in calls))
         self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
 
     def test_running_app_is_rejected_before_backup_or_service_stop(self):
@@ -448,7 +448,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
         self.assertEqual(loaded, set(f.labels.values()))
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
-        self.assertFalse(any(call[0] == "bootout" for call in calls))
+        self.assertEqual(sum(call[0] == "bootout" for call in calls), len(f.labels))
 
     def test_failed_restart_restores_previous_program_and_app(self):
         f = self.fixture
