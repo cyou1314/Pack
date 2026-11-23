@@ -6,34 +6,12 @@ enum HubError: Error {
     case toolError(String)
 }
 
-private final class SameOriginHubRedirectDelegate: NSObject, URLSessionTaskDelegate {
-    private let origin: URL
-
-    init(origin: URL) {
-        self.origin = origin
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        guard let destination = request.url,
-              HubEndpoint.allowsRedirect(from: origin, to: destination) else {
-            completionHandler(nil)
-            return
-        }
-        completionHandler(request)
-    }
-}
-
 /// Hand-rolled MCP JSON-RPC client for the Pack hub.
 /// Port of the proven runtime.mjs logic: all calls serialized through this
 /// actor, session re-initialized transparently when the hub forgets it,
 /// and the App coordinates URL discovery and client replacement.
 actor HubClient {
+    private let transport = HubTransport()
     private var cfg: PackConfig
     private var sessionId: String?
     private var rpcId = 0
@@ -45,27 +23,12 @@ actor HubClient {
     func discoverBeforeSending() async { }
 
     private func post(body: [String: Any], isNotification: Bool) async throws -> (Data, HTTPURLResponse) {
-        guard let url = HubEndpoint.validatedURL(cfg.hubUrl) else {
-            throw HubError.badResponse("Hub URL must use HTTPS except for loopback HTTP")
-        }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 20
-        req.httpShouldHandleCookies = false
-        req.setValue("close", forHTTPHeaderField: "Connection")
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        req.setValue("Bearer \(cfg.token)", forHTTPHeaderField: "Authorization")
-        if let sid = sessionId { req.setValue(sid, forHTTPHeaderField: "mcp-session-id") }
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let redirectDelegate = SameOriginHubRedirectDelegate(origin: url)
-        let session = URLSession(configuration: .ephemeral, delegate: redirectDelegate, delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw HubError.badResponse("no http response") }
-        if isNotification { return (data, http) }
-        if http.statusCode != 200 { throw HubError.badResponse("http \(http.statusCode)") }
-        return (data, http)
+        try await transport.post(
+            config: cfg,
+            sessionID: sessionId,
+            body: body,
+            isNotification: isNotification
+        )
     }
 
     private func rpc(method: String, params: [String: Any]) async throws -> [String: Any] {
