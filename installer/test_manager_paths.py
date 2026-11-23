@@ -79,8 +79,48 @@ def test_failed_install_rollback():
         assert not fresh_agents.exists(), "new empty LaunchAgents directory must be removed"
 
 
+
+def test_preexisting_dangling_destination_symlink():
+    sys.path.insert(0, str(HERE))
+    import manager
+
+    with tempfile.TemporaryDirectory(prefix="pack-installer-dangling-link-") as tmp:
+        root = pathlib.Path(tmp)
+        originals = {
+            name: getattr(manager, name)
+            for name in ("hub", "engine", "config", "socket_dir", "agents", "available", "ctl")
+        }
+        manager.hub = root / "local-hub"
+        manager.engine = root / "local-engine"
+        manager.config = root / "config.json"
+        manager.socket_dir = root / "handoff-socket"
+        manager.agents = root / "LaunchAgents"
+        manager.available = lambda _port: True
+
+        class NotLoaded:
+            returncode = 1
+
+        manager.ctl = lambda *args, **kwargs: NotLoaded()
+        manager.config.symlink_to(root / "missing-config-target")
+        try:
+            try:
+                manager.install()
+            except SystemExit as exc:
+                assert "refusing to overwrite" in str(exc)
+            else:
+                raise AssertionError("install must reject a pre-existing dangling config symlink")
+        finally:
+            for name, value in originals.items():
+                setattr(manager, name, value)
+
+        assert manager.config.is_symlink() if manager.config == root / "config.json" else (root / "config.json").is_symlink()
+        assert not (root / "local-hub").exists()
+        assert not (root / "local-engine").exists()
+
+
 def main():
     test_failed_install_rollback()
+    test_preexisting_dangling_destination_symlink()
     with tempfile.TemporaryDirectory(prefix="pack-installer-path-test-") as tmp:
         home = pathlib.Path(tmp)
         test_root = home / "commander-work" / "isolated-installer-check"
