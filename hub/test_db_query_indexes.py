@@ -154,6 +154,14 @@ class HubQueryIndexTests(unittest.TestCase):
                     "INSERT INTO members(id,name,role,token_hash,created_at) "
                     "VALUES(2,'worker','member','test-hash',1)"
                 )
+                connection.executemany(
+                    "INSERT INTO tasks(id,room_id,title,body,created_by,assignee,status,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    [
+                        (1, 1, "task-one", "body", 1, 2, "open", 1.0, 2.0),
+                        (12, 1, "task-twelve", "body", 1, 2, "open", 1.0, 2.0),
+                    ],
+                )
                 task_rows = []
                 for number in range(1000, 4000):
                     status = ("open", "claimed", "working", "done")[number % 4]
@@ -162,15 +170,15 @@ class HubQueryIndexTests(unittest.TestCase):
                     due = float(number) if status == "open" and assignee is not None else None
                     task_rows.append((
                         number, 1, f"task-{number}", "body", 1, assignee, status,
-                        None, lease, 0, None, None, due, 0.0, 1.0, 2.0, number % 2,
-                        1.0, 2.0,
+                        None, lease, 0, None, None, None, None, due, 0.0,
+                        number % 2, 1.0, 2.0,
                     ))
                 connection.executemany(
                     "INSERT INTO tasks("
                     "id,room_id,title,body,created_by,assignee,status,claim_token,"
-                    "lease_expires,attempts,result,envelope,fail_class,next_claim_at,"
-                    "sched_at,urgent,created_at,updated_at"
-                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "lease_expires,attempts,result,envelope,review_note,fail_class,"
+                    "next_claim_at,sched_at,urgent,created_at,updated_at"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     task_rows,
                 )
                 # Historical table's old schema is upgraded with these columns.
@@ -222,7 +230,7 @@ class HubQueryIndexTests(unittest.TestCase):
                      "AND lease_expires IS NOT NULL ORDER BY lease_expires",
                      (), "idx_tasks_lease_expiry"),
                     ("SELECT id FROM tasks WHERE status='open' AND assignee IS NOT NULL "
-                     "AND next_claim_at IS NOT NULL", (), "idx_tasks_unclaimed_due"),
+                     "AND next_claim_at<=?", (2000,), "idx_tasks_unclaimed_due"),
                     ("SELECT id FROM task_transfers WHERE status='pending' "
                      "AND expires_at IS NOT NULL ORDER BY expires_at,id",
                      (), "idx_task_transfers_pending_expiry"),
