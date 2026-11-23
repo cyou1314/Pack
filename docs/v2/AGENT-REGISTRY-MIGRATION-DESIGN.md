@@ -33,7 +33,7 @@ M1 采用**兼容映射 + 只读影子验证**，不把现有 `members` 替换�
 
 ## 3. 新表建议
 
-所有表使用显式字段、外键和索引；SQLite 连接必须启用现有 foreign_keys/WAL 配置。以下是逻辑字段，不是已经执行的 DDL。
+所有表使用显式字段、外键和索引。当前 `hub/core/storage.py` 已配置 WAL 与 busy_timeout，但**尚未启用 `PRAGMA foreign_keys=ON`**；M1a 必须在共享连接工厂逐连接启用并增加 FK enforcement 测试，不能把它描述成现有行为。以下是逻辑字段，不是已经执行的 DDL。
 
 ### providers
 
@@ -94,7 +94,7 @@ Provider 目录描述厂商，不代表该厂商的所有连接方式均已支�
 
 ## 4. 保守回填规则
 
-迁移在一个事务中执行，并以 `legacy_member_id UNIQUE` + `INSERT ... ON CONFLICT DO NOTHING` 保证可重复运行。
+迁移在一个事务中执行，并以 `legacy_member_id UNIQUE` + `INSERT ... ON CONFLICT DO NOTHING` 保证可重复运行。M1a 需新增版本化 migration ledger（例如 `hub_schema_migrations(version, checksum, applied_at)`），并用 `BEGIN IMMEDIATE` + 单条 DDL/DML `execute` 执行迁移；不要把现有 `executescript(SCHEMA)` 当成事务迁移器。
 
 1. 仅选取 `members.role='member'`；排除 owner/dispatcher。
 2. 每行保留原 member ID 映射；旧名字、展示名、创建时间和 provider 原始标签按白名单复制。
