@@ -99,6 +99,28 @@ def build_shadow_report(connection: sqlite3.Connection) -> dict[str, Any]:
             "mismatch_count": 0,
             "mismatches": [],
         }
+
+    # A zero mapping diff is not sufficient if the database has structural
+    # damage or orphaned references in the new registry tables.
+    quick_check = [
+        row[0] for row in connection.execute("PRAGMA quick_check").fetchall()
+    ]
+    integrity_ok = quick_check == ["ok"]
+    foreign_key_rows = connection.execute("PRAGMA foreign_key_check").fetchall()
+    foreign_key_tables = sorted({str(row[0]) for row in foreign_key_rows})
+    if not integrity_ok or foreign_key_rows:
+        return {
+            "ok": False,
+            "ready": False,
+            "reason": "database_integrity_check_failed",
+            "migration_checksum_matches": checksum_matches,
+            "database_integrity_ok": integrity_ok,
+            "foreign_key_violation_count": len(foreign_key_rows),
+            "foreign_key_violation_tables": foreign_key_tables,
+            "mismatch_count": 0,
+            "mismatches": [],
+        }
+
     latest_migration_version = max(known_versions)
 
     member_columns = {
@@ -175,13 +197,16 @@ def build_shadow_report(connection: sqlite3.Connection) -> dict[str, Any]:
     ).fetchone()[0]
     unmapped_count = len(members) - len(mapped_ids)
     mismatch_count = len(mismatches)
-    ready = checksum_matches
+    ready = checksum_matches and integrity_ok and not foreign_key_rows
     return {
         "ok": ready and mismatch_count == 0,
         "ready": ready,
         "migration_version": latest_migration_version,
         "applied_migration_versions": sorted(applied_rows),
         "migration_checksum_matches": checksum_matches,
+        "database_integrity_ok": integrity_ok,
+        "foreign_key_violation_count": len(foreign_key_rows),
+        "foreign_key_violation_tables": foreign_key_tables,
         "legacy_member_count": len(members),
         "mapped_member_count": len(mapped_ids),
         "unmapped_member_count": unmapped_count,
