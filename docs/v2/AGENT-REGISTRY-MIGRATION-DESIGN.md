@@ -145,7 +145,7 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 
 ## 8. M1a 实施记录（候选 PR，2026-11-23）
 
-- 新增 `hub/core/migrations.py`：版本号 + SHA-256 checksum migration ledger；checksum 同时覆盖 DDL、Provider 映射表及数据回填函数 AST；所有 DDL/DML 在 `BEGIN IMMEDIATE` 中执行，失败整体 rollback；重复执行验证 checksum 后跳过。
+- 新增 `hub/core/migrations.py`：版本号 + SHA-256 checksum migration ledger；checksum 同时覆盖 DDL、Provider 映射表及数据回填函数的规范化源码（避免 Python AST 版本差异）；所有 DDL/DML 在 `BEGIN IMMEDIATE` 中执行，失败整体 rollback；重复执行验证 checksum 后跳过。
 - 新增 providers / agents / agent_connections / agent_sessions 表与外键、唯一索引、查询索引。首版不生成 connection/session 行，不复制凭据或私人记忆。
 - 对现有 `members.role='member'` 逐行建立稳定 ID `legacy-member-{id}` 映射；dispatcher/owner 不映射。已软删除成员标记 removed；external kind 只映射为 external_agent 连接模式，不覆盖 codex/gemini 等厂商身份；pending/logged_in/expired 登录状态分别保守映射为 pending/pending/disconnected。Provider 使用显式白名单映射，未知值归入 legacy 并保留原始标签。
 - `hub/core/storage.py` 每个连接启用 `PRAGMA foreign_keys=ON`；现有旧表不添加/重写外键，旧 token、任务、消息、记忆和房间绑定不改。
@@ -153,6 +153,6 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 - 新增迁移单测覆盖 legacy 映射、重复执行、外键拒绝非法引用和失败回滚；CI 增加该测试，SQLite fresh/legacy snapshots 更新。
 - **M1a 验收仍需 CI 与代码审查通过。** M1b shadow read、差异报告和并发 init 专项测试尚未实施；此阶段没有启用新读路径。
 
-- Codex 审查修正：Provider 身份与 external connection mode 独立归一；迁移 checksum 已纳入回填逻辑 AST 与 Provider 映射表，防止数据迁移规则变化却复用旧 checksum。
+- Codex 审查修正：Provider 身份与 external connection mode 独立归一；迁移 checksum 已纳入回填逻辑规范化源码与 Provider 映射表，并避免 Python 版本相关 AST 表示，防止数据迁移规则变化却复用旧 checksum。
 
 - 迁移版本冻结规则：M1a/v1 合入并发布后，不得直接修改其 DDL、Provider 映射或回填逻辑；任何后续数据行为变化必须新增 migration version。checksum 不匹配时 Hub 初始化 fail-closed，避免旧库静默跳过或新旧库映射漂移。
