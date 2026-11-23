@@ -12,9 +12,9 @@
 | 共同祖先（merge base） | `3c11de6cf8365c4de9098260ebfea519055f9800` |
 | main 当前基线 | `b72203cbbf23c05718316774a77a2c6a05d96422` |
 | v2 Foundation 当前基线（本审计时） | `db6a9d75d6a4efab80fcb7c7e353b3d195af73c7` |
-| Foundation 相对 merge base | ahead 14 commits，约 300 个变更文件 |
+| Foundation 相对 merge base | 当前 ahead 18 commits，约 300 个变更文件 |
 | main 相对 merge base | ahead 9 commits，12 个变更文件 |
-| PR #6 | 340 个变更文件，32,122 additions / 6,817 deletions，仍为 draft，GitHub 报告 dirty |
+| PR #6 | 当前 343 个变更文件，32,583 additions / 6,823 deletions，仍为 draft，GitHub 报告 dirty |
 
 两个分支并非简单的单向领先关系。PR #6 的 dirty 状态不是通过强行 merge 或关闭冲突检查可以解决的问题；它反映了两个分支在同一批核心文件上继续独立演进。
 
@@ -102,10 +102,10 @@ Foundation 将历史 suite 移入 `tests/archive/hub-staging56`，但当前 CI �
 
 | 顺序 | 项目 | 状态 | 原则 |
 |---|---|---|---|
-| 1 | WAL init-only | PR #25 | 不改 schema |
-| 2 | Installer test path isolation | PR #26 | 仅 test-mode 路径变化 |
-| 3 | App bundle 原子 no-clobber 发布 | 待建 PR | 保留 Foundation release/codesign 能力 |
-| 4 | staging56 专项 CI | 待验证 | 先验证归档脚本，再加 CI |
+| 1 | WAL init-only | PR #25 已合并 | 不改 schema |
+| 2 | Installer test path isolation | PR #26 已合并 | 仅 test-mode 路径变化 |
+| 3 | App bundle 原子 no-clobber 发布 | PR #28 已合并 | 保留 Foundation release/codesign 能力 |
+| 4 | staging56 专项 CI | PR #29 CI / review 进行中 | 先验证归档脚本，再启用 CI |
 | 5 | Task structured audit + query indexes | 待设计/实现 | 新 migration version，service-aware |
 | 6 | 其余 PiBot / 文档差异 | 待审查 | 不覆盖现有评估与安全边界 |
 
@@ -133,4 +133,4 @@ M1c API 不因本审计完成而自动解锁。仍需对真实 Mac 数据库的�
 
 ## 7. 本次审计结论
 
-当前最优路径不是继续扩大 v2 变更面，而是先把 main 已经验证的安全/性能修复逐项移植到模块化 Foundation。PR #25 和 #26 正在完成前两项；后续按队列处理 App bundle、staging56 和结构化任务审计。真实 Mac 数据库离线门槛仍然独立存在。
+当前最优路径不是继续扩大 v2 变更面，而是先把 main 已经验证的安全/性能修复逐项移植到模块化 Foundation。PR #25、#26、#28 已完成；PR #29 正在验证 staging56 专项回归；后续再按 service-aware 方案移植结构化任务审计与查询索引。真实 Mac 数据库离线门槛仍然独立存在。
