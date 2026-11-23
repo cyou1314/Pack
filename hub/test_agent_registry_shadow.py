@@ -99,6 +99,23 @@ class AgentRegistryShadowTests(unittest.TestCase):
                 migrations._PROVIDER_LABELS.update(original)
                 connection.close()
 
+    def test_unknown_migration_version_is_not_ready(self):
+        with tempfile.TemporaryDirectory(prefix="pack-agent-shadow-") as directory:
+            connection = self._database(directory)
+            try:
+                connection.execute(
+                    "INSERT INTO hub_schema_migrations(version,name,checksum,applied_at) "
+                    "VALUES(2,'future_migration','future-checksum',200)"
+                )
+                connection.commit()
+                report = build_shadow_report(connection)
+                self.assertFalse(report["ok"])
+                self.assertFalse(report["ready"])
+                self.assertEqual(report["reason"], "unsupported_migration_versions")
+                self.assertEqual(report["unsupported_migration_versions"], [2])
+            finally:
+                connection.close()
+
     def test_missing_registry_schema_returns_safe_not_ready_report(self):
         with tempfile.TemporaryDirectory(prefix="pack-agent-shadow-") as directory:
             connection = connect(Path(directory) / "empty.db")
