@@ -24,7 +24,7 @@ ditto "$ENGINE/Electron.app" "$STAGE/engine/Electron.app"
 codesign --force --sign - "$STAGE/Pack.app" >/dev/null
 codesign --verify --deep --strict "$STAGE/Pack.app"
 plutil -lint "$STAGE/Pack.app/Contents/Info.plist" >/dev/null
-for f in manager.py install.command uninstall.command README.txt python-requirements.lock; do cp "$ROOT/installer/$f" "$STAGE/$f"; done
+for f in manager.py install.command upgrade.command uninstall.command README.txt python-requirements.lock; do cp "$ROOT/installer/$f" "$STAGE/$f"; done
 ln -s /Applications "$STAGE/Applications"
 # The hub and engine payload must contain no user databases, tokens or sessions.
 if find "$STAGE/hub" "$STAGE/engine" \( -name 'pack.db*' -o -name 'muse.sqlite*' -o -name 'Cookies' -o -name 'vault.json' -o -name '.dispatcher_token' -o -name '.owner_token' -o -name 'tokens.json' -o -name '*.token' -o -name '*.sqlite*' -o -name 'Partitions' -o -name 'session.json' -o -name 'login.json' \) -print | grep -q .; then echo 'Unexpected user data in payload.' >&2; exit 1; fi

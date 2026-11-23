@@ -32,6 +32,7 @@ jobs:
           bash -n hub/install-services.sh
           bash -n run-all-suites.sh
           bash -n installer/build-dmg.sh
+          bash -n installer/upgrade.command
           bash -n app/make-bundle.sh
           bash -n local/install-local.sh
           bash -n local/uninstall-local.sh
@@ -44,6 +45,7 @@ jobs:
           python hub/test_resolve_mention.py
           python hub/test_systemd_units.py
           python installer/test_launch_agent_safety.py
+          python installer/test_upgrade_safety.py
           python installer/test_dmg_manifest.py
           python hub/test_policy.py
           python hub/test_storage.py

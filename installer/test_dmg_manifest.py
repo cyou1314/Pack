@@ -60,6 +60,14 @@ class DmgManifestTests(unittest.TestCase):
         self.assertIn("BUILD-MANIFEST.txt", source)
         self.assertIn("SHA-256", source)
 
+    def test_dmg_contains_a_dedicated_upgrade_command(self):
+        source = (ROOT / "installer" / "build-dmg.sh").read_text(encoding="utf-8")
+        command = (ROOT / "installer" / "upgrade.command").read_text(encoding="utf-8")
+        readme = (ROOT / "installer" / "README.txt").read_text(encoding="utf-8")
+        self.assertIn("upgrade.command", source)
+        self.assertIn('manager.py" upgrade', command)
+        self.assertIn("已有安装升级", readme)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
