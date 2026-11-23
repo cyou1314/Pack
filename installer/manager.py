@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Install the packaged local stack; PACK_INSTALL_TEST_ROOT isolates acceptance."""
-import asyncio, json, os, pathlib, plistlib, shutil, socket, subprocess, sys, tempfile, time
+import asyncio, fcntl, json, os, pathlib, plistlib, shutil, socket, stat, subprocess, sys, tempfile, time
 
 BUNDLE = pathlib.Path(__file__).resolve().parent
 HOME = pathlib.Path.home()
@@ -306,6 +306,50 @@ def populate_upgrade_backup(backup_root):
     subprocess.run(["/usr/bin/ditto", str(app_path), str(backup_root / "Pack.app")], check=True)
 
 
+def preflight_upgrade_migration(stage_hub, backup_root):
+    """Run the candidate Hub's init against a copy of the verified, post-stop DB backup."""
+    database_dir = backup_root / "database"
+    snapshots = sorted(database_dir.glob("pack-*.db"))
+    if len(snapshots) != 1:
+        raise RuntimeError(
+            f"Expected exactly one verified SQLite snapshot in {database_dir}; found {len(snapshots)}"
+        )
+
+    staged_db = stage_hub / "pack.db"
+    copy_path(snapshots[0], staged_db)
+    staged_db.chmod(0o600)
+    staged_token = stage_hub / ".dispatcher_token"
+    copy_path(hub / ".dispatcher_token", staged_token)
+    staged_token.chmod(0o600)
+
+    python = stage_hub / "python" / "bin" / "python3"
+    env = {
+        **os.environ,
+        "PYTHONNOUSERSITE": "1",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "no_proxy": "127.0.0.1,localhost",
+    }
+    subprocess.run(
+        [str(python), "hub.py", "init"],
+        cwd=str(stage_hub),
+        env=env,
+        check=True,
+        timeout=120,
+    )
+    integrity_check = (
+        "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); "
+        "result=db.execute('PRAGMA integrity_check').fetchone(); "
+        "assert result and result[0]=='ok', result; db.close()"
+    )
+    subprocess.run(
+        [str(python), "-c", integrity_check, str(staged_db)],
+        cwd=str(stage_hub),
+        env=env,
+        check=True,
+        timeout=30,
+    )
+
+
 def stage_upgrade_payload():
     stage_root = pathlib.Path(tempfile.mkdtemp(prefix=".pack-upgrade-", dir=str(base)))
     stage_root.chmod(0o700)
@@ -507,6 +551,9 @@ def upgrade():
         backup_root = create_upgrade_backup()
         populate_upgrade_backup(backup_root)
         backup_verified = True
+        # serve() calls init() against the live DB. First run the same candidate
+        # migration on the verified backup copy so failures occur before code swap.
+        preflight_upgrade_migration(stage_hub, backup_root)
 
         replace_program_paths(stage_root, stage_hub, stage_engine, swaps)
         app_previous = swap_app_bundle(app_stage, app_swap_state)
@@ -612,7 +659,53 @@ def upgrade():
         os.umask(previous_umask)
 
 
-def install():
+def _acquire_install_lock():
+    """Serialize fresh installs before preflight so rollback cannot delete another attempt's paths."""
+    lock_path = HOME / ".pack-install.lock"
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise SystemExit(f"Cannot safely open Pack installer lock: {lock_path}") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or (info.st_mode & 0o077):
+            raise SystemExit(f"Pack installer lock must be a private regular file owned by this user: {lock_path}")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SystemExit("Another Pack installation is already running; wait for it to finish.") from exc
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _rollback_failed_install(agent_plists, owned_paths, agents_dir, agents_preexisting, base_dir, base_preexisting):
+    """Remove only destinations verified absent before this fresh install attempt."""
+    for label in labels.values():
+        try:
+            ctl("bootout", f"gui/{uid}/{label}", check=False)
+        except Exception:
+            pass
+    for path in (*agent_plists, *owned_paths):
+        try:
+            remove_path(path)
+        except OSError:
+            pass
+    if not agents_preexisting:
+        try:
+            pathlib.Path(agents_dir).rmdir()
+        except OSError:
+            pass
+    if not base_preexisting:
+        try:
+            pathlib.Path(base_dir).rmdir()
+        except OSError:
+            pass
+
+
+def _install_unlocked():
     require_real_directory(base, 'Pack data root')
     require_real_directory(HOME/'Library', 'Library directory')
     require_real_directory(agents, 'LaunchAgents directory')
@@ -624,33 +717,39 @@ def install():
     ):
         require_absent(path, description)
     if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
+    agent_plists = []
     for kind, label in labels.items():
-        require_absent(agents/(label+'.plist'), f'LaunchAgent plist {label}')
+        plist = agents/(label+'.plist')
+        require_absent(plist, f'LaunchAgent plist {label}')
+        agent_plists.append(plist)
         if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0:
             raise SystemExit(f'LaunchAgent label is already in use: {label}')
-    os.umask(0o077)
-    base.mkdir(parents=True, exist_ok=True, mode=0o700)
-    base.chmod(0o700)
-    hub.mkdir(mode=0o700)
-    engine.mkdir(mode=0o700)
-    agents.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
-    for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
-    shutil.copytree(BUNDLE/'hub'/'core',hub/'core',symlinks=True)
-    shutil.copytree(BUNDLE/'hub'/'services',hub/'services',symlinks=True)
-    shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
-    subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
-    (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
-    py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
-    smoke = (
-        'import asyncio,inspect,hub; tools=hub.build_server().list_tools(); '
-        'tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; '
-        'names={tool.name for tool in tools}; '
-        'assert {"room_list","member_list"}.issubset(names), names'
-    )
-    subprocess.run([str(py), '-c', smoke], cwd=hub, check=True,
-                   env={**os.environ, 'PYTHONNOUSERSITE':'1'})
+
+    base_preexisting = base.exists()
+    agents_preexisting = agents.exists()
+    previous_umask = os.umask(0o077)
     try:
+        base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        base.chmod(0o700)
+        hub.mkdir(mode=0o700)
+        engine.mkdir(mode=0o700)
+        agents.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
+        for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
+        shutil.copytree(BUNDLE/'hub'/'core',hub/'core',symlinks=True)
+        shutil.copytree(BUNDLE/'hub'/'services',hub/'services',symlinks=True)
+        shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
+        subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
+        (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
+        py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
+        smoke = (
+            'import asyncio,inspect,hub; tools=hub.build_server().list_tools(); '
+            'tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; '
+            'names={tool.name for tool in tools}; '
+            'assert {"room_list","member_list"}.issubset(names), names'
+        )
+        subprocess.run([str(py), '-c', smoke], cwd=hub, check=True,
+                       env={**os.environ, 'PYTHONNOUSERSITE':'1'})
         write_agent('hub',[py,hub/'hub.py','serve'],{**common,'PACK_HUB_HOST':'127.0.0.1','PACK_HUB_PORT':str(hp)},True)
         for _ in range(120):
             try:
@@ -669,11 +768,28 @@ def install():
                 with socket.create_connection(('127.0.0.1',ep),timeout=.3): break
             except OSError: time.sleep(.25)
         else: raise RuntimeError('Local engine did not start')
-    except Exception:
-        for label in labels.values(): ctl('bootout',f'gui/{uid}/{label}',check=False)
+    except BaseException:
+        _rollback_failed_install(
+            agent_plists,
+            (config, socket_dir, engine, hub),
+            agents,
+            agents_preexisting,
+            base,
+            base_preexisting,
+        )
         raise
+    finally:
+        os.umask(previous_umask)
     print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
     print('Open Pack to migrate the private local credentials into Keychain.')
+
+
+def install():
+    lock_fd = _acquire_install_lock()
+    try:
+        _install_unlocked()
+    finally:
+        os.close(lock_fd)
 
 def uninstall():
     require_real_directory(base, 'Pack data root')

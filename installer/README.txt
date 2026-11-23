@@ -20,9 +20,9 @@ Mac 部署前只读盘点：
 已有安装升级：
 1. 先退出 Pack.app，打开新版本 DMG 根目录的「upgrade.command」。
 2. 升级器先验证安装目录、Pack LaunchAgent 身份/权限、数据库、配置和 App 标记；新版 Hub、Engine 与 Pack.app 先复制到暂存位置并做工具注册/签名 smoke test。
-3. 然后停止全部 Pack LaunchAgent，确认端口释放，再使用旧版 Hub 的在线 SQLite 备份脚本生成并验证数据库/附件备份。备份发生在服务停止之后，因此 staging 期间已接受的写入会包含在快照中。只有备份验证成功后才原子替换程序文件与 App，再启动新服务；Hub 必须通过 dispatcher token 认证的只读 MCP `room_list` 调用，Engine 必须开放本地端口，两个检查都通过才算升级成功。
-4. 成功后保留升级备份在 ~/.pack/local-hub/backups/upgrade-*。升级不会覆盖 pack.db、attachments、tokens、config.json、Engine data 或 Keychain。
-5. 如果新服务启动失败，升级器会停止新服务、恢复旧程序文件与 App，再重新启动旧服务；不会自动用预升级快照覆盖 live DB/attachments，因为 Hub 可能已在健康检查期间接受新写入。经验证的预升级快照会保留在备份目录，供确认情况后人工恢复。当前升级不执行 SQLite schema migration；未来涉及表结构变更时，必须先实现独立、可逆的版本化迁移流程。如果自动回滚也失败，终端会给出备份与暂存路径。不要手工删除这些目录，应先保留现场。
+3. 然后停止全部 Pack LaunchAgent，确认端口释放，再使用旧版 Hub 的在线 SQLite 备份脚本生成并验证数据库/附件备份。备份发生在服务停止之后，因此 staging 期间已接受的写入会包含在快照中。备份验证成功后，升级器会把数据库快照复制到私有暂存目录，使用候选 Hub 执行 `hub.py init` 做迁移预检，并再次检查 SQLite 完整性；只有预检通过才原子替换程序文件与 App。新 Hub 首次启动仍会对 live DB 执行同一幂等 `init`。Hub 必须通过 dispatcher token 认证的只读 MCP `room_list` 调用，Engine 必须开放本地端口，两个检查都通过才算升级成功。
+4. 成功后保留升级备份在 ~/.pack/local-hub/backups/upgrade-*。升级不会覆盖 pack.db、attachments、tokens、config.json、Engine data 或 Keychain；迁移预检只写入暂存副本。
+5. 如果迁移预检失败，升级器会恢复旧服务，live DB 与程序文件保持不变，已验证备份保留。如果新服务启动失败，升级器会停止新服务、恢复旧程序文件与 App，再重新启动旧服务；不会自动用预升级快照覆盖 live DB/attachments，因为 Hub 可能已在健康检查期间接受新写入。经验证的预升级快照会保留在备份目录，供确认情况后人工恢复。未来涉及非加法或破坏性表结构变更时，仍必须先实现独立、可逆的版本化迁移流程。如果自动回滚也失败，终端会给出备份与暂存路径。不要手工删除这些目录，应先保留现场。
 
 upgrade.command 仅用于本安装器创建、且 LaunchAgent/App 标记均可验证的完整 Pack 安装。若检测到符号链接、身份不匹配、配置/数据库损坏、敏感目录或文件权限过宽、Pack 正在运行、端口被其他进程占用或备份验证失败，会停止且不替换程序文件。开发用 local/install-local.sh 仍是全新安装脚本，不是升级器。
 
