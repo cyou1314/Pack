@@ -565,4 +565,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 
 - M1a 已合入 v2 Foundation，合并提交 `51128b954764b3e9e59d0e00eb802d24fea2684e`；PR #21 全部 CI 通过，Codex 代码审查无发现。
 - M1b 只读影子比对已合入 Foundation；PR #22 的 CI 和 Codex 审查均通过。CLI 不加入 Hub MCP，不切换旧读写路径。
-- PR #23 的并发初始化、只读性和敏感字段输出测试已通过 CI。PR #24 正补充 SQLite quick_check / foreign_key_check 预检；用户 Mac/生产数据库仍未运行迁移或 shadow report，实际部署继续后置。
+- PR #23 的并发初始化、只读性和敏感字段输出测试已通过 CI；PR #24 已补齐 SQLite quick_check / foreign_key_check 预检并合入。用户 Mac/生产数据库仍未运行迁移或 shadow report，实际部署继续后置。
+
+
+### Mainline reconciliation 端口（2026-11-23）
+
+- PR #25 WAL init-only、PR #26 installer test path isolation、PR #27 基线对账审计、PR #28 App bundle 原子发布均已合入 v2 Foundation。
+- PR #29 staging56 专项 CI 正在验证；task_id 结构化审计和 query indexes 尚未移植，必须按新 migration version 与 Hub service 边界单独实施。
+- Umbrella PR #6 仍为 dirty draft；不允许整包合并或以 main 的 monolithic hub.py 覆盖 Foundation。
