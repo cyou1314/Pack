@@ -257,7 +257,7 @@ extension AppState {
             do {
                 _ = try await ownerClient.call(name: "message_edit", args: ["message_id": message.id, "new_body": wireText])
                 editingMessageId = nil; editingMessageText = ""
-                await refresh()
+                await refresh(forceFullMessageSnapshot: true)
             } catch { lastActionNote = "操作未完成，请检查连接后重试" }
         }
     }
@@ -267,7 +267,7 @@ extension AppState {
         Task {
             do {
                 _ = try await ownerClient.call(name: "message_delete", args: ["message_id": message.id])
-                await refresh()
+                await refresh(forceFullMessageSnapshot: true)
             } catch { lastActionNote = "操作未完成，请检查连接后重试" }
         }
     }
