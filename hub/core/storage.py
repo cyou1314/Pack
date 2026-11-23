@@ -5,6 +5,8 @@ import sqlite3
 import time
 from os import PathLike
 
+from .task_ids import audit_task_id
+
 
 def connect(
     db_path: str | PathLike[str],
@@ -22,7 +24,6 @@ def connect(
     # before any transaction begins. Existing Hub tables remain unchanged; the
     # additive Agent Registry uses these constraints for new relationships.
     connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA journal_mode=WAL")
     connection.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
     return connection
 
@@ -39,6 +40,6 @@ def write_audit(
     if timestamp is None:
         timestamp = time.time()
     connection.execute(
-        "INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
-        (timestamp, actor, action, detail),
+        "INSERT INTO audit(ts,actor,action,detail,task_id) VALUES(?,?,?,?,?)",
+        (timestamp, actor, action, detail, audit_task_id(detail)),
     )
