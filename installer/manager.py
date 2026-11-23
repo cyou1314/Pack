@@ -306,6 +306,50 @@ def populate_upgrade_backup(backup_root):
     subprocess.run(["/usr/bin/ditto", str(app_path), str(backup_root / "Pack.app")], check=True)
 
 
+def preflight_upgrade_migration(stage_hub, backup_root):
+    """Run the candidate Hub's init against a copy of the verified, post-stop DB backup."""
+    database_dir = backup_root / "database"
+    snapshots = sorted(database_dir.glob("pack-*.db"))
+    if len(snapshots) != 1:
+        raise RuntimeError(
+            f"Expected exactly one verified SQLite snapshot in {database_dir}; found {len(snapshots)}"
+        )
+
+    staged_db = stage_hub / "pack.db"
+    copy_path(snapshots[0], staged_db)
+    staged_db.chmod(0o600)
+    staged_token = stage_hub / ".dispatcher_token"
+    copy_path(hub / ".dispatcher_token", staged_token)
+    staged_token.chmod(0o600)
+
+    python = stage_hub / "python" / "bin" / "python3"
+    env = {
+        **os.environ,
+        "PYTHONNOUSERSITE": "1",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "no_proxy": "127.0.0.1,localhost",
+    }
+    subprocess.run(
+        [str(python), "hub.py", "init"],
+        cwd=str(stage_hub),
+        env=env,
+        check=True,
+        timeout=120,
+    )
+    integrity_check = (
+        "import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); "
+        "result=db.execute('PRAGMA integrity_check').fetchone(); "
+        "assert result and result[0]=='ok', result; db.close()"
+    )
+    subprocess.run(
+        [str(python), "-c", integrity_check, str(staged_db)],
+        cwd=str(stage_hub),
+        env=env,
+        check=True,
+        timeout=30,
+    )
+
+
 def stage_upgrade_payload():
     stage_root = pathlib.Path(tempfile.mkdtemp(prefix=".pack-upgrade-", dir=str(base)))
     stage_root.chmod(0o700)
@@ -507,6 +551,9 @@ def upgrade():
         backup_root = create_upgrade_backup()
         populate_upgrade_backup(backup_root)
         backup_verified = True
+        # serve() calls init() against the live DB. First run the same candidate
+        # migration on the verified backup copy so failures occur before code swap.
+        preflight_upgrade_migration(stage_hub, backup_root)
 
         replace_program_paths(stage_root, stage_hub, stage_engine, swaps)
         app_previous = swap_app_bundle(app_stage, app_swap_state)
