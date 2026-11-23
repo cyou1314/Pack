@@ -305,7 +305,7 @@ def stage_upgrade_payload():
         subprocess.run(
             [str(stage_hub / "python" / "bin" / "python3"), "-c", smoke],
             cwd=str(stage_hub),
-            env={**os.environ, "PYTHONNOUSERSITE": "1"},
+            env={**os.environ, "PYTHONNOUSERSITE": "1", "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
             check=True,
         )
 

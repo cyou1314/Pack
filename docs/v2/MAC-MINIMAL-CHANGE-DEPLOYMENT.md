@@ -18,7 +18,7 @@
 ## 实际部署前检查
 
 1. 读取现有 Mac 上 Pack 服务、安装来源、launchd 标签、App 版本和数据目录，生成只读 inventory；不要先运行卸载器。
-2. 区分**全新安装**与**已有安装升级**。DMG 新增 `upgrade.command` / `manager.py upgrade`：先验证现有安装身份并暂存/验证新程序，再停止所有 Pack 写服务、确认端口释放，随后在线备份 SQLite/附件，最后替换代码与 App；新服务启动失败才恢复旧程序与停机后 SQLite 快照。该路径目前仅有仓库级实现，仍须在隔离 Mac 验证；`local/install-local.sh` 仍只用于全新开发安装。
+2. 区分**全新安装**与**已有安装升级**。DMG 新增 `upgrade.command` / `manager.py upgrade`：先验证现有安装身份并暂存/验证新程序，再停止所有 Pack 写服务、确认端口释放，随后在线备份 SQLite/附件，最后替换代码与 App；新服务启动失败才重新验证备份 manifest/SQLite/附件归档并恢复旧程序与停机后 SQLite 快照；Hub 通过 dispatcher token 认证的只读 MCP `room_list` 调用，Engine 通过本地端口检查后才视为启动成功。该路径目前仅有仓库级实现，仍须在隔离 Mac 验证；`local/install-local.sh` 仍只用于全新开发安装。
 3. 验证数据库一致性、可用备份、附件与 Keychain/登录态可恢复；对部署包进行 checksum 与工具签名/打包 smoke test。备份和回滚条件未满足时不部署。
 4. 在隔离 Mac 上做一次完整 DMG 验证：已有安装识别、保留用户配置、只升级程序文件、LaunchAgent 启停与失败回滚、真实账号登录；通过后才评估生产 Mac。
 5. 优先把所有仓库端整改合入一个可核验的发布候选包；避免为了每个 Hub 服务拆分步骤多次修改真实 Mac。
