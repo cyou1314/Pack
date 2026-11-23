@@ -240,7 +240,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         ctl, calls, _ = f.fake_ctl()
         run, _ = f.fake_subprocess_run(backup_failure=True)
         with patch.object(manager, "ctl", side_effect=ctl), patch.object(manager.subprocess, "run", side_effect=run):
-            with self.assertRaisesRegex(RuntimeError, "Verified backup retained"):
+            with self.assertRaisesRegex(RuntimeError, "Partial backup retained"):
                 manager.upgrade()
 
         self.assertFalse(any(call[0] == "bootout" for call in calls))

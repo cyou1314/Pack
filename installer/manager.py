@@ -478,10 +478,12 @@ def upgrade():
     app_previous = None
     swaps = []
     services_stopped = False
+    backup_verified = False
     try:
         validate_upgrade_installation()
         backup_root = create_upgrade_backup()
         populate_upgrade_backup(backup_root)
+        backup_verified = True
         stage_root, stage_hub, stage_engine, app_stage = stage_upgrade_payload()
 
         for label in labels.values():
@@ -543,6 +545,16 @@ def upgrade():
             raise RuntimeError(
                 f"Upgrade failed and rollback needs attention. Backup: {backup_root}; "
                 f"staging: {stage_root}; details: {'; '.join(rollback_errors)}"
+            ) from exc
+        if backup_root is not None and not backup_verified:
+            raise RuntimeError(
+                f"Upgrade aborted before service changes; existing installation was left unchanged. "
+                f"Partial backup retained at {backup_root}: {type(exc).__name__}: {exc}"
+            ) from exc
+        if backup_root is not None and not services_stopped:
+            raise RuntimeError(
+                f"Upgrade aborted before service replacement; existing installation was left unchanged. "
+                f"Verified backup retained at {backup_root}: {type(exc).__name__}: {exc}"
             ) from exc
         if backup_root is not None:
             raise RuntimeError(
