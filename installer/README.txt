@@ -14,10 +14,10 @@ Pack 本地版（Apple Silicon / macOS 14 或更新）
 
 已有安装升级：
 1. 先退出 Pack.app，打开新版本 DMG 根目录的「upgrade.command」。
-2. 升级器先验证安装目录、Pack LaunchAgent 身份/权限、数据库、配置和 App 标记；随后使用当前 Hub 的在线 SQLite 备份脚本生成并验证数据库/附件备份。
-3. 新版 Hub、Engine 与 Pack.app 先复制到暂存位置并做工具注册/签名检查；只有预检和备份成功后才停止服务，再替换程序文件并重启健康检查。
+2. 升级器先验证安装目录、Pack LaunchAgent 身份/权限、数据库、配置和 App 标记；新版 Hub、Engine 与 Pack.app 先复制到暂存位置并做工具注册/签名 smoke test。
+3. 然后停止全部 Pack LaunchAgent，确认端口释放，再使用旧版 Hub 的在线 SQLite 备份脚本生成并验证数据库/附件备份。备份发生在服务停止之后，因此 staging 期间已接受的写入会包含在快照中。只有备份验证成功后才原子替换程序文件与 App，再启动新服务并做就绪检查。
 4. 成功后保留升级备份在 ~/.pack/local-hub/backups/upgrade-*。升级不会覆盖 pack.db、attachments、tokens、config.json、Engine data 或 Keychain。
-5. 如果替换或启动失败，升级器会恢复旧程序文件和升级前的 SQLite 快照，再重新启动旧服务；失败版本的数据库/WAL/SHM 会留在备份目录供排查。如果自动回滚也失败，终端会给出备份与暂存路径。不要手工删除这些目录，应先保留现场。
+5. 如果新服务启动失败，升级器会恢复旧程序文件和停机后生成的 SQLite 快照，再重新启动旧服务；失败版本的数据库/WAL/SHM 会留在备份目录供排查。若失败发生在新服务启动之前，live DB 不回滚，避免丢弃 staging 期间刚写入的数据。如果自动回滚也失败，终端会给出备份与暂存路径。不要手工删除这些目录，应先保留现场。
 
 upgrade.command 仅用于本安装器创建、且 LaunchAgent/App 标记均可验证的完整 Pack 安装。若检测到符号链接、身份不匹配、配置/数据库损坏、Pack 正在运行、端口被其他进程占用或备份验证失败，会停止且不替换程序文件。开发用 local/install-local.sh 仍是全新安装脚本，不是升级器。
 

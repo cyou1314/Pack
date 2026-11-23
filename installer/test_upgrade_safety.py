@@ -238,7 +238,7 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "bootout" for call in calls))
         self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
 
-    def test_backup_failure_aborts_before_stopping_services(self):
+    def test_backup_failure_restarts_services_without_changing_data(self):
         f = self.fixture
         ctl, calls, loaded = f.fake_ctl()
         run, _ = f.fake_subprocess_run(backup_failure=True)
@@ -257,6 +257,26 @@ class UpgradeSafetyTests(unittest.TestCase):
         self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "original-db")
         self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
         self.assertTrue(list((f.hub / "backups").glob("upgrade-*")))
+
+    def test_port_conflict_after_stop_does_not_rewind_live_database(self):
+        f = self.fixture
+        ctl, calls, loaded = f.fake_ctl(mutate_db_on_first_bootout=True)
+        run, _ = f.fake_subprocess_run()
+        with (
+            patch.object(manager, "ctl", side_effect=ctl),
+            patch.object(manager.subprocess, "run", side_effect=run),
+            patch.object(manager, "available", return_value=False),
+            patch.object(manager, "wait_for_port", return_value=None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "service port is still occupied"):
+                manager.upgrade()
+
+        self.assertEqual((f.hub / "pack.db").read_text(encoding="utf-8"), "written-before-backup")
+        self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
+        self.assertEqual(loaded, set(f.labels.values()))
+        self.assertTrue(any(call[0] == "bootstrap" for call in calls))
+        self.assertEqual(list((f.hub / "backups").glob("upgrade-*")), [])
+        self.assertEqual(list(f.base.glob(".pack-upgrade-*")), [])
 
     def test_successful_upgrade_preserves_data_and_retains_verified_backup(self):
         f = self.fixture
