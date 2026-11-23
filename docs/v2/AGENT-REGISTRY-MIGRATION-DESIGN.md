@@ -1,6 +1,6 @@
 # Agent Registry 数据层迁移设计
 
-- 状态：设计评审稿；**尚未新增 SQLite 表、执行迁移或改变读写路径**
+- 状态：M1a 实施候选；已在独立分支加入增量 schema、版本化迁移与 legacy 映射，等待 CI/代码审查；尚未合入 Foundation 或部署到用户 Mac
 - 日期：2026-11-23
 - 目标基线：Pack v2 M1（Agent Registry 数据层）
 - 约束：保持 v1 members / rooms / messages / tasks / runs / audit / member_memory 的现有语义
@@ -141,3 +141,14 @@ provider_id 规范化必须使用显式映射表。未知/空 provider 统一映
 4. **M2：** 再做 Runtime Supervisor、Session Manager、Inbox/Outbox 和 Event Gateway；不得把 Provider Adapter 直接暴露给 Hub MCP 工具执行。
 
 **当前状态：** 仅完成设计文档。没有 DDL、数据库迁移、影子读取或生产数据操作。
+
+
+## 8. M1a 实施记录（候选 PR，2026-11-23）
+
+- 新增 `hub/core/migrations.py`：版本号 + SHA-256 checksum migration ledger；所有 DDL/DML 在 `BEGIN IMMEDIATE` 中执行，失败整体 rollback；重复执行验证 checksum 后跳过。
+- 新增 providers / agents / agent_connections / agent_sessions 表与外键、唯一索引、查询索引。首版不生成 connection/session 行，不复制凭据或私人记忆。
+- 对现有 `members.role='member'` 逐行建立稳定 ID `legacy-member-{id}` 映射；dispatcher/owner 不映射。已软删除成员标记 removed；external kind 映射为 external_agent；其他连接模式保持未分类。Provider 使用显式白名单映射，未知值归入 legacy 并保留原始标签。
+- `hub/core/storage.py` 每个连接启用 `PRAGMA foreign_keys=ON`；现有旧表不添加/重写外键，旧 token、任务、消息、记忆和房间绑定不改。
+- `hub.init()` 在既有兼容列迁移提交后运行独立版本化迁移；不由 DMG 安装器执行，不读取 Keychain，不触碰 Provider 账号。
+- 新增迁移单测覆盖 legacy 映射、重复执行、外键拒绝非法引用和失败回滚；CI 增加该测试，SQLite fresh/legacy snapshots 更新。
+- **M1a 验收仍需 CI 与代码审查通过。** M1b shadow read、差异报告和并发 init 专项测试尚未实施；此阶段没有启用新读路径。
