@@ -152,10 +152,11 @@ class TemplateServiceTests(unittest.TestCase):
             )
 
     def test_fire_rejects_removed_assignee_and_missing_template(self):
-        upsert_template(
-            self.context, self.dispatcher, "removed-default",
-            "Title", "Body", "removed",
+        self.upsert(name="removed-default", title="Title", body="Body")
+        self.db.execute(
+            "UPDATE task_templates SET assignee='removed' WHERE name='removed-default'"
         )
+        self.db.commit()
         with self.assertRaisesRegex(ValueError, "member is removed"):
             fire_template(
                 self.context, self.dispatcher, "removed-default",
@@ -168,7 +169,11 @@ class TemplateServiceTests(unittest.TestCase):
             )
 
     def test_missing_assignee_is_delegated_to_task_create(self):
-        self.upsert(assignee="ghost")
+        self.upsert()
+        self.db.execute(
+            "UPDATE task_templates SET assignee='ghost' WHERE name='web'"
+        )
+        self.db.commit()
         calls = []
         def create_task(**kwargs):
             calls.append(kwargs)
