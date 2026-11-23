@@ -32,7 +32,6 @@ _PROVIDER_LABELS = {
     "豆包": ("doubao", "豆包"),
     "grok": ("grok", "Grok"),
     "hark": ("hark", "Hark"),
-    "external": ("external", "External Agent"),
 }
 
 _REGISTRY_V1 = Migration(
@@ -147,7 +146,6 @@ def _apply_registry_v1(connection: sqlite3.Connection, now: float) -> None:
             ("doubao", "豆包"),
             ("grok", "Grok"),
             ("hark", "Hark"),
-            ("external", "External Agent"),
         )
     }
     connection.executemany(
