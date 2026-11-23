@@ -1,6 +1,6 @@
 # Pack Phase 4：模块边界与渐进拆分方案
 
-> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle 扩展；Settings 与部分跨域状态仍待继续拆分。  
+> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle/Catalog 扩展；Settings 状态属性仍由 AppState 托管，跨域状态所有权继续评估。  
 > 原则：先冻结协议与数据契约，再按领域提取模块；不做大爆炸式重写。
 
 ## 1. 当前代码边界
@@ -10,7 +10,7 @@
 | 区域 | 当前文件 | 规模 | 现状 |
 |---|---|---:|---|
 | Hub 服务端 | `hub/hub.py` | 约 2,874 行 | 保留 FastMCP 入口、认证/工具注册与兼容 helper；多数成员、房间、任务、规则、附件、记忆、技能、桌面和配对业务已迁入 `hub/services/` |
-| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 218 行 | 启动/刷新流程与 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat 方法已迁入领域扩展；AppState 主要保留状态属性与应用级协调 |
+| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 200 行 | 启动/刷新流程与 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Catalog 方法已迁入领域扩展；AppState 主要保留状态属性与应用级协调 |
 | App 视图 | `Views.swift` + Feature Views | 233 + 430/448/285/64 行 | 主窗口、Chat、Tasks、Settings、TaskDetail 和 Components 已按声明边界拆分；本批仅移动声明，不改布局/行为 |
 | 网络客户端 | `HubClient.swift` / `Networking/HubTransport.swift` | 107 / 74 行 | HubClient 保留 MCP session、JSON-RPC、SSE 解析与会话恢复；HTTP 请求、Bearer Header、超时和同源重定向策略独立在 HubTransport |
 | 领域模型 | `app/Sources/PackApp/Models.swift` | 276 行 | 仍有 App 侧消息/任务/成员模型；PackCore 保持独立且不依赖 SwiftUI |
@@ -516,3 +516,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - `pollTask`、`unreadTask`、`consecutiveRefreshFailures`、`taskListPageSize`、`taskListMaxPages` 仅从 private 调整为 PackApp module 内部可见，供同一 AppState 的 Lifecycle extension 访问；未暴露 public API。
 - 不新增 Store、actor、Swift Package target 或依赖；不修改 Hub API、MCP schema、SQLite schema、Keychain、配置路径和用户数据。
 - 本批以 Swift Build、Swift Unit Tests 和 App Bundle CI 验收；真实 Mac 启动/登录态与 LaunchAgent 验收仍后置。
+
+
+### Skill / task-template Catalog 动作拆分（2026-11-23）
+
+- 新增 `AppState+Catalog.swift`，迁出技能/模板目录加载与模板创建任务动作；`AppState.swift` 继续持有 `@Published` catalog UI 状态。
+- 保持原 HubClient tool 名称、参数、结果字段、错误提示、模板创建后关闭目录和清空参数的行为不变。
+- 不新增 Store、依赖、Swift Package target 或数据库/MCP 变更；Catalog extension 仍运行在同一个 `@MainActor AppState` 上。
+- Settings 相关状态属性与其他跨域状态暂留 AppState；只有明确的所有权和测试收益出现后再拆独立 Store。

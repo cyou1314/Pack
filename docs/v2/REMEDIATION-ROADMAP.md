@@ -90,7 +90,7 @@
 - [ ] Hub 按领域拆分为认证/成员、房间/消息、任务/运行、审批/规则、附件/备份、外部 Agent 等模块。
 - [ ] 保持现有 MCP tool 名称、参数、返回结构和鉴权语义兼容。
 - [ ] SwiftUI 按 Rooms、Agents、Tasks、Approvals、Settings、Computer 等 Feature 拆分。
-- [ ] 将 AppState 拆成连接、会话、房间、任务、审批等独立状态域。（Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle 行为已分批迁入 extension；`@Published` 状态仍由 AppState 托管，独立 Store 暂未引入。）
+- [ ] 将 AppState 拆成连接、会话、房间、任务、审批等独立状态域。（Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle/Catalog 行为已分批迁入 extension；`@Published` 状态仍由 AppState 托管，独立 Store 暂未引入。）
 - [ ] 统一配置、日志、错误模型、网络客户端和设计 Token。
 - [ ] 建立依赖方向规则，避免 Feature 之间循环依赖。
 
@@ -175,7 +175,7 @@
 
 ## 9. Phase 4 拆分前的代码边界盘点
 
-当前规模与目标模块边界见 [PHASE4-MODULE-BOUNDARIES.md](PHASE4-MODULE-BOUNDARIES.md)。Hub 已将成员、房间、任务、规则、附件、记忆、技能、桌面、配对等大部分业务迁入领域服务，75 个 MCP tools 保留原名称/参数/返回契约；App Views 已按功能拆分，AppState 的 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle 行为已迁入同一 AppState 的领域扩展，主文件约 218 行。剩余工作聚焦 Settings/catalog、跨域状态所有权评估和真实 Mac 验收；不以文件行数为目标，也不在缺少收益时引入独立 Store。
+当前规模与目标模块边界见 [PHASE4-MODULE-BOUNDARIES.md](PHASE4-MODULE-BOUNDARIES.md)。Hub 已将成员、房间、任务、规则、附件、记忆、技能、桌面、配对等大部分业务迁入领域服务，75 个 MCP tools 保留原名称/参数/返回契约；App Views 已按功能拆分，AppState 的 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle 行为已迁入同一 AppState 的领域扩展，主文件约 218 行。剩余工作聚焦 Settings 状态属性、跨域状态所有权评估和真实 Mac 验收；Catalog 加载/模板动作已独立迁入 `AppState+Catalog.swift`，但其 UI 状态仍由 AppState 托管。不以文件行数为目标，也不在缺少收益时引入独立 Store。
 
 ## 10. 每批交付记录格式
 
@@ -224,3 +224,9 @@
 - 当前整改不改变 24 张 SQLite 表和 75 个 MCP 工具契约，没有 schema migration。未来若要迁移表结构，必须单独设计版本化、可逆迁移和兼容窗口，不能复用代码升级回滚覆盖用户数据。
 - 隔离 Mac 操作说明补充把旧 DMG 的 `Pack.app` 复制到测试根目录 `Applications/Pack.app`；服务安装脚本本身不负责拖放/安装 App Bundle。
 - 自动化回归新增 live DB/WAL/SHM 与新附件写入保留断言，以及隔离 Mac App Bundle staging 文档检查。
+
+
+### AppState Catalog 边界（2026-11-23）
+
+- `loadCatalog` 与 `fireTemplate` 已迁入 `AppState+Catalog.swift`；不改变技能/模板列表请求、Hub MCP 参数、模板创建动作或 UI 状态。
+- `AppState.swift` 继续持有 catalog 的 `@Published` 状态；本次只拆动作，不把 UI 状态迁入独立 Store。
