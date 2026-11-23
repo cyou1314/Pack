@@ -53,7 +53,7 @@ PiBot 的 Sign in with ChatGPT / ChatGPT plan 实现把登录令牌用于 OpenAI
 
 - 生产接入使用 PiBot Desktop 的正常 Connections UI，让 PiBot 的加密凭据存储保存 external token。
 - 不使用 PiBot CLI 的 mcp --data 或 acp --data 作为生产方案；其文档将 headless data-dir 模式标为开发用途，并说明凭据未加密。
-- Pack 只签发 provider="generic" 的 external member token，绑定单一成员和房间；绝不使用 dispatcher token。
+- Pack 只签发 provider="generic" 的 external member token，绑定单一成员和房间；入群水位 joined_msg_id 会阻止读取入群前历史；绝不使用 dispatcher token。
 - 保留 Pack 的 external tool whitelist、任务审批、审计、external gate 和 egress policy。
 - Hub 默认只监听 127.0.0.1。跨设备连接时必须另配 TLS、网络访问控制和 token 轮换，不要把未加密本地 MCP 端口直接暴露到公网。
 
