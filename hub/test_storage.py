@@ -23,6 +23,10 @@ class StorageTests(unittest.TestCase):
                     connection.execute("PRAGMA busy_timeout").fetchone()[0],
                     30000,
                 )
+                self.assertEqual(
+                    connection.execute("PRAGMA foreign_keys").fetchone()[0],
+                    1,
+                )
             finally:
                 connection.close()
 

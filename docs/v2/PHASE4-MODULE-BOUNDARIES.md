@@ -552,3 +552,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 3. 将 Codex Adapter 注册到 Supervisor，而不是让 Hub MCP handler 直接启动 Provider 进程；连接/断开、Session 生命周期和事件持久化必须由 Supervisor 管理。
 4. 在统一 Permission/Approval Service 与 SwiftUI 审批闭环验收前，Codex command/file approval 默认不自动接受，真实工具执行保持关闭或显式人工 gate。
 5. 完成以上后才做 Codex 本机登录、真实 Thread/Turn、审批和恢复验收；不触碰真实 Mac 用户数据或部署。
+
+
+### Agent Registry M1a 最新状态（2026-11-23）
+
+- M1a 已在独立候选分支实现：版本化迁移 ledger/checksum、事务化增量 DDL、members → agents 稳定映射、逐连接 FK enforcement、迁移回滚测试与 schema snapshots。
+- 当前尚待该分支 CI 与 Codex 审查；未合入 Foundation，未在用户 Mac/生产数据库运行。
+- M1b shadow read 与并发初始化专项验证尚未开始；旧 members 仍是唯一读写事实来源。
