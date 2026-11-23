@@ -71,6 +71,18 @@ class DmgManifestTests(unittest.TestCase):
         self.assertTrue(os.access(ROOT / "installer" / "upgrade.command", os.X_OK))
         self.assertTrue(os.access(ROOT / "installer" / "build-dmg.sh", os.X_OK))
 
+    def test_isolated_upgrade_instructions_stage_the_old_app_bundle(self):
+        source = (ROOT / "docs" / "v2" / "MAC-MINIMAL-CHANGE-DEPLOYMENT.md").read_text(encoding="utf-8")
+        self.assertIn('mkdir -p "$PACK_INSTALL_TEST_ROOT/Applications"', source)
+        self.assertIn('ditto "$DMG_OLD/Pack.app" "$PACK_INSTALL_TEST_ROOT/Applications/Pack.app"', source)
+
+    def test_upgrade_rollback_does_not_overwrite_live_user_data(self):
+        manager_source = (ROOT / "installer" / "manager.py").read_text(encoding="utf-8")
+        readme = (ROOT / "installer" / "README.txt").read_text(encoding="utf-8")
+        self.assertNotIn("restore_database_snapshot", manager_source)
+        self.assertIn("Live DB/attachments were not overwritten", manager_source)
+        self.assertIn("不会自动用预升级快照覆盖 live DB/attachments", readme)
+
     def test_mac_inventory_is_read_only_and_does_not_emit_secret_values(self):
         source = (ROOT / "installer" / "mac-inventory.sh").read_text(encoding="utf-8")
         self.assertIn("launchctl print", source)
