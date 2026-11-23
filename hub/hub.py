@@ -4418,11 +4418,9 @@ def build_server():
 
     @mcp.tool
     def task_audit(task_id: int) -> dict:
-        """调度员查某任务的完整轨迹（定稿 §11.1 任务详情的审计入口）：任务基本
-        信息 + audit 事件流中属于该任务的全部事件（detail 以 "task <id>" 开头
-        做归属匹配，分隔符精确匹配，防 task 1 误配 task 12）+ runs 执行台账
-        + task_transfers 转交链，一次返回供 App 渲染时间线。事件流上限 200 条，
-        超出时 truncated=true。"""
+        """调度员查某任务的完整轨迹：任务基本信息 + 按 audit.task_id 索引读取
+        的事件流 + runs 执行台账 + task_transfers 转交链。历史 detail 前缀由
+        init 一次性回填；事件流上限 200 条，额外读取一行判断是否截断。"""
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
