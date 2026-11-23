@@ -245,7 +245,11 @@ extension AppState {
             connectionFailed = true
             connectionNote = "连接中断，重试中"
             consecutiveRefreshFailures += 1
-            if consecutiveRefreshFailures >= 2, await followPublishedHubURL(rebuildOnFailure: true) { await refresh() }
+            if consecutiveRefreshFailures >= 2 {
+                let rebuilt = await followPublishedHubURL(rebuildOnFailure: true)
+                guard messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
+                if rebuilt { await refresh() }
+            }
         }
     }
 
