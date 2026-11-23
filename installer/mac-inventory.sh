@@ -1,5 +1,5 @@
 #!/bin/bash
-# Read-only Pack/macOS inventory. Writes only a private report file; never reads secret values.
+# Read-only Pack/macOS inventory. Writes only a private report file; never emits credential values.
 set -euo pipefail
 [[ "$(uname -s)" == "Darwin" ]] || { echo "This inventory is for macOS only." >&2; exit 1; }
 umask 077
@@ -90,8 +90,10 @@ for kind in hub watch backup engine; do
   printf '[%s]\n' "$label" >> "$OUT"
   if [[ -f "$plist" && ! -L "$plist" ]]; then
     printf 'PlistLabel=%s\n' "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist" 2>/dev/null || printf invalid)" >> "$OUT"
-    args="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$plist" 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' || true)"
-    printf 'ProgramArguments=%s\n' "${args:-unavailable}" >> "$OUT"
+    program0="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist" 2>/dev/null || true)"
+    program1="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$plist" 2>/dev/null || true)"
+    printf 'Program0=%s\n' "$(basename "${program0:-unknown}")" >> "$OUT"
+    printf 'Program1=%s\n' "$(basename "${program1:-unknown}")" >> "$OUT"
     printf 'Umask=%s\n' "$(/usr/libexec/PlistBuddy -c 'Print :Umask' "$plist" 2>/dev/null || printf missing)" >> "$OUT"
   else
     line "Plist=missing-or-symlink"
