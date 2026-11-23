@@ -929,6 +929,29 @@ def init():
         conn.execute("ALTER TABLE task_transfers ADD COLUMN accepted_at REAL")
     if "expires_at" not in xcols:
         conn.execute("ALTER TABLE task_transfers ADD COLUMN expires_at REAL")
+    # staging58 / 热路径索引：必须放在 sched_at、urgent、expires_at 等
+    # 历史列迁移之后，保证旧库首次 init 不会因索引列尚不存在而失败。
+    for index_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_tasks_urgent_id "
+        "ON tasks(urgent DESC, id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_assignee_urgent_id "
+        "ON tasks(assignee, urgent DESC, id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_room_urgent_id "
+        "ON tasks(room_id, urgent DESC, id ASC)",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_active_queue
+           ON tasks(urgent DESC, id ASC, assignee)
+           WHERE status IN ('open','claimed','working')""",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_lease_expiry
+           ON tasks(lease_expires)
+           WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_unclaimed_due
+           ON tasks(assignee, next_claim_at)
+           WHERE status='open' AND assignee IS NOT NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_task_transfers_pending_expiry
+           ON task_transfers(expires_at, id)
+           WHERE status='pending' AND expires_at IS NOT NULL""",
+    ):
+        conn.execute(index_sql)
     msgcols = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
     if "deleted_at" not in msgcols:
         conn.execute("ALTER TABLE messages ADD COLUMN deleted_at REAL")
@@ -1382,9 +1405,9 @@ def sweep_once():
             # 审计（detail 由本段写死格式，精确前缀匹配不会串到别的任务）；
             # 指派人变更后可对新指派人再升级一次。
             seen = conn.execute(
-                "SELECT COUNT(*) AS n FROM audit WHERE action='task_unclaimed_escalate'"
-                " AND detail LIKE ?",
-                (f"task {t['id']} assignee_id={t['assignee']} %",)).fetchone()["n"]
+                "SELECT 1 FROM audit WHERE task_id=? AND action='task_unclaimed_escalate'"
+                " AND detail LIKE ? LIMIT 1",
+                (t["id"], f"task {t['id']} assignee_id={t['assignee']} %")).fetchone()
             if seen:
                 continue
             disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
