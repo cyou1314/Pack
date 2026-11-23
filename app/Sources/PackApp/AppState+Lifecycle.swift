@@ -41,6 +41,8 @@ extension AppState {
 
     func refresh(forceFullMessageSnapshot: Bool = false) async {
         guard let client else { return }
+        if forceFullMessageSnapshot { messageRefreshState.invalidateSnapshot() }
+        let messageRefreshRequest = messageRefreshState.beginRefresh()
         let room = currentRoom
         let generation = roomGeneration
         let currentClientGeneration = clientGeneration
@@ -74,7 +76,8 @@ extension AppState {
                                "limit": MessageRefreshState.incrementalPageLimit, "tail": false]
                     )
                     guard room == currentRoom, generation == roomGeneration,
-                          currentClientGeneration == clientGeneration else { return }
+                          currentClientGeneration == clientGeneration,
+                          messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
                     guard let batch = result["messages"] as? [[String: Any]] else {
                         throw HubError.badResponse("missing incremental messages")
                     }
@@ -111,11 +114,14 @@ extension AppState {
                 }
             }
             guard room == currentRoom, generation == roomGeneration,
-                  currentClientGeneration == clientGeneration else { return }
+                  currentClientGeneration == clientGeneration,
+                  messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
             let taskRows = try await loadTaskPages(client, room: room)
             let memRes = try await client.call(name: "member_list")
             let summaryRes = try? await client.call(name: "room_summary_get", args: ["room": room])
-            guard room == currentRoom, generation == roomGeneration, currentClientGeneration == clientGeneration else { return }
+            guard room == currentRoom, generation == roomGeneration,
+                  currentClientGeneration == clientGeneration,
+                  messageRefreshState.isCurrentRefresh(messageRefreshRequest) else { return }
             if let summaryRes { roomSummary = summaryVal(summaryRes) }
             if let arr = roomRes["rooms"] as? [[String: Any]] {
                 let updated = arr.map { RoomItem(id: intVal($0["id"]), name: ($0["name"] as? String) ?? "?", lastMessageId: intVal($0["last_message_id"])) }.reversed()
