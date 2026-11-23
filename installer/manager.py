@@ -659,6 +659,30 @@ def upgrade():
         os.umask(previous_umask)
 
 
+def _rollback_failed_install(agent_plists, owned_paths, agents_dir, agents_preexisting, base_dir, base_preexisting):
+    """Remove only destinations verified absent before this fresh install attempt."""
+    for label in labels.values():
+        try:
+            ctl("bootout", f"gui/{uid}/{label}", check=False)
+        except Exception:
+            pass
+    for path in (*agent_plists, *owned_paths):
+        try:
+            remove_path(path)
+        except OSError:
+            pass
+    if not agents_preexisting:
+        try:
+            pathlib.Path(agents_dir).rmdir()
+        except OSError:
+            pass
+    if not base_preexisting:
+        try:
+            pathlib.Path(base_dir).rmdir()
+        except OSError:
+            pass
+
+
 def install():
     require_real_directory(base, 'Pack data root')
     require_real_directory(HOME/'Library', 'Library directory')
@@ -671,33 +695,39 @@ def install():
     ):
         require_absent(path, description)
     if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
+    agent_plists = []
     for kind, label in labels.items():
-        require_absent(agents/(label+'.plist'), f'LaunchAgent plist {label}')
+        plist = agents/(label+'.plist')
+        require_absent(plist, f'LaunchAgent plist {label}')
+        agent_plists.append(plist)
         if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0:
             raise SystemExit(f'LaunchAgent label is already in use: {label}')
-    os.umask(0o077)
-    base.mkdir(parents=True, exist_ok=True, mode=0o700)
-    base.chmod(0o700)
-    hub.mkdir(mode=0o700)
-    engine.mkdir(mode=0o700)
-    agents.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
-    for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
-    shutil.copytree(BUNDLE/'hub'/'core',hub/'core',symlinks=True)
-    shutil.copytree(BUNDLE/'hub'/'services',hub/'services',symlinks=True)
-    shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
-    subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
-    (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
-    py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
-    smoke = (
-        'import asyncio,inspect,hub; tools=hub.build_server().list_tools(); '
-        'tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; '
-        'names={tool.name for tool in tools}; '
-        'assert {"room_list","member_list"}.issubset(names), names'
-    )
-    subprocess.run([str(py), '-c', smoke], cwd=hub, check=True,
-                   env={**os.environ, 'PYTHONNOUSERSITE':'1'})
+
+    base_preexisting = base.exists()
+    agents_preexisting = agents.exists()
+    previous_umask = os.umask(0o077)
     try:
+        base.mkdir(parents=True, exist_ok=True, mode=0o700)
+        base.chmod(0o700)
+        hub.mkdir(mode=0o700)
+        engine.mkdir(mode=0o700)
+        agents.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
+        for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
+        shutil.copytree(BUNDLE/'hub'/'core',hub/'core',symlinks=True)
+        shutil.copytree(BUNDLE/'hub'/'services',hub/'services',symlinks=True)
+        shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
+        subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
+        (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
+        py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
+        smoke = (
+            'import asyncio,inspect,hub; tools=hub.build_server().list_tools(); '
+            'tools=asyncio.run(tools) if inspect.isawaitable(tools) else tools; '
+            'names={tool.name for tool in tools}; '
+            'assert {"room_list","member_list"}.issubset(names), names'
+        )
+        subprocess.run([str(py), '-c', smoke], cwd=hub, check=True,
+                       env={**os.environ, 'PYTHONNOUSERSITE':'1'})
         write_agent('hub',[py,hub/'hub.py','serve'],{**common,'PACK_HUB_HOST':'127.0.0.1','PACK_HUB_PORT':str(hp)},True)
         for _ in range(120):
             try:
@@ -716,9 +746,18 @@ def install():
                 with socket.create_connection(('127.0.0.1',ep),timeout=.3): break
             except OSError: time.sleep(.25)
         else: raise RuntimeError('Local engine did not start')
-    except Exception:
-        for label in labels.values(): ctl('bootout',f'gui/{uid}/{label}',check=False)
+    except BaseException:
+        _rollback_failed_install(
+            agent_plists,
+            (config, socket_dir, engine, hub),
+            agents,
+            agents_preexisting,
+            base,
+            base_preexisting,
+        )
         raise
+    finally:
+        os.umask(previous_umask)
     print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
     print('Open Pack to migrate the private local credentials into Keychain.')
 
