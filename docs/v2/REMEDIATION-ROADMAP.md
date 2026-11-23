@@ -90,7 +90,7 @@
 - [ ] Hub 按领域拆分为认证/成员、房间/消息、任务/运行、审批/规则、附件/备份、外部 Agent 等模块。
 - [ ] 保持现有 MCP tool 名称、参数、返回结构和鉴权语义兼容。
 - [ ] SwiftUI 按 Rooms、Agents、Tasks、Approvals、Settings、Computer 等 Feature 拆分。
-- [ ] 将 AppState 拆成连接、会话、房间、任务、审批等独立状态域。
+- [ ] 将 AppState 拆成连接、会话、房间、任务、审批等独立状态域。（Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat 行为已分批迁入 extension；`@Published` 状态仍由 AppState 托管，独立 Store 暂未引入。）
 - [ ] 统一配置、日志、错误模型、网络客户端和设计 Token。
 - [ ] 建立依赖方向规则，避免 Feature 之间循环依赖。
 
@@ -189,3 +189,11 @@
 - 风险和回滚方式
 
 “代码已提交”“CI 通过”“真实 Mac/VM 验收通过”必须分开陈述。
+
+
+## 11. Phase 4 追加记录（2026-11-23：AppState 审批与 Chat/Composer）
+
+- 审批请求识别、批准/拒绝、scoped always-allow 和任务验收/打回迁入 `AppState+Approvals.swift`；任务详情/创建/加急/取消留在 `AppState+Tasks.swift`。
+- @成员提示、问答回复、附件和聊天消息生命周期迁入 `AppState+Chat.swift`。
+- 这是声明边界迁移，不是状态架构重写：`@Published` 状态、依赖注入、actor 隔离、HubClient 与 UserDefaults 仍保持原有归属；不新增数据库迁移、MCP 工具、Swift Package target 或第三方依赖。
+- 后续继续评估 Refresh 主循环与 Settings 的职责边界；只有出现明确跨域状态所有权和测试收益时才引入独立 Store。

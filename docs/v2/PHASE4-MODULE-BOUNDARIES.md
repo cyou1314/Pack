@@ -1,6 +1,6 @@
 # Pack Phase 4：模块边界与渐进拆分方案
 
-> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks/Notifications 扩展；Refresh 主循环、Chat/Approval、Settings 等状态逻辑仍待继续拆分。  
+> 状态：执行中；HubContext 与多数领域服务已拆分，Hub 入口保留 MCP 注册/鉴权兼容层；macOS Views 已按功能拆分，AppState 已抽出 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat 扩展；Refresh 主循环、Settings 与部分跨域状态仍待继续拆分。  
 > 原则：先冻结协议与数据契约，再按领域提取模块；不做大爆炸式重写。
 
 ## 1. 当前代码边界
@@ -10,7 +10,7 @@
 | 区域 | 当前文件 | 规模 | 现状 |
 |---|---|---:|---|
 | Hub 服务端 | `hub/hub.py` | 约 2,874 行 | 保留 FastMCP 入口、认证/工具注册与兼容 helper；多数成员、房间、任务、规则、附件、记忆、技能、桌面和配对业务已迁入 `hub/services/` |
-| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 696 行 | 启动入口已独立；Connection/Members/Rooms/Tasks/Notifications 方法已分别迁入扩展文件；Refresh 主循环与其余状态仍集中在 AppState |
+| App 状态与入口 | `PackApp.swift` / `AppState.swift` | 19 / 385 行 | 启动入口已独立；Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat 方法已迁入领域扩展；Refresh 主循环与部分应用级状态仍集中在 AppState |
 | App 视图 | `Views.swift` + Feature Views | 233 + 430/448/285/64 行 | 主窗口、Chat、Tasks、Settings、TaskDetail 和 Components 已按声明边界拆分；本批仅移动声明，不改布局/行为 |
 | 网络客户端 | `HubClient.swift` / `Networking/HubTransport.swift` | 107 / 74 行 | HubClient 保留 MCP session、JSON-RPC、SSE 解析与会话恢复；HTTP 请求、Bearer Header、超时和同源重定向策略独立在 HubTransport |
 | 领域模型 | `app/Sources/PackApp/Models.swift` | 276 行 | 仍有 App 侧消息/任务/成员模型；PackCore 保持独立且不依赖 SwiftUI |
@@ -497,3 +497,13 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 因 `refresh()` 与 Room extension 需要调用，`processNotificationSnapshot`、`navigateNotification`、`refreshUnreadCounts`、`scheduleMarkRoomRead` 保持 module-internal；`notificationDiff` 与 `pendingNotification` 也仅在 PackApp module 内可见。
 - `AppState.swift` 从约 786 行缩至约 696 行。未改变通知权限、推送时机、Dock badge 计算或用户配置。
 - CI 证据：Run [#45101017194](https://github.com/cyou1314/Pack/actions/runs/45101017194) 的 Runtime、Swift Build、Swift Unit Tests、App Bundle、Hub 单测与契约快照已通过；Default staging regression 截至记录时仍在运行。此 run 的前一版曾因跨文件 extension 中 `navigateNotification` 仍为 private 而失败，已改为 module-internal 并触发新 run。
+
+
+### AppState 审批与 Chat/Composer 拆分（2026-11-23）
+
+- 新增 `AppState+Approvals.swift`，迁出待审批请求识别、批准/拒绝、带明确 action/target 的“总是允许”规则、任务验收/打回；`AppState+Tasks.swift` 继续保留任务创建、详情、加急和取消。
+- 新增 `AppState+Chat.swift`，迁出 @成员提示、问答回复、附件上传/读取、消息发送/失败重试/恢复、引用、编辑和删除。
+- `AppState.swift` 从 696 行缩至 385 行；新 Chat/Approvals 扩展分别为 297/125 行，任务扩展缩至 104 行。
+- 本批只移动既有声明和 imports；所有 `@Published` 状态仍由同一个 `AppState` 托管，不新增 Store、Swift Package target 或依赖。仅将附件加载去重状态 `attachmentLoading` 从 private 调整为 PackApp module 内部可见，以供 Chat extension 使用。
+- 保持 Hub MCP tool 名称/参数、审批范围校验、决议消息文本、任务验收语义、ReplyCodec、附件数量/大小限制、UserDefaults 键、导航和 UI 行为不变。
+- 本批验收以 macOS Swift Build/Unit Tests/App Bundle CI 为准；真实 Mac 交互与 Keychain/LaunchAgent 验收仍未开始。
