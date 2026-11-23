@@ -211,7 +211,7 @@
 - 新增 DMG 根目录 `upgrade.command` / `manager.py upgrade`，只接受可验证的完整 Pack 安装；先暂存/验证新版程序，再停止 Pack 写服务、确认端口释放，随后创建停机后的 SQLite/附件备份，最后原子替换 Hub/Engine/App。
 - 新服务启动后通过 dispatcher token 执行只读 MCP `room_list`，并检查 Engine 本地端口；启动失败时停止新服务并回滚旧程序/App。**live DB/attachments 不自动回滚**，因为 Hub 可能已在健康检查期间接受新写入；经验证的预升级快照保留供人工恢复。当前升级不执行 SQLite schema migration，未来涉及表结构变更必须先实现独立、可逆的版本化迁移流程。
 - 回滚状态由外层事务统一持有；文件/App rename 或恢复失败时不重新启动混合版本，保留暂存目录与恢复文件。
-- `installer/test_upgrade_safety.py` 覆盖安装身份拒绝、App 正在运行、备份失败、端口冲突、成功升级保留数据、Hub 启动失败后的程序回滚与 live DB/attachments 写入保留、Engine local data 符号链接拒绝、程序/App rename 回滚失败、服务未能完全停止时禁止回滚等路径。
+- `installer/test_upgrade_safety.py` 覆盖安装身份拒绝、敏感目录/凭证权限过宽、App 正在运行、备份失败、端口冲突、成功升级保留数据、Hub 启动失败后的程序回滚与 live DB/attachments 写入保留、Engine local data 符号链接拒绝、程序/App rename 回滚失败、服务未能完全停止时禁止回滚等路径。
 - 新增 `installer/mac-inventory.sh`：只读盘点 Pack/Engine/App、Pack 与 legacy runtime LaunchAgent、端口、SQLite quick_check、附件和备份数量；不输出配置/Token/Keychain 值，不启停服务或改写 Pack 数据。
 - macOS CI 增加 installer safety/upgrade tests，并在 Apple Runner 实际执行 inventory 脚本。Run [#45109400860](https://github.com/cyou1314/Pack/actions/runs/45109400860) 的 macOS installer regression、inventory、Swift Build/Unit Tests/App Bundle 和 Runtime 已通过；Hub Default staging regression 仍在运行，最终全绿以最新 head 的 CI 为准。
 - 尚未完成：隔离 Mac 上的真实 DMG 构建/升级/失败回滚、Keychain/登录态验证和生产 Mac 部署。当前远程 Mac 设备离线；不合并 PR #7、不操作用户真实 Mac。
@@ -230,3 +230,10 @@
 
 - `loadCatalog` 与 `fireTemplate` 已迁入 `AppState+Catalog.swift`；不改变技能/模板列表请求、Hub MCP 参数、模板创建动作或 UI 状态。
 - `AppState.swift` 继续持有 catalog 的 `@Published` 状态；本次只拆动作，不把 UI 状态迁入独立 Store。
+
+
+### 升级前敏感路径权限校验（2026-11-23）
+
+- `manager.py upgrade` 现在要求 Pack 数据根、Hub/Engine、附件、Engine data/local 与 handoff socket 目录无 group/other 权限；config、SQLite、dispatcher/owner token 与 Pack LaunchAgent plist 也不得对 group/other 开放。
+- 检测到权限过宽时在停止任何服务前拒绝升级，不自动 chmod 或接管目录，避免静默改变现有安装权限。
+- 新增 `test_world_readable_config_is_rejected_before_backup_or_service_stop`，验证 0644 配置会被拒绝且不 bootout、不创建升级备份。

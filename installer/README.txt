@@ -24,7 +24,7 @@ Mac 部署前只读盘点：
 4. 成功后保留升级备份在 ~/.pack/local-hub/backups/upgrade-*。升级不会覆盖 pack.db、attachments、tokens、config.json、Engine data 或 Keychain。
 5. 如果新服务启动失败，升级器会停止新服务、恢复旧程序文件与 App，再重新启动旧服务；不会自动用预升级快照覆盖 live DB/attachments，因为 Hub 可能已在健康检查期间接受新写入。经验证的预升级快照会保留在备份目录，供确认情况后人工恢复。当前升级不执行 SQLite schema migration；未来涉及表结构变更时，必须先实现独立、可逆的版本化迁移流程。如果自动回滚也失败，终端会给出备份与暂存路径。不要手工删除这些目录，应先保留现场。
 
-upgrade.command 仅用于本安装器创建、且 LaunchAgent/App 标记均可验证的完整 Pack 安装。若检测到符号链接、身份不匹配、配置/数据库损坏、Pack 正在运行、端口被其他进程占用或备份验证失败，会停止且不替换程序文件。开发用 local/install-local.sh 仍是全新安装脚本，不是升级器。
+upgrade.command 仅用于本安装器创建、且 LaunchAgent/App 标记均可验证的完整 Pack 安装。若检测到符号链接、身份不匹配、配置/数据库损坏、敏感目录或文件权限过宽、Pack 正在运行、端口被其他进程占用或备份验证失败，会停止且不替换程序文件。开发用 local/install-local.sh 仍是全新安装脚本，不是升级器。
 
 保留此磁盘映像以便卸载：右键打开「uninstall.command」。它停止本包服务，移除经标记的 /Applications/Pack.app 与程序文件，保留数据库、成员数据、附件、凭证、配置与备份；路径会在终端显示。
 
