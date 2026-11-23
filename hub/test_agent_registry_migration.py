@@ -67,7 +67,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 ).fetchall()
                 apply_migrations(connection, clock=lambda: 100.0)
                 after = connection.execute(
-                    "SELECT id,name,role,created_at,removed_at,provider,display_name,kind,login_state "
+                    "SELECT id,name,role,created_at,removed_at,provider,display_name,kind,login_state,"
+                    "token_hash,profile,bound_room_id,joined_msg_id "
                     "FROM members ORDER BY id"
                 ).fetchall()
                 self.assertEqual([tuple(row) for row in after], [tuple(row) for row in before])
