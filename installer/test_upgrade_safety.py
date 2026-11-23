@@ -298,7 +298,7 @@ class UpgradeSafetyTests(unittest.TestCase):
             patch.object(manager, "available", return_value=True),
             patch.object(manager, "wait_for_port", return_value=None),
         ):
-            with self.assertRaisesRegex(RuntimeError, "previous program files were restored"):
+            with self.assertRaisesRegex(RuntimeError, "previous program files and database snapshot were restored"):
                 manager.upgrade()
 
         self.assertEqual((f.hub / "hub.py").read_text(encoding="utf-8"), "old-hub")
