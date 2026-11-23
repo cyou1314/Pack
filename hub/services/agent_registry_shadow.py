@@ -51,12 +51,14 @@ def build_shadow_report(connection: sqlite3.Connection) -> dict[str, Any]:
             "mismatches": [],
         }
 
-    applied_versions = {
-        row["version"]
-        for row in connection.execute("SELECT version FROM hub_schema_migrations")
+    applied_rows = {
+        row["version"]: row
+        for row in connection.execute(
+            "SELECT version,name,checksum FROM hub_schema_migrations"
+        )
     }
     known_versions = {item.version for item in MIGRATIONS}
-    unsupported_versions = sorted(applied_versions - known_versions)
+    unsupported_versions = sorted(set(applied_rows) - known_versions)
     if unsupported_versions:
         return {
             "ok": False,
@@ -67,24 +69,37 @@ def build_shadow_report(connection: sqlite3.Connection) -> dict[str, Any]:
             "mismatches": [],
         }
 
-    migration = connection.execute(
-        "SELECT version,name,checksum FROM hub_schema_migrations WHERE version=?",
-        (MIGRATIONS[0].version,),
-    ).fetchone()
-    checksum_matches = bool(
-        migration
-        and migration["name"] == MIGRATIONS[0].name
-        and migration["checksum"] == _checksum(MIGRATIONS[0])
-    )
-    if not migration:
+    missing_versions = sorted(known_versions - set(applied_rows))
+    if missing_versions:
         return {
             "ok": False,
             "ready": False,
             "reason": "registry_migration_missing",
+            "missing_migration_versions": missing_versions,
             "migration_checksum_matches": False,
             "mismatch_count": 0,
             "mismatches": [],
         }
+
+    checksum_mismatches = [
+        item.version for item in MIGRATIONS
+        if (
+            applied_rows[item.version]["name"] != item.name
+            or applied_rows[item.version]["checksum"] != _checksum(item)
+        )
+    ]
+    checksum_matches = not checksum_mismatches
+    if not checksum_matches:
+        return {
+            "ok": False,
+            "ready": False,
+            "reason": "migration_checksum_mismatch",
+            "migration_checksum_matches": False,
+            "checksum_mismatch_versions": checksum_mismatches,
+            "mismatch_count": 0,
+            "mismatches": [],
+        }
+    latest_migration_version = max(known_versions)
 
     member_columns = {
         row["name"] for row in connection.execute("PRAGMA table_info(members)")
@@ -164,7 +179,8 @@ def build_shadow_report(connection: sqlite3.Connection) -> dict[str, Any]:
     return {
         "ok": ready and mismatch_count == 0,
         "ready": ready,
-        "migration_version": migration["version"],
+        "migration_version": latest_migration_version,
+        "applied_migration_versions": sorted(applied_rows),
         "migration_checksum_matches": checksum_matches,
         "legacy_member_count": len(members),
         "mapped_member_count": len(mapped_ids),
