@@ -38,7 +38,7 @@ extension AppState {
         } else { navigateNotification(kind: kind, id: id, member: member) }
     }
 
-    private func navigateNotification(kind: String, id: Int?, member: String?) {
+    func navigateNotification(kind: String, id: Int?, member: String?) {
         switch kind {
         case "approval":
             if let id, messages.contains(where: { $0.id == id }) { selection = "room"; highlightedMessageId = id }
