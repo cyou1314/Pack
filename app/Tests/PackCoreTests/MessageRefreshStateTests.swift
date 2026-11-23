@@ -64,6 +64,28 @@ final class MessageRefreshStateTests: XCTestCase {
         ))
     }
 
+
+    func testForcedRefreshInvalidatesPreviousSnapshotUntilSuccess() {
+        var state = MessageRefreshState()
+        state.recordFullSnapshot(at: 100, clientGeneration: 2, roomGeneration: 3)
+        state.invalidateSnapshot()
+
+        XCTAssertTrue(state.requiresFullSnapshot(
+            roomLoading: false, force: false, now: 101,
+            clientGeneration: 2, roomGeneration: 3
+        ))
+    }
+
+    func testOnlyNewestRefreshRequestMayApplyResults() {
+        var state = MessageRefreshState()
+        let first = state.beginRefresh()
+        let second = state.beginRefresh()
+
+        XCTAssertFalse(state.isCurrentRefresh(first))
+        XCTAssertTrue(state.isCurrentRefresh(second))
+    }
+
+
     func testFullIncrementalPageRequiresAnotherPage() {
         XCTAssertFalse(MessageRefreshState.needsAnotherPage(receivedCount: 199))
         XCTAssertTrue(MessageRefreshState.needsAnotherPage(receivedCount: 200))
