@@ -209,9 +209,18 @@
 ## 13. Mac 安装升级与部署前盘点（2026-11-23）
 
 - 新增 DMG 根目录 `upgrade.command` / `manager.py upgrade`，只接受可验证的完整 Pack 安装；先暂存/验证新版程序，再停止 Pack 写服务、确认端口释放，随后创建停机后的 SQLite/附件备份，最后原子替换 Hub/Engine/App。
-- 新服务启动后通过 dispatcher token 执行只读 MCP `room_list`，并检查 Engine 本地端口；启动失败时重新验证备份 manifest、SQLite 完整性和附件归档，再回滚程序与 DB。若新服务尚未启动，不恢复旧 DB，避免丢弃 staging 期间的写入。
+- 新服务启动后通过 dispatcher token 执行只读 MCP `room_list`，并检查 Engine 本地端口；启动失败时停止新服务并回滚旧程序/App。**live DB/attachments 不自动回滚**，因为 Hub 可能已在健康检查期间接受新写入；经验证的预升级快照保留供人工恢复。当前升级不执行 SQLite schema migration，未来涉及表结构变更必须先实现独立、可逆的版本化迁移流程。
 - 回滚状态由外层事务统一持有；文件/App rename 或恢复失败时不重新启动混合版本，保留暂存目录与恢复文件。
-- `installer/test_upgrade_safety.py` 覆盖安装身份拒绝、App 正在运行、备份失败、端口冲突、成功升级保留数据、Hub 启动失败回滚、程序/App rename 回滚失败、备份二次校验失败等路径。
+- `installer/test_upgrade_safety.py` 覆盖安装身份拒绝、App 正在运行、备份失败、端口冲突、成功升级保留数据、Hub 启动失败后的程序回滚与 live DB/attachments 写入保留、程序/App rename 回滚失败、服务未能完全停止时禁止回滚等路径。
 - 新增 `installer/mac-inventory.sh`：只读盘点 Pack/Engine/App、Pack 与 legacy runtime LaunchAgent、端口、SQLite quick_check、附件和备份数量；不输出配置/Token/Keychain 值，不启停服务或改写 Pack 数据。
 - macOS CI 增加 installer safety/upgrade tests，并在 Apple Runner 实际执行 inventory 脚本。Run [#45109400860](https://github.com/cyou1314/Pack/actions/runs/45109400860) 的 macOS installer regression、inventory、Swift Build/Unit Tests/App Bundle 和 Runtime 已通过；Hub Default staging regression 仍在运行，最终全绿以最新 head 的 CI 为准。
 - 尚未完成：隔离 Mac 上的真实 DMG 构建/升级/失败回滚、Keychain/登录态验证和生产 Mac 部署。当前远程 Mac 设备离线；不合并 PR #7、不操作用户真实 Mac。
+
+
+### 安装升级数据回滚策略修正（2026-11-23）
+
+- 复核发现：新 Hub 可能已在 Engine/辅助服务健康检查失败前接受其他本地 Agent 的写入。若此时自动恢复停机前 SQLite 快照，会静默丢弃新消息/任务；只恢复数据库而不恢复附件也会造成 DB/附件不一致。
+- 因此升级失败时只回滚程序文件与 App，不自动替换 live DB/attachments；保留已验证的 SQLite/附件快照供人工判断后恢复。失败版本产生的写入继续留在 live data 中。
+- 当前整改不改变 24 张 SQLite 表和 75 个 MCP 工具契约，没有 schema migration。未来若要迁移表结构，必须单独设计版本化、可逆迁移和兼容窗口，不能复用代码升级回滚覆盖用户数据。
+- 隔离 Mac 操作说明补充把旧 DMG 的 `Pack.app` 复制到测试根目录 `Applications/Pack.app`；服务安装脚本本身不负责拖放/安装 App Bundle。
+- 自动化回归新增 live DB/WAL/SHM 与新附件写入保留断言，以及隔离 Mac App Bundle staging 文档检查。
