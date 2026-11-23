@@ -42,6 +42,9 @@ jobs:
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
 
+      - name: Staging56 access-mode and migration regression
+        run: PY=python ./tests/hub-staging56/run_tests.sh
+
   runtime:
     name: Runtime / syntax
     runs-on: ubuntu-latest
