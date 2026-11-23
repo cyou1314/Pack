@@ -2,6 +2,7 @@
 """Safety checks for Pack's macOS LaunchAgent installers and uninstallers."""
 import importlib.util
 import plistlib
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
