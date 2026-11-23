@@ -287,14 +287,14 @@ def main():
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             task_rows)
         transfer_rows = [
-            (i + 1, "from-member", "to-member", "fixture", now,
-             "pending" if i % 2 else "accepted", now - 30)
+            (i + 1, "from-member", "to-member", "fixture", "query-index-test",
+             now, "pending" if i % 2 else "accepted", now - 30)
             for i in range(300)
         ]
         conn.executemany(
-            """INSERT INTO task_transfers(task_id,from_member,to_member,reason,
+            """INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,
                                           created_at,status,expires_at)
-               VALUES(?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?)""",
             transfer_rows)
         conn.commit()
         conn.execute("ANALYZE")
