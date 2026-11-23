@@ -238,16 +238,16 @@ class InstallRollbackTests(unittest.TestCase):
             plist = agents / "com.pack.installer-test-hub.plist"
             plist.write_text("service definition", encoding="utf-8")
 
-            def failed_bootout_still_loaded(*args, **kwargs):
+            def bootout_succeeds_but_service_remains_loaded(*args, **kwargs):
                 if args[0] == "bootout":
-                    return type("CtlResult", (), {"returncode": 1})()
+                    return type("CtlResult", (), {"returncode": 0})()
                 return type("CtlResult", (), {"returncode": 0})()
 
             with patch.multiple(
                 manager,
                 labels={"hub": "com.pack.installer-test-hub"},
                 uid=501,
-            ), patch.object(manager, "ctl", side_effect=failed_bootout_still_loaded):
+            ), patch.object(manager, "ctl", side_effect=bootout_succeeds_but_service_remains_loaded):
                 rolled_back = manager._rollback_failed_install(
                     [plist],
                     (config, socket_dir, engine, hub),
