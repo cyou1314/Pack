@@ -370,3 +370,10 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 证据、decision 消息与审计仍在一个事务；任一写入失败显式 rollback。URL 审计仍去除 query/fragment，原始目标 URL 仍只存 review_log。
 - 新增 `hub/test_reviews_service.py` 7 项隔离测试，覆盖 allow/deny 结果、证据留存与 URL 脱敏、无任务/无审批/已决议拒绝、输入校验、审计失败回滚，以及两个独立 HubContext 并发 allow/deny 仅一个成功。加入 CI 与安装包 smoke。
 - 不新增 MCP 工具、SQLite 表或索引；不改变 75-tool / 24-table 契约，不部署真实 Mac。
+
+### Memory 只读服务迁移（2026-11-23）
+
+- 将 `memory_read` 与 `memory_versions` 的查询主体迁入 `hub/services/memory.py`；Hub 入口仍负责 authenticate/require，原 scope/key 校验、目标成员解析、跨成员拒绝审计和 include_text 调度员门禁继续复用既有 helper。
+- 保持返回字段、空值形态、版本倒序、before_id 游标、limit 1–100 限制、source_refs JSON 解析和仅调度员可读历史全文等语义不变。读路径不引入新锁或写事务；拒绝审计仍由原 helper 提交。
+- 新增 `hub/test_memory_read_service.py` 9 项隔离测试，覆盖当前值/origin、空值、room-shared 目标、调度员代查、跨成员拒绝审计、版本排序/游标/limit、include_text 权限和 scope/key 校验。接入 CI 与安装包 smoke。
+- 本次只迁移只读接口；memory_write 与 memory_rollback 的限额、并发、版本写入事务保持原实现，留待单独批次迁移。无 DB schema/MCP contract 变化。
