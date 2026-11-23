@@ -38,6 +38,7 @@ class HubPackageLayoutTests(unittest.TestCase):
             self.assertTrue((root / "services" / "tasks.py").is_file())
             self.assertTrue((root / "services" / "messages.py").is_file())
             self.assertTrue((root / "services" / "attachments.py").is_file())
+            self.assertTrue((root / "services" / "attachment_audit.py").is_file())
 
     def test_local_and_dmg_installers_copy_both_hub_packages(self):
         local = (ROOT / "local" / "install-local.sh").read_text(encoding="utf-8")
