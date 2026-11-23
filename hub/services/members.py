@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any
 
 
@@ -359,3 +360,103 @@ def remove_member(context, me, name: str, *, close_run, desktop_release_for_task
     return {"removed": name, "tasks_recalled": recalled,
             "tasks_unassigned": unassigned, "transfers_expired": expired,
             "skills_cleared": skills_cleared, "lock_released": lock_released}
+
+
+def register_member(context, actor, name: str, profile: str = "",
+                    avatar_combo_json: str = "", provider: str = "", *,
+                    token_factory, hash_token, avatar_for, used_combos,
+                    make_avatar_combo, avatar_species, avatar_palettes,
+                    avatar_accessories, avatar_bgs) -> dict:
+    """Register a member and reserve a unique avatar combination atomically."""
+    if len(profile or "") > 2000:
+        raise ValueError("profile too long: > 2000 chars")
+    if len(provider or "") > 64:
+        raise ValueError("provider too long: > 64 chars")
+    token = token_factory()
+
+    with context.lock:
+        conn = context.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            old = conn.execute(
+                "SELECT removed_at FROM members WHERE name=?", (name,),
+            ).fetchone()
+            if old is not None:
+                if old["removed_at"] is not None:
+                    raise ValueError(
+                        f"member name reserved by removed member: {name}"
+                    )
+                raise ValueError(f"member name already exists: {name}")
+
+            avatar = avatar_for(name)
+            used = used_combos(conn)
+            if avatar_combo_json:
+                try:
+                    requested = json.loads(avatar_combo_json)
+                except Exception:
+                    raise ValueError("avatar_combo: not valid JSON")
+                if not isinstance(requested, dict):
+                    raise ValueError("avatar_combo: must be a JSON object")
+                selected = {}
+                for key, allowed in (
+                    ("species", avatar_species),
+                    ("palette", avatar_palettes),
+                    ("accessory", avatar_accessories),
+                    ("bg", avatar_bgs),
+                ):
+                    value = requested.get(key)
+                    if value is not None:
+                        if value not in allowed:
+                            raise ValueError(f"avatar_combo: bad {key}: {value}")
+                        selected[key] = value
+                merged = make_avatar_combo(name, used)
+                merged.update(selected)
+                combo = (
+                    f"{merged['species']}|{merged['palette']}|"
+                    f"{merged['accessory']}|{merged['bg']}"
+                )
+                if combo in used:
+                    raise ValueError(f"avatar_combo: combo already taken: {combo}")
+                merged["combo"] = combo
+                avatar.update(merged)
+            else:
+                avatar.update(make_avatar_combo(name, used))
+
+            login_state = "pending" if provider else None
+            cursor = conn.execute(
+                "INSERT INTO members(name,role,token_hash,profile,created_at,"
+                "avatar,provider,login_state) VALUES(?,'member',?,?,?,?,?,?)",
+                (name, hash_token(token), profile or None, context.clock(),
+                 json.dumps(avatar), provider or None, login_state),
+            )
+            member_id = cursor.lastrowid
+            context.audit(conn, actor["name"], "member_register", name)
+            conn.commit()
+        except sqlite3.IntegrityError as error:
+            conn.rollback()
+            raise ValueError(f"member name already exists: {name}") from error
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    return {
+        "member_id": member_id, "name": name, "token": token,
+        "avatar": avatar, "provider": provider or None,
+        "login_state": login_state,
+    }
+
+
+def heartbeat(context, actor) -> dict:
+    """Refresh the authenticated member's online timestamp."""
+    conn = context.connect()
+    try:
+        conn.execute(
+            "UPDATE members SET last_heartbeat=? WHERE id=?",
+            (context.clock(), actor["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "member": actor["name"]}

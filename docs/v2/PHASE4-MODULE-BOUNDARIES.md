@@ -415,3 +415,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 保持模板字段限制、占位符规则、arg 1000 字限制、override 优先级、移除成员二次校验、缺失成员由 task_create 报错，以及开卡审计失败不回滚已创建任务的既有行为。
 - 新增 `hub/test_templates_service.py` 11 项隔离测试，覆盖 CRUD、参数限制、默认成员校验、占位符展开、override、移除成员、task_create 委托和审计失败边界。接入 CI 与安装包 smoke。
 - 不新增 MCP 工具或 SQLite 表，保持现有 75-tool / 24-table 契约。
+
+### 成员注册与心跳服务化（2026-11-23）
+
+- 将 `member_register` 与 `heartbeat` 迁入既有 `hub/services/members.py`；Hub 层保留 dispatcher/member 身份门禁，注册所需 token factory、hash、头像与组合分配策略作为显式依赖注入。
+- 注册在 `BEGIN IMMEDIATE` 下执行成员名占用检查、全局头像组合检查、成员插入与审计，修复原进程内锁无法保护多 Hub 进程同时分配相同自定义头像组合的问题。token 仍只存 SHA-256，明文只在本次响应返回。
+- 保持 removed name 永久保留、avatar_combo 局部覆盖/自动补全、provider 初始 pending、profile/provider 长度限制与原 IntegrityError 映射。heartbeat 仍只更新时间戳、不额外写审计。
+- 新增 `hub/test_member_registration_service.py` 9 项隔离测试，覆盖 token hash、provider 状态、自定义头像组合、JSON/字段拒绝、重复组合、名字保留、字段限额、审计失败回滚、跨 HubContext 头像组合竞争和心跳更新时间。接入 CI。
+- 不新增 MCP 工具或 SQLite 表；pair redemption HTTP 路由保持原实现，后续单独审计。

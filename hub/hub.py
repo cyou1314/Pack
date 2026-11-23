@@ -1561,8 +1561,12 @@ def build_server(context: HubContext | None = None):
         from services.templates import fire_template as _fire_template
     if __package__:
         from .services.members import list_members as _list_members
+        from .services.members import register_member as _register_member
+        from .services.members import heartbeat as _heartbeat
     else:
         from services.members import list_members as _list_members
+        from services.members import register_member as _register_member
+        from services.members import heartbeat as _heartbeat
     if __package__:
         from .services.members import set_login_state as _set_login_state
         from .services.members import set_access_mode as _set_access_mode
@@ -1718,65 +1722,18 @@ def build_server(context: HubContext | None = None):
         内置登录页注册表；不给则两字段留空、行为与旧版完全一致。"""
         me = authenticate()
         require(me, "dispatcher")
-        if len(profile or "") > 2000:
-            raise ValueError("profile too long: > 2000 chars")
-        if len(provider or "") > 64:
-            raise ValueError("provider too long: > 64 chars")
-        tok = "pk-mem-" + secrets.token_urlsafe(32)
-        # 头像组合分配（查占用→选组合→插入）必须原子，否则并发注册会撞组合；
-        # 按 task_claim 范式走全局 _lock（S1 复检教训）。
-        with _lock:
-            conn = db()
-            try:
-                old = conn.execute("SELECT removed_at FROM members WHERE name=?",
-                                   (name,)).fetchone()
-                if old is not None:
-                    if old["removed_at"] is not None:
-                        raise ValueError(f"member name reserved by removed member: {name}")
-                    raise ValueError(f"member name already exists: {name}")
-                av = avatar_for(name)
-                used = _used_combos(conn)
-                if avatar_combo:
-                    try:
-                        want = json.loads(avatar_combo)
-                    except Exception:
-                        raise ValueError("avatar_combo: not valid JSON")
-                    if not isinstance(want, dict):
-                        raise ValueError("avatar_combo: must be a JSON object")
-                    pick = {}
-                    for key, allowed in (("species", AVATAR_SPECIES),
-                                         ("palette", AVATAR_PALETTES),
-                                         ("accessory", AVATAR_ACCESSORIES),
-                                         ("bg", AVATAR_BGS)):
-                        v = want.get(key)
-                        if v is not None:
-                            if v not in allowed:
-                                raise ValueError(f"avatar_combo: bad {key}: {v}")
-                            pick[key] = v
-                    merged = _avatar_combo(name, used)
-                    merged.update(pick)
-                    combo = (f"{merged['species']}|{merged['palette']}|"
-                             f"{merged['accessory']}|{merged['bg']}")
-                    if combo in used:
-                        raise ValueError(f"avatar_combo: combo already taken: {combo}")
-                    merged["combo"] = combo
-                    av.update(merged)
-                else:
-                    av.update(_avatar_combo(name, used))
-                login_state = "pending" if provider else None
-                cur = conn.execute(
-                    "INSERT INTO members(name,role,token_hash,profile,created_at,avatar,provider,login_state) VALUES(?,'member',?,?,?,?,?,?)",
-                    (name, hash_token(tok), profile or None, context.clock(), json.dumps(av),
-                     provider or None, login_state))
-                mid = cur.lastrowid
-                audit(conn, me["name"], "member_register", name)
-                conn.commit()
-            except sqlite3.IntegrityError:
-                raise ValueError(f"member name already exists: {name}")
-            finally:
-                conn.close()
-        return {"member_id": mid, "name": name, "token": tok, "avatar": av,
-                "provider": provider or None, "login_state": login_state}
+        return _register_member(
+            context, me, name, profile, avatar_combo, provider,
+            token_factory=lambda: "pk-mem-" + secrets.token_urlsafe(32),
+            hash_token=hash_token,
+            avatar_for=avatar_for,
+            used_combos=_used_combos,
+            make_avatar_combo=_avatar_combo,
+            avatar_species=AVATAR_SPECIES,
+            avatar_palettes=AVATAR_PALETTES,
+            avatar_accessories=AVATAR_ACCESSORIES,
+            avatar_bgs=AVATAR_BGS,
+        )
 
     @mcp.tool
     def member_remove(name: str) -> dict:
@@ -3031,11 +2988,7 @@ def build_server(context: HubContext | None = None):
         """成员心跳：刷新在线时间（调度侧据此判断成员在不在）。"""
         me = authenticate()
         require(me)
-        conn = db()
-        conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?", (context.clock(), me["id"]))
-        conn.commit()
-        conn.close()
-        return {"ok": True, "member": me["name"]}
+        return _heartbeat(context, me)
 
     @mcp.custom_route("/pair", methods=["POST"])
     async def pair_redeem(request):
