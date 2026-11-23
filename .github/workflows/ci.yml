@@ -135,10 +135,12 @@ jobs:
           python installer/test_dmg_manifest.py
       - name: Swift build
         run: swift build --package-path app
+      - name: Swift release build
+        run: swift build -c release --package-path app
       - name: Swift unit tests
         run: swift test --package-path app
-      - name: Build and verify app bundle
+      - name: Build and verify release app bundle
         run: |
-          bash app/make-bundle.sh "$RUNNER_TEMP/Pack.app"
+          PACK_BUILD_CONFIGURATION=release bash app/make-bundle.sh "$RUNNER_TEMP/Pack.app"
           plutil -lint "$RUNNER_TEMP/Pack.app/Contents/Info.plist"
           codesign --verify --deep --strict "$RUNNER_TEMP/Pack.app"
