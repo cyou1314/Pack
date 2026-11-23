@@ -392,3 +392,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - 回滚开始时先取得 `BEGIN IMMEDIATE`，再读取目标版本并追加新版本，避免跨 Hub 进程读到旧状态后与并发写入交错；历史版本不修改、不删除，source_refs 继续记录 `rollback_of`。
 - 新增 `hub/test_memory_rollback_service.py` 6 项隔离测试，覆盖 dispatcher 回滚来源、成员拒绝审计、版本不归属、room-shared 目标规则、审计失败回滚和 scope/key 校验。接入 CI 与安装包 smoke。
 - Memory 的 read / versions / write / rollback 四个 MCP 接口现已全部迁入服务模块；不新增工具或表，不改变现有记忆格式与限额。
+
+### Skill 注册、指派与版本服务化（2026-11-23）
+
+- 六个 skill MCP 工具（publish/list/read/assign/unassign/rollback）的数据库主体迁入 `hub/services/skills.py`；Hub 层保留 authenticate/require 和原工具签名、说明。
+- `skill_publish` 与 `skill_rollback` 在读取 current_version 前执行 `BEGIN IMMEDIATE`，避免多个 Hub 进程共享 DB 时版本号争用 UNIQUE(skill_id, version)；assign/unassign 同样在一个写事务内完成成员状态检查、指派更新与审计。
+- 保持正文/简介长度限制、空简介保留旧描述、全量版本留存、成员仅能读取 enabled 指派、成员侧不存在/未指派统一 forbidden、dispatcher 目录 assignees 字段、未指派即 unassign 不造墓碑不审计、移除成员拒绝指派等语义。
+- 新增 `hub/test_skills_service.py` 12 项隔离测试，覆盖发布版本与描述、输入限额、dispatcher/member 目录差异、读取授权、assign/unassign 幂等与审计、回滚、审计失败回滚和独立 HubContext 并发版本分配。接入 CI 与安装包 smoke。
+- 无新增 MCP 工具或 SQLite 表；现有 75-tool / 24-table 契约不变。

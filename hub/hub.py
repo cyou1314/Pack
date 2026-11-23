@@ -1506,6 +1506,11 @@ def build_server(context: HubContext | None = None):
         from .services.memory import read_memory_versions as _read_memory_versions
         from .services.memory import write_memory as _write_memory
         from .services.memory import rollback_memory as _rollback_memory
+        from .services.skills import publish_skill as _publish_skill
+        from .services.skills import list_skills as _list_skills
+        from .services.skills import read_skill as _read_skill
+        from .services.skills import set_skill_assignment as _set_skill_assignment
+        from .services.skills import rollback_skill as _rollback_skill
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1535,6 +1540,11 @@ def build_server(context: HubContext | None = None):
         from services.memory import read_memory_versions as _read_memory_versions
         from services.memory import write_memory as _write_memory
         from services.memory import rollback_memory as _rollback_memory
+        from services.skills import publish_skill as _publish_skill
+        from services.skills import list_skills as _list_skills
+        from services.skills import read_skill as _read_skill
+        from services.skills import set_skill_assignment as _set_skill_assignment
+        from services.skills import rollback_skill as _rollback_skill
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2983,53 +2993,11 @@ def build_server(context: HubContext | None = None):
         表示保留旧简介，传非空则替换。审计只记 name/version，不记正文。"""
         me = authenticate()
         require(me, "dispatcher")
-        name = (name or "").strip()
-        if not name:
-            raise ValueError("skill name must not be empty")
-        if not isinstance(body, str) or body == "":
-            raise ValueError("skill body must be a non-empty string")
-        if len(body) > SKILL_BODY_LIMIT_CHARS:
-            raise ValueError(json.dumps(
-                {"error": "skill_limit_exceeded", "skill": name,
-                 "limit_chars": SKILL_BODY_LIMIT_CHARS,
-                 "current_chars": len(body),
-                 "hint": "正文超限：拆成多个 skill 分别 publish 再一并 "
-                         "skill_assign，或删减正文后重试"}, ensure_ascii=False))
-        if description and len(description) > SKILL_DESC_LIMIT_CHARS:
-            raise ValueError(json.dumps(
-                {"error": "skill_desc_limit_exceeded", "skill": name,
-                 "limit_chars": SKILL_DESC_LIMIT_CHARS,
-                 "current_chars": len(description),
-                 "hint": "description 是一句话简介，压到 200 字内"}, ensure_ascii=False))
-        conn = db()
-        try:
-            # 版本号分配是读-改-写，须与 task_claim / run_start 同纪律走
-            # 全局 _lock 串行化，否则并发 publish 撞 UNIQUE(skill_id,version)
-            # 只有一条成功、其余抛原始 sqlite 错（复检 B1/B2 实证）。
-            with _lock:
-                now = context.clock()
-                s = conn.execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
-                if not s:
-                    cur = conn.execute(
-                        "INSERT INTO skills(name,description,current_version,updated_at) "
-                        "VALUES(?,?,1,?)", (name, description or "", now))
-                    sid, nv = cur.lastrowid, 1
-                else:
-                    sid = s["id"]
-                    nv = s["current_version"] + 1
-                    conn.execute(
-                        "UPDATE skills SET current_version=?, updated_at=?, description=? "
-                        "WHERE id=?",
-                        (nv, now, description if description else s["description"], sid))
-                conn.execute(
-                    "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
-                    "VALUES(?,?,?,?,?)", (sid, nv, body, me["name"], now))
-                audit(conn, me["name"], "skill_publish",
-                      json.dumps({"skill": name, "version": nv}, ensure_ascii=False))
-                conn.commit()
-                return {"skill_id": sid, "name": name, "version": nv}
-        finally:
-            conn.close()
+        return _publish_skill(
+            context, me, name, body, description,
+            body_limit=SKILL_BODY_LIMIT_CHARS,
+            description_limit=SKILL_DESC_LIMIT_CHARS,
+        )
 
     @mcp.tool
     def skill_list() -> dict:
@@ -3039,34 +3007,7 @@ def build_server(context: HubContext | None = None):
         供 App 成员详情「已装技能」按成员过滤；成员视角返回形状不变。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            if me["role"] == "dispatcher":
-                rows = conn.execute(
-                    "SELECT id, name, description, current_version, updated_at "
-                    "FROM skills ORDER BY name").fetchall()
-                arows = conn.execute(
-                    "SELECT ms.skill_id AS sid, m.name AS mname, ms.enabled AS en "
-                    "FROM member_skills ms JOIN members m ON m.id = ms.member_id "
-                    "ORDER BY m.name").fetchall()
-                by_skill = {}
-                for a in arows:
-                    by_skill.setdefault(a["sid"], []).append(
-                        {"member": a["mname"], "enabled": bool(a["en"])})
-                return {"skills": [{"name": r["name"], "description": r["description"],
-                                    "version": r["current_version"],
-                                    "updated_at": r["updated_at"],
-                                    "assignees": by_skill.get(r["id"], [])} for r in rows]}
-            rows = conn.execute(
-                "SELECT s.name, s.description, s.current_version, s.updated_at "
-                "FROM skills s JOIN member_skills ms ON ms.skill_id=s.id "
-                "WHERE ms.member_id=? AND ms.enabled=1 ORDER BY s.name",
-                (me["id"],)).fetchall()
-            return {"skills": [{"name": r["name"], "description": r["description"],
-                                "version": r["current_version"],
-                                "updated_at": r["updated_at"]} for r in rows]}
-        finally:
-            conn.close()
+        return _list_skills(context, me)
 
     @mcp.tool
     def skill_read(name: str) -> dict:
@@ -3076,79 +3017,27 @@ def build_server(context: HubContext | None = None):
         错误差异枚举注册表（存在性侧信道）；调度员保持精确报错。"""
         me = authenticate()
         require(me)
-        conn = db()
-        try:
-            if me["role"] == "dispatcher":
-                s = _get_skill(conn, name)
-            else:
-                s = conn.execute("SELECT * FROM skills WHERE name=?",
-                                 ((name or "").strip(),)).fetchone()
-                row = None
-                if s:
-                    row = conn.execute(
-                        "SELECT enabled FROM member_skills WHERE member_id=? AND skill_id=?",
-                        (me["id"], s["id"])).fetchone()
-                if not s or not row or not row["enabled"]:
-                    raise ValueError(
-                        f"forbidden: skill '{name}' is not assigned to {me['name']}")
-            v = conn.execute(
-                "SELECT body FROM skill_versions WHERE skill_id=? AND version=?",
-                (s["id"], s["current_version"])).fetchone()
-            if not v:
-                raise ValueError(
-                    f"skill data inconsistent: skill '{s['name']}' "
-                    f"version {s['current_version']} body missing")
-            return {"name": s["name"], "version": s["current_version"],
-                    "description": s["description"], "body": v["body"]}
-        finally:
-            conn.close()
-
-    def _skill_assign_set(name, member_name, enabled, action):
-        me = authenticate()
-        require(me, "dispatcher")
-        conn = db()
-        try:
-            s = _get_skill(conn, name)
-            m = conn.execute("SELECT * FROM members WHERE name=?",
-                             (member_name,)).fetchone()
-            if not m:
-                raise ValueError(f"no such member: {member_name}")
-            if m["removed_at"] is not None:
-                # staging49：已移除成员不得再被派/收技能（assign 与 unassign
-                # 共用本函数，一并拒绝；member_remove 时其指派行已整表删除，
-                # 对已移除者 unassign 本就无行可动，拒绝不丢任何既有能力）
-                raise ValueError(f"member is removed: {member_name}")
-            existing = conn.execute(
-                "SELECT enabled FROM member_skills WHERE member_id=? AND skill_id=?",
-                (m["id"], s["id"])).fetchone()
-            if not enabled and existing is None:
-                # 从未指派过又来收回：无行可置 0、无事发生——不凭空造
-                # enabled=0 的墓碑行，也不写一条没发生过的 unassign 审计
-                # （复检 D5 实证）。幂等返回即可。
-                return {"name": s["name"], "member": member_name, "enabled": False}
-            conn.execute(
-                "INSERT INTO member_skills(member_id,skill_id,enabled) VALUES(?,?,?) "
-                "ON CONFLICT(member_id,skill_id) DO UPDATE SET enabled=excluded.enabled",
-                (m["id"], s["id"], 1 if enabled else 0))
-            audit(conn, me["name"], action,
-                  json.dumps({"skill": s["name"], "version": s["current_version"],
-                              "member": member_name}, ensure_ascii=False))
-            conn.commit()
-            return {"name": s["name"], "member": member_name, "enabled": bool(enabled)}
-        finally:
-            conn.close()
+        return _read_skill(context, me, name)
 
     @mcp.tool
     def skill_assign(name: str, member_name: str) -> dict:
         """把 skill 指派给成员（调度员专属）：skill 与目标成员都须存在。
         指派后该成员 skill_list / skill_read 才可见可读。审计只记元数据。"""
-        return _skill_assign_set(name, member_name, True, "skill_assign")
+        me = authenticate()
+        require(me, "dispatcher")
+        return _set_skill_assignment(
+            context, me, name, member_name, True, "skill_assign",
+        )
 
     @mcp.tool
     def skill_unassign(name: str, member_name: str) -> dict:
         """收回 skill 指派（调度员专属）：置 enabled=0，指派行保留可查；
         收回后成员立即读不到。审计只记元数据。"""
-        return _skill_assign_set(name, member_name, False, "skill_unassign")
+        me = authenticate()
+        require(me, "dispatcher")
+        return _set_skill_assignment(
+            context, me, name, member_name, False, "skill_unassign",
+        )
 
     @mcp.tool
     def skill_rollback(name: str, version: int) -> dict:
@@ -3157,33 +3046,7 @@ def build_server(context: HubContext | None = None):
         审计只记 name 与版本号。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        try:
-            # 同 skill_publish：版本号读-改-写走 _lock 串行化（复检 B3）。
-            with _lock:
-                s = _get_skill(conn, name)
-                v = conn.execute(
-                    "SELECT body FROM skill_versions WHERE skill_id=? AND version=?",
-                    (s["id"], version)).fetchone()
-                if not v:
-                    raise ValueError(
-                        f"no such version: skill '{s['name']}' version {version} "
-                        f"(current_version={s['current_version']})")
-                nv = s["current_version"] + 1
-                now = context.clock()
-                conn.execute(
-                    "INSERT INTO skill_versions(skill_id,version,body,created_by,created_at) "
-                    "VALUES(?,?,?,?,?)", (s["id"], nv, v["body"], me["name"], now))
-                conn.execute(
-                    "UPDATE skills SET current_version=?, updated_at=? WHERE id=?",
-                    (nv, now, s["id"]))
-                audit(conn, me["name"], "skill_rollback",
-                      json.dumps({"skill": s["name"], "restored_from": version,
-                                  "new_version": nv}, ensure_ascii=False))
-                conn.commit()
-                return {"name": s["name"], "version": nv, "restored_from": version}
-        finally:
-            conn.close()
+        return _rollback_skill(context, me, name, version)
 
     @mcp.tool
     def desktop_acquire(task_id: int, claim_token: str) -> dict:
