@@ -258,7 +258,7 @@ final class AppState: ObservableObject {
                                 }, replyToId: optIntVal($0["reply_to_id"]), questionPayload: QuestionPayload.parse($0["payload"]))
                 }
                 if fullMessageRefresh {
-                    lastFullMessageRefreshUptime = messageRefreshUptime
+                    lastFullMessageRefreshUptime = ProcessInfo.processInfo.systemUptime
                     lastFullMessageRefreshClientGeneration = currentClientGeneration
                     if roomLoading { messages = parsedMessages }
                     else { withAnimation(DesignTokens.animStd) { messages = parsedMessages } }
