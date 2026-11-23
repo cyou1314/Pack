@@ -25,5 +25,5 @@
 
 ## 本次整改与未来工作
 
-- 本轮只修改仓库中的 Hub Python 服务/模块、SwiftUI App 内部结构、自动化测试、CI 与文档；不执行本机安装/升级，不修改安装器、LaunchAgent、Keychain service/account、用户配置格式和现有数据库、附件及登录态数据。
+- 本轮修改仓库中的 Hub Python 服务/模块、SwiftUI App 内部结构、DMG 安装器的非破坏式 upgrade 命令、自动化测试、CI 与文档；不执行真实 Mac 安装/升级，不改动用户 Mac 上的 LaunchAgent、Keychain service/account、配置、数据库、附件及登录态数据。
 - 需要后续单独完成的事项：在隔离 Mac 验证升级前预检、在线备份、程序文件替换、服务健康检查、失败回滚及 Keychain/登录态保留；仓库测试不能替代真实 Mac 验收；失败回滚会恢复升级前数据库快照，失败版本的 DB/WAL/SHM 保留在备份目录。
