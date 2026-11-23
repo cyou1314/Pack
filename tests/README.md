@@ -15,3 +15,8 @@
 - staging56（成员访问模式 + 旧库迁移）使用独立脚本：`PY=python ./tests/hub-staging56/run_tests.sh`。
 - GitHub Actions 在默认历史回归之后单独执行 staging56，确保当前生产增量不会被旧套件列表遗漏。
 - 脚本优先使用环境变量 `PY`，并将同一解释器传给迁移测试；未指定时回退到仓库虚拟环境，虚拟环境不存在则使用系统 Python。
+
+## Hub 数据库查询索引回归
+
+- `python hub/test_db_query_indexes.py` 在临时旧版数据库上验证历史数据迁移、审批请求/决议查询、任务审计归属和 200 条截断语义。
+- 测试同时检查 SQLite `EXPLAIN QUERY PLAN`，确认查询实际命中新增索引；不连接生产数据库。
