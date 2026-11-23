@@ -175,7 +175,7 @@
 
 ## 9. Phase 4 拆分前的代码边界盘点
 
-当前规模与目标模块边界见 [PHASE4-MODULE-BOUNDARIES.md](PHASE4-MODULE-BOUNDARIES.md)。Hub 已将成员、房间、任务、规则、附件、记忆、技能、桌面、配对等大部分业务迁入领域服务，75 个 MCP tools 保留原名称/参数/返回契约；App Views 已按功能拆分，AppState 的 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle 行为已迁入同一 AppState 的领域扩展，主文件约 218 行。剩余工作聚焦 Settings 状态属性、跨域状态所有权评估和真实 Mac 验收；Catalog 加载/模板动作已独立迁入 `AppState+Catalog.swift`，但其 UI 状态仍由 AppState 托管。不以文件行数为目标，也不在缺少收益时引入独立 Store。
+当前规模与目标模块边界见 [PHASE4-MODULE-BOUNDARIES.md](PHASE4-MODULE-BOUNDARIES.md)。Hub 已将成员、房间、任务、规则、附件、记忆、技能、桌面、配对等大部分业务迁入领域服务，75 个 MCP tools 保留原名称/参数/返回契约；App Views 已按功能拆分，AppState 的 Connection/Members/Rooms/Tasks/Notifications/Approvals/Chat/Lifecycle/Catalog 行为已迁入同一 AppState 的领域扩展，主文件约 200 行。剩余工作聚焦 Settings 状态属性、跨域状态所有权评估和真实 Mac 验收；Catalog 加载/模板动作已独立迁入 `AppState+Catalog.swift`，但其 UI 状态仍由 AppState 托管。不以文件行数为目标，也不在缺少收益时引入独立 Store。
 
 ## 10. 每批交付记录格式
 
