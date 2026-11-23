@@ -362,3 +362,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - `BEGIN IMMEDIATE` + 进程内 lock 确保多个 Hub 进程在同一 DB 上的频控判断与审计插入原子串行；不会让并发请求同时通过 `EXT_EGRESS_PER_MIN=60` 审计计数。被限流的错误 JSON、60 秒 retry_after 和审计动作保持不变。
 - `hub/test_egress_check_service.py` 12 项隔离测试验证默认 ask、规则 allow/ask 优先于任务点名、成员自写任务不能自授权、畸形 URL 审计不泄露查询 token、缺失任务、external 限流、内部成员豁免、审计失败、两个独立 HubContext 竞争一个许可名额。已接入 CI。
 - 不新增 MCP 工具或 SQLite 表、不改变出口 allow/ask 决策策略；CLI/Hub 现有安装接口保持不变，真实 Mac 不部署。
+
+### 独立审查决议跨进程互斥（2026-11-23）
+
+- 将 `review_file` 的待审批检查、证据留档、房间 decision 消息与 reviewer 审计迁至 `hub/services/reviews.py:record_review`；原 MCP 工具名称、参数、描述、dispatcher 鉴权和返回结构保持不变。
+- 原实现的 `HubContext.lock` 只覆盖单进程，两个独立 Hub 进程可能在同一待审批任务上同时读取到 pending 并分别提交 allow/deny。现于读取任务/审批状态之前执行 SQLite `BEGIN IMMEDIATE`，使检查与写入在跨进程写事务中串行化；第二个提交方读取到首个决议后按原错误语义拒绝。
+- 证据、decision 消息与审计仍在一个事务；任一写入失败显式 rollback。URL 审计仍去除 query/fragment，原始目标 URL 仍只存 review_log。
+- 新增 `hub/test_reviews_service.py` 7 项隔离测试，覆盖 allow/deny 结果、证据留存与 URL 脱敏、无任务/无审批/已决议拒绝、输入校验、审计失败回滚，以及两个独立 HubContext 并发 allow/deny 仅一个成功。加入 CI 与安装包 smoke。
+- 不新增 MCP 工具、SQLite 表或索引；不改变 75-tool / 24-table 契约，不部署真实 Mac。

@@ -1501,6 +1501,7 @@ def build_server(context: HubContext | None = None):
         from .services.rules import upsert_egress_rule as _upsert_egress_rule
         from .services.rules import delete_egress_rule as _delete_egress_rule
         from .services.rules import check_egress as _check_egress
+        from .services.reviews import record_review as _record_review
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1525,6 +1526,7 @@ def build_server(context: HubContext | None = None):
         from services.rules import upsert_egress_rule as _upsert_egress_rule
         from services.rules import delete_egress_rule as _delete_egress_rule
         from services.rules import check_egress as _check_egress
+        from services.reviews import record_review as _record_review
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2856,53 +2858,10 @@ def build_server(context: HubContext | None = None):
         同时写 review_log 与审计（actor='reviewer'）。"""
         me = authenticate()
         require(me, "dispatcher")
-        if verdict not in ("allow", "deny"):
-            raise ValueError("verdict must be 'allow' or 'deny'")
-        target_url = target_url.strip()
-        owner_quote = owner_quote.strip()
-        member_desc = member_desc.strip()
-        for label, v in (("target_url", target_url), ("owner_quote", owner_quote),
-                         ("member_desc", member_desc)):
-            if not v:
-                raise ValueError(f"missing evidence field: {label}")
-        conn = db()
-        try:
-            # 「查未决议 → 落痕决议」是读-改-写，须走 _lock 串行化：无锁时两路
-            # 并发 filing（allow+deny）会双双通过 _approval_state 检查、给同一
-            # 待批任务留下互相矛盾的双决议（staging14 复检 C2，live 8/8 复现）。
-            with _lock:
-                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-                if not t:
-                    raise ValueError(f"no such task: {task_id}")
-                req, decided_by = _approval_state(conn, task_id)
-                if not req:
-                    raise ValueError(
-                        f"task {task_id} has no approval request on file; nothing to review")
-                if decided_by:
-                    raise ValueError(
-                        f"task {task_id} already decided (via {decided_by}); "
-                        "review_file only handles undecided approvals")
-                now = context.clock()
-                cur = conn.execute(
-                    """INSERT INTO review_log(task_id,target_url,owner_quote,member_desc,
-                       verdict,reviewer,created_at) VALUES(?,?,?,?,?,?,?)""",
-                    (task_id, target_url, owner_quote, member_desc, verdict, me["name"], now))
-                log_id = cur.lastrowid
-                text = (f"批准 任务#{task_id}（独立审查）" if verdict == "allow"
-                        else f"拒绝 任务#{task_id}（独立审查）")
-                cur = conn.execute(
-                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
-                    "VALUES(?,?,'decision',?,?,?)",
-                    (t["room_id"], me["id"], text, task_id, now))
-                mid = cur.lastrowid
-                audit(conn, "reviewer", f"review_{verdict}",
-                      f"task {task_id} review#{log_id} "
-                      f"url={target_url.split('?')[0].split('#')[0]}")
-                conn.commit()
-                return {"task_id": task_id, "verdict": verdict,
-                        "review_id": log_id, "message_id": mid}
-        finally:
-            conn.close()
+        return _record_review(
+            context, me, task_id, target_url, owner_quote, member_desc, verdict,
+            approval_state=_approval_state,
+        )
 
     @mcp.tool
     def memory_read(scope: str, key: str = "", member: str = "") -> dict:
