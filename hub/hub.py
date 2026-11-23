@@ -1514,6 +1514,10 @@ def build_server(context: HubContext | None = None):
         from .services.desktop import acquire_desktop as _acquire_desktop
         from .services.desktop import release_desktop as _release_desktop
         from .services.desktop import desktop_status as _desktop_status_service
+        from .services.templates import upsert_template as _upsert_template
+        from .services.templates import list_templates as _list_templates
+        from .services.templates import delete_template as _delete_template
+        from .services.templates import fire_template as _fire_template
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1551,6 +1555,10 @@ def build_server(context: HubContext | None = None):
         from services.desktop import acquire_desktop as _acquire_desktop
         from services.desktop import release_desktop as _release_desktop
         from services.desktop import desktop_status as _desktop_status_service
+        from services.templates import upsert_template as _upsert_template
+        from services.templates import list_templates as _list_templates
+        from services.templates import delete_template as _delete_template
+        from services.templates import fire_template as _fire_template
     if __package__:
         from .services.members import list_members as _list_members
     else:
@@ -2399,64 +2407,23 @@ def build_server(context: HubContext | None = None):
         长规程，长规程走 skill）；assignee 非空时必须是已存在的成员名。"""
         me = authenticate()
         require(me, "dispatcher")
-        if not name or len(name) > 40:
-            raise ValueError("template name must be 1-40 chars")
-        if not title_tpl or len(title_tpl) > 200:
-            raise ValueError("title_tpl must be 1-200 chars")
-        if len(body_tpl) > 4000:
-            raise ValueError(f"body_tpl too long: {len(body_tpl)} > 4000")
-        conn = db()
-        try:
-            if assignee:
-                a = conn.execute("SELECT id, removed_at FROM members WHERE name=?", (assignee,)).fetchone()
-                if not a:
-                    raise ValueError(f"no such member: {assignee}")
-                if a["removed_at"] is not None:
-                    # staging49：已移除成员不得再设为模板默认指派
-                    raise ValueError(f"member is removed: {assignee}")
-            now = _now()
-            conn.execute(
-                "INSERT INTO task_templates(name,title_tpl,body_tpl,assignee,updated_at,updated_by)"
-                " VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET title_tpl=excluded.title_tpl,"
-                " body_tpl=excluded.body_tpl, assignee=excluded.assignee,"
-                " updated_at=excluded.updated_at, updated_by=excluded.updated_by",
-                (name, title_tpl, body_tpl, assignee, now, me["name"]))
-            audit(conn, me["name"], "template_upsert", f"template: {name}")
-            conn.commit()
-            row = conn.execute("SELECT id FROM task_templates WHERE name=?", (name,)).fetchone()
-        finally:
-            conn.close()
-        return {"template_id": row["id"], "name": name}
+        return _upsert_template(
+            context, me, name, title_tpl, body_tpl, assignee,
+        )
 
     @mcp.tool
     def template_list() -> dict:
         """列出全部任务模板（调度员）。模板是调度员资产，成员不可见。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        try:
-            rows = conn.execute(
-                "SELECT id, name, title_tpl, body_tpl, assignee, updated_at, updated_by"
-                " FROM task_templates ORDER BY id").fetchall()
-        finally:
-            conn.close()
-        return {"templates": [dict(r) for r in rows]}
+        return _list_templates(context)
 
     @mcp.tool
     def template_delete(name: str) -> dict:
         """调度员删除模板。只删模板本身，已开出的任务不受影响。"""
         me = authenticate()
         require(me, "dispatcher")
-        conn = db()
-        try:
-            cur = conn.execute("DELETE FROM task_templates WHERE name=?", (name,))
-            if cur.rowcount == 0:
-                raise ValueError(f"no such template: {name}")
-            audit(conn, me["name"], "template_delete", f"template: {name}")
-            conn.commit()
-        finally:
-            conn.close()
-        return {"deleted": name}
+        return _delete_template(context, me, name)
 
     @mcp.tool
     def template_fire(name: str, arg: str = "", room: str = "pack-main",
@@ -2467,47 +2434,10 @@ def build_server(context: HubContext | None = None):
         模板只省打字不降纪律：不得预设批准、不得绕出口管制（与普通卡无异）。"""
         me = authenticate()
         require(me, "dispatcher")
-        if len(arg) > 1000:
-            raise ValueError(f"arg too long: {len(arg)} > 1000")
-        conn = db()
-        try:
-            t = conn.execute(
-                "SELECT title_tpl, body_tpl, assignee FROM task_templates WHERE name=?",
-                (name,)).fetchone()
-        finally:
-            conn.close()
-        if not t:
-            raise ValueError(f"no such template: {name}")
-        if arg and "{arg}" not in t["title_tpl"] and "{arg}" not in t["body_tpl"]:
-            raise ValueError(f"template '{name}' has no {{arg}} placeholder")
-        if not arg.strip() and ("{arg}" in t["title_tpl"] or "{arg}" in t["body_tpl"]):
-            raise ValueError(f"template '{name}' requires an arg")
-        title = t["title_tpl"].replace("{arg}", arg)
-        body = t["body_tpl"].replace("{arg}", arg)
-        # staging49：模板可能建于成员被移除之前，真正建卡前对生效指派再验
-        # 一次 removed_at（task_create 内部同口径兜底，此处提前拒、语义一致；
-        # 成员不存在时不在此报错，仍由 task_create 报 no such member）。
-        eff_assignee = assignee_override or t["assignee"]
-        if eff_assignee:
-            conn = db()
-            try:
-                a = conn.execute("SELECT removed_at FROM members WHERE name=?",
-                                 (eff_assignee,)).fetchone()
-            finally:
-                conn.close()
-            if a and a["removed_at"] is not None:
-                raise ValueError(f"member is removed: {eff_assignee}")
-        out = task_create(room=room, title=title, body=body,
-                          assignee_name=eff_assignee)
-        conn = db()
-        try:
-            audit(conn, me["name"], "template_fire",
-                  f"template {name} -> task {out['task_id']}")
-            conn.commit()
-        finally:
-            conn.close()
-        out["template"] = name
-        return out
+        return _fire_template(
+            context, me, name, arg, room, assignee_override,
+            create_task=task_create,
+        )
 
     @mcp.tool
     def task_claim(task_id: int) -> dict:

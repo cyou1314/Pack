@@ -407,3 +407,11 @@ Phase 4 已进入执行阶段。当前完成了纯策略、基础 SQLite 结构/
 - acquire/release 在读取全局桌面锁状态前使用 `BEGIN IMMEDIATE`，使不同 Hub 进程共享 SQLite 时也只能有一个 GUI 任务拿到锁；保留同任务幂等重入、busy JSON、成员按 claim_token 放锁、dispatcher 强制释放与 idle no-op 行为。
 - acquire/release 的状态变更与审计同事务，审计失败回滚锁状态。新增 `hub/test_desktop_service.py` 10 项隔离测试，覆盖角色、claim_token、busy/idempotent、成员释放、dispatcher force release、status、审计回滚和独立 HubContext 并发竞争。接入 CI 与安装包 smoke。
 - 任务交活/阻塞/取消/转交/租约回收时使用的 `_desktop_release_for_task` 仍由调用方事务复用，本批不改变这些任务生命周期逻辑。
+
+### 任务模板服务化（2026-11-23）
+
+- 将 `template_upsert/list/delete/fire` 四个工具的数据库主体迁入 `hub/services/templates.py`；Hub 层保留 dispatcher 鉴权与 MCP 工具签名。
+- upsert/delete 使用 SQLite 写事务，成员默认指派校验、模板写入/删除与审计原子提交；模板开卡继续调用原 `task_create` 工具路径，不复制任务状态机/审批/出口管制逻辑。`template_fire` 的开卡事务与模板审计仍保持原有分离语义。
+- 保持模板字段限制、占位符规则、arg 1000 字限制、override 优先级、移除成员二次校验、缺失成员由 task_create 报错，以及开卡审计失败不回滚已创建任务的既有行为。
+- 新增 `hub/test_templates_service.py` 11 项隔离测试，覆盖 CRUD、参数限制、默认成员校验、占位符展开、override、移除成员、task_create 委托和审计失败边界。接入 CI 与安装包 smoke。
+- 不新增 MCP 工具或 SQLite 表，保持现有 75-tool / 24-table 契约。
