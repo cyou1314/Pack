@@ -144,7 +144,12 @@ def _publish_upload(context, path: str, data: bytes) -> bool:
         raise ValueError("attachment file unavailable")
     directory = os.path.dirname(destination)
     os.makedirs(directory, mode=0o700, exist_ok=True)
-    if os.path.realpath(directory) != directory or os.path.islink(directory):
+    # macOS may resolve system parents such as /var -> /private/var.
+    # Accept that alias, but reject a symlinked storage shard or escape.
+    canonical_root = os.path.realpath(root)
+    canonical_directory = os.path.realpath(directory)
+    if (os.path.islink(directory) or
+            os.path.commonpath((canonical_root, canonical_directory)) != canonical_root):
         raise ValueError("attachment file unavailable")
     if os.path.lexists(destination):
         _verify_existing_upload(destination, data, root)
