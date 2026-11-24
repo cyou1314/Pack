@@ -1,6 +1,6 @@
 # M2 Hub Session Binding / Event Projection Design
 
-状态：设计基线；基于 PR #45 的 Hub Inbox Consumer 实现与 Runtime / Hub 源码审计。当前仅定义可信 Session 绑定、事件投影和原子消费边界；尚未实现，不代表 Session 消息已进入 Hub 或 UI。
+状态：设计基线；基于 PR #45 的 Hub Inbox Consumer 实现与 Runtime / Hub 源码审计。M2a 的 Hub Session Binding foundation 已在 PR #47 开始实现（内部创建/失败服务、Agent capabilities 协商、事件契约和 Codex Adapter 映射；当前 Draft / CI 与复审中）。尚未实现 Consumer 投影、Agent Session Message / Run 表、读取 API 或 UI；不代表 Session 消息已进入 Hub。
 
 ## 1. 目标
 
