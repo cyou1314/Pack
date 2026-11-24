@@ -57,6 +57,7 @@ export class RuntimeSupervisor {
     if (handle?.adapterId && handle.adapterId !== adapterId) {
       throw new Error("agent_adapter_conflict");
     }
+    if (handle?.disconnectFailed) throw new Error("agent_disconnect_failed");
     if (handle?.disconnectPromise) throw new Error("agent_lifecycle_busy");
     if (handle?.connectPromise) return handle.connectPromise;
     if (handle?.status === "ready" && !handle.eventQueue.length && !handle.fatalEventError) {
@@ -73,6 +74,7 @@ export class RuntimeSupervisor {
         targetStatus: "ready",
         connectionEstablished: false,
         startupFailed: false,
+        disconnectFailed: false,
         lastError: null,
         fatalEventError: false,
         sessions: new Set(),
@@ -501,7 +503,7 @@ export class RuntimeSupervisor {
         }
         if (event.eventType === "connection.changed" && event.payload.status === "disconnected") {
           handle.connectionEstablished = false;
-          if (!handle.startupFailed) {
+          if (!handle.startupFailed && !handle.disconnectFailed) {
             handle.targetStatus = "disconnected";
             if (handle.status !== "disconnecting") handle.status = "disconnected";
           }
@@ -564,6 +566,7 @@ export class RuntimeSupervisor {
       adapterId: handle.adapterId,
       status: handle.status,
       connectionEstablished: handle.connectionEstablished,
+      disconnectFailed: handle.disconnectFailed,
       health,
       sessionIds: Object.freeze([...handle.sessions].sort()),
       pendingApprovalCount: handle.pendingApprovals.size,
