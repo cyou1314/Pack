@@ -1,8 +1,8 @@
 # M2：Runtime Supervisor 首个实现切片
 
 - 日期：2026-11-24
-- 首个 Supervisor 切片 PR #39 已于 2026-11-24 合入 Foundation（merge commit `d181765a4d624542f95fea305494e2bed7f42021`）；本后续分支继续补齐 Outbox / Hub Inbox 基础层，尚未创建后续 PR。
-- 状态：**Supervisor 骨架与 mock 测试已实现；SQLite 本地 Durable Outbox 首个切片已实现；尚未接入生产 Runtime / Hub。**
+- 首个 Supervisor 切片 PR #39 已于 2026-11-24 合入 Foundation（merge commit `d181765a4d624542f95fea305494e2bed7f42021`）；后续 PR #41 已合入 Outbox / Hub Inbox；Agent Event Gateway 在独立后续分支继续实现。
+- 状态：**Supervisor、SQLite Durable Outbox、Hub Inbox、Agent 专属配对凭证与事件写入 Gateway 已实现；尚未接入 Outbox 网络投递 Worker、远端 ACK 或生产 Runtime。**
 - 目标：在接入更多 Provider 之前，先把 Adapter 生命周期、Session 操作、事件持久化边界和审批 fail-closed 规则收敛到一个可测试的控制对象。
 
 ## 1. 本批范围
@@ -77,7 +77,7 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 - Runtime：`SqliteEventStore` 使用 Node `node:sqlite`，WAL + `synchronous=FULL`；事务提交后 append 才 resolve；eventId 幂等、冲突检测、pending replay、显式 delivered ack。
 - Hub：migration v4 新增 `agent_event_inbox`，唯一键为 `(agent_id,event_id)`，外键绑定 Agent/Provider；内部 `append_agent_event(connection,event,received_at=...)` 复核身份、事件类型、时间戳、序列号、payload 深度/大小与敏感字段，要求调用方负责事务提交。
 - 测试：Runtime 使用真实临时 SQLite 文件验证 close/reopen、pending replay、幂等、冲突与 ack；Hub 使用隔离数据库验证 migration、FK、幂等、回滚与恶意 payload 拒绝。
-- 边界：当前未实现 Hub Inbox MCP/HTTP 入口、认证中间件、网络投递 worker、远端 ack、消费租约、Session cursor/replay；不得把这两个存储层描述为端到端可靠传输。
+- Agent Gateway：新增 migration v5（配对码、Agent 专属 Token、失败计数），由调度员现有成员 Token 创建配对码，Agent 使用一次性兑换得到的独立 events:write Token；新增 /agent/pair/create、/agent/pair/redeem、/agent/events、/agent/tokens/revoke HTTP 路由。Hub 只保存 Token 哈希；事件身份从 Token 派生，重复事件幂等，速率限制与 Inbox 写入同事务。详细契约见 M2-AGENT-EVENT-GATEWAY.md。\n- 边界：当前仍未实现 Outbox 网络投递 worker、远端 ack、消费租约、Session cursor/replay；不得把现有存储与入口描述为端到端可靠传输。
 - Node 兼容：Node 22.13+ 才无需 `--experimental-sqlite` 启动参数；Node 22 的 `node:sqlite` 仍为 experimental API，需持续 CI 验证，未来可替换底层实现而不改变 Outbox 接口。
 
 ## 5. 非目标与当前限制
@@ -87,7 +87,7 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 - 不修改 `runtime/runtime.mjs` v1 主循环，不替换现有 Muse Runtime；
 - 不启动真实 Codex/Gemini/OpenAI/Doubao Provider；
 - 不实现自动重连、指数退避、Session 游标、事件 replay；
-- 不实现 Hub Inbox、Hub Event Gateway、网络投递 worker、远端 ack 或新增 Hub SQLite migration；
+- 不实现 Outbox 网络投递 worker、远端 ack、消费租约、Session cursor/replay；
 - 不接入 Agent Registry 读 API，不解除 M1c 真实数据库 shadow gate；
 - 不接入 SwiftUI Activity/Approval 页面；
 - 不在用户 Mac 上登录、运行或部署。
