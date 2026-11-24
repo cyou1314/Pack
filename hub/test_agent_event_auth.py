@@ -159,9 +159,10 @@ class AgentEventGatewayTests(unittest.TestCase):
 
     def test_failed_pair_attempts_lock_code_and_global_throttle(self):
         pair = self.create_code()
+        self.now[0] += 601
         for _ in range(5):
             with self.assertRaisesRegex(ValueError, "invalid_agent_pair_code"):
-                self.redeem("wrong-code")
+                self.redeem(pair["pair_code"])
         db = self.connect()
         try:
             row = db.execute(
