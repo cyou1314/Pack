@@ -58,7 +58,7 @@
 - 加入幂等、游标、断线恢复。
 - 现有 Muse Runtime 通过兼容 Adapter 接入。
 
-**2026-11-24 首个切片：** `runtime/agent-core/supervisor.mjs` 已加入 Adapter 生命周期、Session create/resume/interrupt、事件身份/敏感字段校验、注入式 Event Store、事件写入失败降级与审批 fail-closed。当前只用 fake Adapter / fake Event Store 测试，未接入 `runtime/runtime.mjs`，也没有生产 Event Store、Hub Inbox/Outbox、Event Gateway、游标/ack/replay 或自动重连。详细边界见 `M2-RUNTIME-SUPERVISOR-DESIGN.md`。
+**2026-11-24 首个切片：** `runtime/agent-core/supervisor.mjs` 已加入 Adapter 生命周期、Session create/resume/interrupt、事件身份/敏感字段校验、注入式 Event Store、事件写入失败降级、审批授权复核、并发生命周期串行化、disconnect 失败保留实例与 shutdown race 防护。当前只用 fake Adapter / fake Event Store 测试，未接入 `runtime/runtime.mjs`，也没有生产 Event Store、Hub Inbox/Outbox、Event Gateway、游标/ack/replay 或自动重连。详细边界见 `M2-RUNTIME-SUPERVISOR-DESIGN.md`。
 
 回滚：切回旧 Runtime 与旧 Hub 同步路径；新 Supervisor 尚未接入生产入口，不影响 v1。
 
