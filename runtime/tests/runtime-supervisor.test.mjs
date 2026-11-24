@@ -182,6 +182,22 @@ test("Supervisor persists adapter events before publishing them", async () => {
   assert.equal(status.pendingEventCount, 0);
 });
 
+test("Supervisor freezes nested event payloads before publishing", async () => {
+  const {supervisor, adapters, eventStore} = createHarness();
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+  supervisor.subscribe((event) => {
+    if (event.eventType === "run.started") event.payload.nested.value = "mutated";
+  });
+
+  const emitted = adapters[0].emit("run.started", {nested: {value: "original"}});
+  await supervisor.retryEvents("agent-1");
+  const stored = eventStore.events.find((event) => event.eventId === emitted.eventId);
+
+  assert.equal(stored.payload.nested.value, "original");
+  assert.equal(emitted.payload.nested.value, "original");
+  assert.equal(Object.isFrozen(emitted.payload.nested), true);
+});
+
 test("Supervisor owns session lifecycle and rejects unmanaged sessions", async () => {
   const {supervisor} = createHarness();
   await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
