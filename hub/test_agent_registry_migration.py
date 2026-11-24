@@ -36,6 +36,17 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 name TEXT NOT NULL,
                 created_at REAL NOT NULL
             );
+            CREATE TABLE audit(
+                id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL,
+                action TEXT NOT NULL, detail TEXT
+            );
+            CREATE TABLE messages(
+                id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL,
+                kind TEXT NOT NULL, task_id INTEGER
+            );
+            CREATE TABLE review_log(
+                id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, created_at REAL NOT NULL
+            );
             INSERT INTO rooms(id,name,created_at) VALUES(1,'room-a',1);
             INSERT INTO members(id,name,role,created_at,provider,display_name,kind,login_state)
                 VALUES(1,'codex-user','member',10,'Codex',NULL,NULL,'logged_in');
@@ -131,7 +142,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 self.assertEqual([tuple(row) for row in first], [tuple(row) for row in second])
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    1,
+                    2,
                 )
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
@@ -139,6 +150,62 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                         "VALUES('invalid','missing-provider','Invalid','pending',1,1)"
                     )
                 connection.rollback()
+            finally:
+                connection.close()
+
+    def test_structured_task_audit_backfill_is_exact_bounded_and_idempotent(self):
+        with tempfile.TemporaryDirectory(prefix="pack-task-audit-migration-") as directory:
+            connection = self._database(directory)
+            try:
+                details = (
+                    "task 1",
+                    "task 1: assigned",
+                    "task 1 completed",
+                    "task 12 ignored",
+                    "task 01 leading zero",
+                    "task 1x suffix",
+                    "task 9223372036854775808 overflow",
+                    "task 9223372036854775807 boundary",
+                )
+                connection.executemany(
+                    "INSERT INTO audit(ts,actor,action,detail) VALUES(1,'legacy','test',?)",
+                    [(detail,) for detail in details],
+                )
+                connection.commit()
+
+                apply_migrations(connection, clock=lambda: 100.0)
+                rows = connection.execute(
+                    "SELECT detail,task_id FROM audit ORDER BY id"
+                ).fetchall()
+                self.assertEqual(
+                    [(row["detail"], row["task_id"]) for row in rows],
+                    [
+                        ("task 1", 1),
+                        ("task 1: assigned", 1),
+                        ("task 1 completed", 1),
+                        ("task 12 ignored", 12),
+                        ("task 01 leading zero", None),
+                        ("task 1x suffix", None),
+                        ("task 9223372036854775808 overflow", None),
+                        ("task 9223372036854775807 boundary", 9223372036854775807),
+                    ],
+                )
+                indexes = {
+                    row["name"] for row in connection.execute("PRAGMA index_list(audit)")
+                }
+                self.assertIn("idx_audit_task", indexes)
+
+                apply_migrations(connection, clock=lambda: 200.0)
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
+                    2,
+                )
+                self.assertEqual(
+                    [row["task_id"] for row in connection.execute(
+                        "SELECT task_id FROM audit ORDER BY id"
+                    )],
+                    [1, 1, 1, 12, None, None, None, 9223372036854775807],
+                )
             finally:
                 connection.close()
 
