@@ -152,7 +152,15 @@ test("The store rejects non-JSON payloads and oversized events", async (t) => {
   const circular = {};
   circular.self = circular;
   await assert.rejects(
-    () => store.append(makeEvent("event-circular", {nested: circular})),
+    () => store.append({
+      eventId: "event-circular",
+      eventType: "message.completed",
+      providerId: "test",
+      agentId: "agent-1",
+      occurredAt: "2026-11-24T03:00:00.000Z",
+      sequence: 2,
+      payload: {nested: circular},
+    }),
     /event_not_json_serializable/,
   );
   await assert.rejects(
