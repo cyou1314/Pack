@@ -17,4 +17,4 @@ export {
   registerCodexAppServerAdapter,
 } from "./adapters/codex-app-server.mjs";
 export {SqliteEventStore} from "./sqlite-event-store.mjs";
-export {AgentEventDeliveryWorker} from "./event-delivery-worker.mjs";
+export {AgentEventDeliveryWorker, getAgentEventCapabilities} from "./event-delivery-worker.mjs";
