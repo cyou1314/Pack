@@ -47,7 +47,7 @@ Room 归属只能来自 Hub 内部已授权的 Session 创建记录。事件中�
 **混合版本发布必须 Hub-first：**
 
 1. 先部署能够识别并持久化 `hubSessionId` 的 Hub Gateway；新 Hub 必须继续接受没有该字段的旧 Runtime 事件。
-2. 新增只读、Agent Token 认证的 `GET /agent/capabilities`，返回 `event_envelope_version` 与支持字段。旧 Hub 的 404 / 无字段响应都按“不支持”处理。
+2. 新增只读、Agent Token 认证的 `GET /agent/capabilities`，返回 `event_envelope_version`、支持字段和 `hub-session-id-envelope-v1` feature。该 feature **仅表示 Gateway 能识别并持久化可选 `hubSessionId` 字段**，不代表 Session projector、Room 可见性、审批 Consumer 或 Read API 已就绪；Runtime 不得据此开启 UI 投影。旧 Hub 的 404 / 无字段响应都按“不支持”处理。
 3. Runtime 在创建 Hub Session 前先读取能力；只有确认 Hub 支持 `hubSessionId` 才允许 Adapter 发出新字段。能力未知或请求失败时 fail-closed：继续旧事件格式，不猜测 Hub 版本。
 4. 新 Runtime + 旧 Hub 必须不发 `hubSessionId`；旧 Runtime + 新 Hub 必须照常被接受；新 Runtime + 新 Hub 才启用绑定投影。
 5. 禁止在存在含 `hubSessionId` 的未投递 Outbox 事件时回滚到不识别该字段的 Hub。若紧急回滚，必须保留兼容 Gateway，或恢复到支持该字段的 Hub 版本。Delivery Worker 遇到旧 Hub 的 unknown-field 4xx 时应暂停 FIFO、保留原始事件和 eventId；不得剥离字段、改写 payload 或以同一 eventId 重发不同内容，否则会破坏 Inbox 的 event_id_payload_conflict 保护。待 Hub 恢复兼容后继续投递。
