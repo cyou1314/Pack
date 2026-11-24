@@ -374,6 +374,9 @@ export class RuntimeSupervisor {
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
       handle.connectionEstablished = false;
+      handle.sessions.clear();
+      handle.pendingApprovals.clear();
+      handle.approvalInFlight.clear();
       handle.status = "disconnected";
       return this.#snapshot(handle);
     }
