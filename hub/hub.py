@@ -200,7 +200,7 @@ def _close_run(conn, task_id, outcome, actor, detail="", context: HubContext | N
 #   动作类型 = 任务标题里第一个半角方括号标记（[ENG]/[M4A]/[ENG-image] 是既有标记体系），无标记为 ''；
 #   目标     = 任务的被指派成员名，未指派为 ''。键里 '' 表示通配。
 
-TASK_REF_RE = re.compile(r"任务#(\d+)")
+TASK_REF_RE = APPROVAL_TASK_RE
 def rule_eval(conn, action, target):
     """按具体度查规则库；命中返回 row。"""
     for candidate_action, candidate_target in approval_rule_candidates(action, target):
