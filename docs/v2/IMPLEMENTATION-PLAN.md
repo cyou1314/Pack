@@ -196,7 +196,7 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 
 - M1a PR #21 已 squash 合入 `codex/pack-v2-foundation-20261121`，提交 `51128b954764b3e9e59d0e00eb802d24fea2684e`。
 - M1a PR 的 Hub regression、SQLite/MCP snapshots、staging regression、Runtime tests、macOS installer/Swift release build/unit tests/app bundle 验证全部通过；Codex 最新代码审查无发现。
-- M1b PR #22/#23 已合入：手动只读 Shadow CLI 不加 MCP 工具、不接入 member_list、不启用新读路径、不自动修复。PR #24 补齐 quick_check / foreign_key_check；M1c API 仅完成评估草案，等待真实数据库 shadow report 通过后再实施。
+- M1b PR #22/#23 已合入：手动只读 Shadow CLI 不加 MCP 工具、不接入 member_list、不启用新读路径、不自动修复。PR #24 已补齐 quick_check / foreign_key_check；PR #34 已增加 task hot-path indexes；M1c API 仅完成评估草案，等待真实数据库备份副本上的 shadow report 通过后再实施。
 
 
 ### 2026-11-23 分支集成状态
