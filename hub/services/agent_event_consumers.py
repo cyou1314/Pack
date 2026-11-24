@@ -31,6 +31,12 @@ _INTERNAL_CONSUMER_IDS = frozenset({
 _PRINCIPAL_SEAL = object()
 
 
+# Keep one issuer-owned object per stable Consumer identity. A shared seal alone
+# is transferable via dataclasses.replace(), so authorization also checks object
+# identity against this private registry.
+_PRINCIPAL_INSTANCES: dict[str, "ConsumerPrincipal"] = {}
+
+
 @dataclass(frozen=True, slots=True)
 class ConsumerPrincipal:
     """Opaque internal identity; instances must come from the trusted issuer."""
@@ -41,6 +47,12 @@ class ConsumerPrincipal:
     def __post_init__(self) -> None:
         if self._seal is not _PRINCIPAL_SEAL:
             raise ValueError("invalid_consumer_principal")
+
+
+_PRINCIPAL_INSTANCES.update({
+    consumer_id: ConsumerPrincipal(consumer_id, _PRINCIPAL_SEAL)
+    for consumer_id in _INTERNAL_CONSUMER_IDS
+})
 
 
 class AgentEventLeaseBusy(RuntimeError):
@@ -60,16 +72,17 @@ class AgentEventBatchTooLarge(ValueError):
 
 
 def _issue_consumer_principal(consumer_id: str) -> ConsumerPrincipal:
-    """Issue an opaque principal for a code-registered internal Consumer."""
+    """Return the issuer-owned principal for a code-registered Consumer."""
     if not isinstance(consumer_id, str) or consumer_id not in _INTERNAL_CONSUMER_IDS:
         raise PermissionError("agent_event_consumer_unauthorized")
-    return ConsumerPrincipal(consumer_id, _PRINCIPAL_SEAL)
+    return _PRINCIPAL_INSTANCES[consumer_id]
 
 
 def _require_principal(principal: ConsumerPrincipal) -> str:
     if (type(principal) is not ConsumerPrincipal
             or principal._seal is not _PRINCIPAL_SEAL
-            or principal.consumer_id not in _INTERNAL_CONSUMER_IDS):
+            or principal.consumer_id not in _INTERNAL_CONSUMER_IDS
+            or _PRINCIPAL_INSTANCES.get(principal.consumer_id) is not principal):
         raise AgentEventLeaseUnauthorized("agent_event_consumer_unauthorized")
     return principal.consumer_id
 
