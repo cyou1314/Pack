@@ -1,6 +1,6 @@
 # Mainline / v2 Foundation 基线对账审计
 
-- 日期：2026-11-23
+- 日期：2026-11-24（分支基线差异数据仍以 2026-11-23 审计时点为准）
 - 仓库：`cyou1314/Pack`
 - 目的：在合并 v2 Foundation 前，识别 main 新增的安全、性能、打包与 CI 修复，避免把两个已分叉的开发线直接合并。
 - 结论：**禁止直接合并 Umbrella PR #6；采用按风险拆分、逐项移植、每项独立 CI 的方式。**
@@ -22,14 +22,14 @@
 
 | Commit | 主要变化 | Foundation 对账结论 |
 |---|---|---|
-| `a711330fda` | 增加 staging56 专项 CI | Foundation 已归档 staging56，但 CI 未显式运行归档套件 |
-| `fa703dff06` | 审批/任务审计查询索引 | 与结构化 task_id 改造一起评估 |
+| `a711330fda` | 增加 staging56 专项 CI | 已在 PR #29 恢复独立 staging56 CI，Hub regression 全绿 |
+| `fa703dff06` | 审批/任务审计查询索引 | 审计 task_id 与审批索引已在 PR #31 移植；task 热路径索引仍待 v3 |
 | `1d03464507` | WAL 从每连接设置改为 Hub init 一次 | 已在 PR #25 移植 |
 | `39d88e704d` | Runtime CI 固定 Node 22 | Foundation 已使用 Node 22 |
-| `4d7c767d59` | PiBot 成员 token / task 权限说明 | 需要核对文档语义，不直接覆盖现有 PiBot 评估 |
-| `cffef379d7` | task 热路径索引、审计 task_id 结构化关联 | 未移植；需适配拆分后的 Hub services 与新增迁移版本 |
-| `f13dd29edd` | Hub SQLite migration/query-plan CI smoke | Foundation 尚缺对应 query-plan 测试 |
-| `988823a4b8` | clean-clone macOS installer build、App bundle 测试 | Foundation 已有 release bundle 构建，但缺少完整的 no-clobber 路径回归 |
+| `4d7c767d59` | PiBot 成员 token / task 权限说明 | 已核对 Foundation external member / MCP 边界，PiBot 文档移植 PR #33 |
+| `cffef379d7` | task 热路径索引、审计 task_id 结构化关联 | 结构化审计/审批部分已在 PR #31；task 热路径索引和 query-plan 测试进入下一 PR |
+| `f13dd29edd` | Hub SQLite migration/query-plan CI smoke | PR #31 已覆盖审计/审批 query-plan；任务队列 query-plan 回归待 migration v3 |
+| `988823a4b8` | clean-clone macOS installer build、App bundle 测试 | 已在 PR #28 移植原子 no-clobber 发布、图标尺寸回归和 macOS CI |
 | `b72203cbbf` | 隔离 installer 测试 LaunchAgents | 已在 PR #26 移植 |
 
 ## 3. 关键重叠文件与风险
@@ -53,61 +53,66 @@ Foundation 将 Hub 主模块从约 5,494 行拆至约 2,879 行，并把任务�
 
 ### 3.2 SQLite WAL 生命周期
 
-main 已把 `PRAGMA journal_mode=WAL` 从每次请求连接移至 `hub.init()`。Foundation 原先在共享 `storage.connect()` 每次打开连接时都执行该 pragma，可能在并发读写时产生不必要的 journal-mode 检查/锁竞争。
+main 已把 `PRAGMA journal_mode=WAL` 从每次请求连接移至 `hub.init()`。Foundation 通过 PR #25 完成同等调整。
 
-- 移植 PR：#25
-- 改动：WAL 仅在 Hub 初始化设置；`foreign_keys=ON` 与 `busy_timeout` 仍逐连接设置。
-- 测试：fresh DB 的普通连接不改变 DELETE 模式；Hub init 后持久为 WAL，后续连接继承 WAL。
-- 合并门槛：PR #25 的最新 head CI 全绿且 Codex review 无未解决问题。
+- **状态：PR #25 已合并。**
+- WAL 仅在 Hub 初始化设置；`foreign_keys=ON` 与 `busy_timeout` 仍逐连接设置。
+- 测试覆盖 fresh DB 普通连接不切换 DELETE 模式、Hub init 后持久为 WAL。
+- Hub regression、staging、Runtime 和 macOS Debug/Release CI 全绿；Codex review 无未解决问题。
 
 ### 3.3 Installer test-mode LaunchAgents 隔离
 
-Foundation 的 `PACK_INSTALL_TEST_ROOT` 已隔离 Hub、Engine、配置、App 和 socket 路径，但原先仍把 `agents` 指向真实的 `~/Library/LaunchAgents`。这使测试模式存在写入真实用户 LaunchAgent 目录的风险。
+Foundation 的 `PACK_INSTALL_TEST_ROOT` 现已将 LaunchAgents 也隔离到 `<test-root>/LaunchAgents`。
 
-- 移植 PR：#26
-- 改动：test mode 将 LaunchAgents 放到 `<test-root>/LaunchAgents`；生产路径不变。
-- 测试：子进程使用临时 HOME，断言 test mode 不创建真实用户 LaunchAgents 路径。
+- **状态：PR #26 已合并。**
+- 生产路径仍指向用户 `~/Library/LaunchAgents`，test mode 不会写真实用户目录。
+- 子进程回归使用临时 HOME 验证路径隔离，Hub / Runtime / macOS CI 全绿。
 
 ### 3.4 App bundle 构建器
 
-main 的 `app/make-bundle.sh` 增加了显式输出路径校验、拒绝已存在路径、临时目录构建和原子 no-clobber 发布，防止构建期间目标路径被其他进程创建后误写入已有目录。
+Foundation 通过 PR #28 移植了 main 的 no-clobber 发布保护，同时保留 `PACK_BUILD_CONFIGURATION=debug|release`、Info.plist lint 和严格 codesign verify。
 
-Foundation 的版本已有额外能力：`PACK_BUILD_CONFIGURATION=debug|release`、Info.plist lint、严格 codesign verify。**不能用 main 文件整体覆盖 Foundation 文件**；下一批应只移植原子发布和路径安全，同时保留 release 构建与签名验证，并新增竞态回归测试。
+- **状态：PR #28 已合并。**
+- 输出路径必须是新的 `.app`；相对路径按调用目录解析；拒绝已有目录和 symlink。
+- 在临时目录构建与签名，使用原子目录预留防止构建期间目标路径被其他进程抢占。
+- Codex 审查指出 Retina iconset 的 256@2x 文件名冲突，已修复并增加四种尺寸的静态回归。
+- macOS installer regression、Swift Debug/Release build、unit tests 和 release app bundle verify 全绿。
 
 ### 3.5 Task query index 与结构化审计关联
 
-main 的 staging57 / query-index 改动不只是 CREATE INDEX：
+main 的结构化审计和审批查询优化已按 Foundation 模块边界拆分移植。
 
-- 为 audit 增加 `task_id` 并将旧 detail 中可精确识别的 task ID 保守回填；
-- 为 approval_request 消息补充结构化 `task_id`，并保留旧文本解析 fallback；
-- task audit 查询由 `detail LIKE` 改为参数化 task_id 查询；
-- 为 task queue、lease expiry、unclaimed due、transfer expiry 等热路径添加索引；
-- 以 `EXPLAIN QUERY PLAN` 和代表性数据集验证查询计划。
+- **结构化审计/审批部分：PR #31 已合并，新增 migration v2。**
+- 新增 `audit.task_id`；历史审计仅按 canonical `task N` 前缀回填，拒绝前导零、伪前缀和 SQLite 64 位整数溢出。
+- 历史 `approval_request` 消息按 `任务#N` 回填；新审批消息现在持久化 `messages.task_id`。
+- task history 和 unclaimed escalation 去重改用结构化 task_id；approval_state 优先走索引，并保留只扫描 NULL task_id 的兼容 fallback。
+- 增加 `idx_audit_task`、`idx_messages_approval_task`、`idx_messages_dispatch_decisions`、`idx_review_log_task_time`。
+- v2 checksum 覆盖 parser、正则、SQLite 整数上限和 backfill helper；Agent Registry v1 checksum 未改变。
+- CI 覆盖 task 1 / task 12 碰撞、前导零、超范围 ID、历史审批回填、NULL fallback、query plan 和 SQLite contract snapshots。
 
-Foundation 当前 audit schema 没有 `audit.task_id`，`inspect_unclaimed_tasks` 仍使用 detail LIKE 查询。该改造必须：
-
-1. 新增独立、版本化、带 checksum 的 migration；禁止修改已发布的 M1a migration 定义或 checksum。
-2. 将 Hub handler 的查询迁入对应 service，不把 main 的 monolithic hub.py 逻辑复制回来。
-3. 先证明旧 audit / approval 消息回填不会误匹配 task 1 与 task 12、超长数字、普通消息或畸形 detail。
-4. 对 fresh DB、旧 DB、迁移重跑、失败回滚、查询计划和 MCP/SQLite snapshots 分别验收。
-5. 在性能数据证明收益后再考虑进一步索引；不要为“有索引”而增加无效写放大。
+**尚待移植：** mainline 的 task 热路径索引（task list sort / assignee / room、active queue、lease expiry、unclaimed due、pending transfer expiry）及代表性数据集 query-plan 回归。下一步使用独立 migration v3；不修改 v1/v2 checksum，也不把 monolithic `hub.py` 整体复制回 Foundation。
 
 ### 3.6 staging56 专项回归
 
-Foundation 将历史 suite 移入 `tests/archive/hub-staging56`，但当前 CI 的 `run-all-suites.sh` 默认清单不含 staging56，CI 也没有显式运行归档脚本。main 已将它作为单独 CI 步骤。
+Foundation 将历史 suite 保留在 `tests/archive/hub-staging56`，并通过 PR #29 恢复独立 CI。
 
-下一步需验证归档的 `run_tests.sh` 是否可在干净 Linux runner 上独立运行；若通过，单独恢复 staging56 migration/access-mode 专项 CI，不要将旧历史 suite 全部重新放回默认回归。
+- **状态：PR #29 已合并。**
+- Runner 已移植可移植 Python 选择、监听就绪检查、清理和失败报告；迁移测试不再依赖开发者机器上的绝对 venv 路径。
+- staging56 access-mode / migration regression 已在 Hub CI 独立运行并通过；未把历史套件重新塞回默认 staging runner。
 
 ## 4. 当前移植队列
 
 | 顺序 | 项目 | 状态 | 原则 |
 |---|---|---|---|
-| 1 | WAL init-only | PR #25 | 不改 schema |
-| 2 | Installer test path isolation | PR #26 | 仅 test-mode 路径变化 |
-| 3 | App bundle 原子 no-clobber 发布 | 待建 PR | 保留 Foundation release/codesign 能力 |
-| 4 | staging56 专项 CI | 待验证 | 先验证归档脚本，再加 CI |
-| 5 | Task structured audit + query indexes | 待设计/实现 | 新 migration version，service-aware |
-| 6 | 其余 PiBot / 文档差异 | 待审查 | 不覆盖现有评估与安全边界 |
+| 1 | SQLite WAL init-only | PR #25 已合并 | 不改 schema |
+| 2 | Installer test path isolation | PR #26 已合并 | 仅 test-mode 路径变化 |
+| 3 | Mainline/Foundation reconciliation audit | PR #27 已合并 | 禁止整包合并 PR #6 |
+| 4 | App bundle 原子 no-clobber 发布 | PR #28 已合并 | 保留 Foundation release/codesign 能力 |
+| 5 | staging56 专项 CI | PR #29 已合并 | 独立专项回归 |
+| 6 | Structured task audit + approval indexes | PR #31 已合并 | 新 migration v2，v1 checksum 冻结 |
+| 7 | PiBot external-member evaluation | PR #33 文档移植中 | 不 vendoring，不在 Mac 验收前跑 POC |
+| 8 | Task hot-path indexes + query-plan regression | 下一项 | 新 migration v3，代表性数据集验证 |
+
 
 ## 5. M1c 与真实 Mac 数据库门槛
 
@@ -120,7 +125,7 @@ M1c API 不因本审计完成而自动解锁。仍需对真实 Mac 数据库的�
 - 报告不含 token、profile、消息/任务正文或私人记忆；
 - 备份可恢复，记录恢复演练结果。
 
-本次检查到的 Desktop Commander 设备 `AppledeMacBook-Pro-jay.local` 当前 Offline，最后在线约 442 小时前。因此尚未执行任何用户 Mac 数据库读取、备份或 shadow report。设备恢复在线后，也只对备份副本执行只读检查；不会直接对生产数据库运行迁移。
+本轮 Desktop Commander 设备 `AppledeMacBook-Pro-jay.local` 仍为 Offline。因此尚未执行任何用户 Mac 数据库读取、备份、shadow report 或部署。设备恢复在线后，也只对备份副本执行只读检查；不会直接对生产数据库运行迁移。
 
 ## 6. 合并策略
 
@@ -133,4 +138,9 @@ M1c API 不因本审计完成而自动解锁。仍需对真实 Mac 数据库的�
 
 ## 7. 本次审计结论
 
-当前最优路径不是继续扩大 v2 变更面，而是先把 main 已经验证的安全/性能修复逐项移植到模块化 Foundation。PR #25 和 #26 正在完成前两项；后续按队列处理 App bundle、staging56 和结构化任务审计。真实 Mac 数据库离线门槛仍然独立存在。
+mainline 已验证的 WAL、安装器隔离、App Bundle、staging56 和结构化 task audit / approval 修复均已分批移植到 v2 Foundation，且各 PR 独立通过 CI 与 Codex review。
+
+剩余代码对账重点是 task 热路径索引和 query-plan 测试（migration v3）。PiBot 仅作为 Pack external member 的可选集成方向保留，不替代原生 Agent / 官方 API 双模式，也不接管 Pack Hub、权限或审计。
+
+**Mac 部署仍后置：** 真实设备当前离线，M1c shadow preflight、备份恢复演练和 Mac 本机验收尚未执行。PR #6 仍不得作为整体发布包直接合并。
+
