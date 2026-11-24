@@ -216,3 +216,15 @@ M1c 先完成接口评估，不立即注册 MCP 工具。当前 CI 只覆盖临�
 API 首次实现应由独立 feature flag 控制；默认关闭，只有完成 Mac 备份/恢复演练、真实数据库 shadow 报告与 MCP 权限回归后才允许启用。回滚只关闭 API，不删除 Registry 表，不触碰旧 members。
 
 M1c 不等于 M2。Runtime Supervisor、事件持久化、审批闭环仍须单独完成；不能因有只读 Agent API 就开放 Provider 命令或文件操作。
+
+
+## 11. Foundation mainline convergence: structured task audit v2
+
+- **v1 remains frozen.** The Agent Registry migration definition, Provider mapping and v1 checksum are unchanged.
+- **v2 is additive:** adds `audit.task_id`, backfills only canonical historical `task N` prefixes within SQLite's signed 64-bit integer range, and backfills legacy `approval_request` message task references. Existing non-NULL task associations are never overwritten.
+- New audit writes extract a structured task ID through the shared storage writer. New approval requests now persist `messages.task_id`; oversized numeric references are rejected before SQLite binding.
+- Adds the `idx_audit_task`, `idx_messages_approval_task`, `idx_messages_dispatch_decisions` and `idx_review_log_task_time` indexes. Task history, unclaimed-escalation deduplication and approval-state lookup use the structured keys.
+- The approval-state lookup retains a bounded legacy fallback for any future/direct approval rows with NULL task_id. The fallback scans only NULL rows and stops once it reaches an older request than the indexed hit.
+- Migration checksum v2 covers both task-reference regexes, SQLite integer bounds and the normalized source of the backfill/parser helpers. A changed backfill rule requires a new migration version.
+- Regression coverage includes exact-prefix collision cases (task 1 vs 12), leading-zero and overflow rejection, legacy approval backfill, NULL-row fallback, query-plan index assertions and transaction-safe audit writes.
+- CI runs the new structured audit suite alongside existing task history, room-post, review and unclaimed-sweeper tests. These checks use disposable SQLite fixtures; they do not constitute a real Mac database shadow report or authorize M1c API activation.
