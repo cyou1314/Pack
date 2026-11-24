@@ -1,8 +1,9 @@
-"""Versioned, additive SQLite migrations for the Pack Agent Registry.
+"""Versioned, additive SQLite migrations for Pack Hub data.
 
-Migrations are deliberately separate from the legacy Hub initializer. Each
-migration is applied under BEGIN IMMEDIATE and recorded with a content
-checksum so repeated or concurrent initialization is safe.
+The ledger currently covers the Agent Registry (v1) and structured task audit
+plus approval lookup indexes (v2). Each migration is applied under BEGIN
+IMMEDIATE and recorded with a content checksum so repeated or concurrent
+initialization is safe.
 """
 from __future__ import annotations
 
@@ -290,7 +291,7 @@ def apply_migrations(
     *,
     clock: Callable[[], float],
 ) -> None:
-    """Apply pending Agent Registry migrations atomically and idempotently."""
+    """Apply pending Hub migrations atomically and idempotently."""
     connection.execute("BEGIN IMMEDIATE")
     try:
         connection.execute(
