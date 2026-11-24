@@ -115,7 +115,10 @@ export class RuntimeSupervisor {
       const recovered = await this.#drainEvents(handle);
       if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
       if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
-      if (handle.status === "ready") return this.#snapshot(handle);
+      if (handle.status === "ready") {
+        if (!handle.connectionEstablished) throw new Error("agent_connection_state_inconsistent");
+        return this.#snapshot(handle);
+      }
     }
     if (handle.eventQueue.length || handle.fatalEventError) {
       const recovered = await this.#drainEvents(handle);
@@ -123,6 +126,9 @@ export class RuntimeSupervisor {
       if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
     }
     if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+    if (handle.status === "ready" && !handle.connectionEstablished) {
+      throw new Error("agent_connection_state_inconsistent");
+    }
     if (handle.status === "disconnecting" || handle.status === "connecting") {
       throw new Error("agent_lifecycle_busy");
     }
