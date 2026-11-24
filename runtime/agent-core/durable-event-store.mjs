@@ -509,6 +509,7 @@ export class DurableEventStore {
       try {
         await cleanupTemporaryFiles(this.#pendingDirectory);
         const pending = await this.#scanDirectory(this.#pendingDirectory, "event");
+        if (pending.size) await syncDirectory(this.#pendingDirectory);
         const results = [];
         let removedPending = false;
 
