@@ -27,6 +27,17 @@ class StructuredTaskAuditTests(unittest.TestCase):
             "CREATE TABLE audit(id INTEGER PRIMARY KEY, ts REAL NOT NULL, "
             "actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT)"
         )
+        legacy.execute(
+            "CREATE TABLE messages(id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, "
+            "author_id INTEGER NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, "
+            "task_id INTEGER, created_at REAL NOT NULL, deleted_at REAL, edited_at REAL)"
+        )
+        legacy.executemany(
+            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
+            "VALUES(1,1,'approval_request',?,NULL,1000)",
+            [("申请批准 任务#1：旧请求",), ("申请批准 任务#12：旧请求",),
+             ("申请批准 任务#9223372036854775808：越界",)],
+        )
         details = (
             "task 1",
             "task 1: assigned",
@@ -105,6 +116,10 @@ class StructuredTaskAuditTests(unittest.TestCase):
         self.assertIn("idx_audit_task", plan)
 
     def test_approval_lookup_uses_indexes_and_keeps_null_task_id_fallback(self):
+        migrated = self.conn.execute(
+            "SELECT task_id FROM messages WHERE kind='approval_request' ORDER BY id"
+        ).fetchall()
+        self.assertEqual([row["task_id"] for row in migrated], [1, 12, None])
         def add_request(task_id, body, created_at):
             cursor = self.conn.execute(
                 "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
