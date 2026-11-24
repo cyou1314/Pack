@@ -69,7 +69,7 @@ function assertJsonValue(value, seen = new Set(), depth = 0) {
       if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
         throw new TypeError("event_not_json_serializable");
       }
-      assertJsonValue(descriptor.value, seen);
+      assertJsonValue(descriptor.value, seen, depth + 1);
     }
   }
   seen.delete(value);
