@@ -144,6 +144,8 @@ class AgentEventInboxTests(unittest.TestCase):
         invalid_events = [
             self.event(payload={"nested": {"private_memory": "do not store"}}),
             self.event(payload={"api-key": "secret"}),
+            self.event(payload={"api.key": "secret"}),
+            self.event(payload={"private memory": "private"}),
             self.event(authorization="Bearer secret"),
             self.event(sequence=True),
             self.event(sequence=(1 << 63)),
