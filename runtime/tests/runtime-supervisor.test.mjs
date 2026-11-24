@@ -236,6 +236,25 @@ test("Supervisor requires an explicit approval authorization result", async () =
   assert.equal(supervisor.getAgentStatus("agent-1").pendingApprovalCount, 0);
 });
 
+test("Supervisor fails closed when the approval service errors", async () => {
+  const {supervisor, adapters} = createHarness({
+    authorizeApproval: async () => { throw new Error("private approval backend detail"); },
+  });
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+  adapters[0].requestApproval();
+  await supervisor.retryEvents("agent-1");
+
+  await assert.rejects(
+    () => supervisor.respondToApproval({
+      agentId: "agent-1",
+      requestId: "approval-1",
+      decision: "accept",
+    }),
+    /approval_authorization_failed/,
+  );
+  assert.deepEqual(adapters[0].responses, []);
+});
+
 test("Event persistence failure degrades the agent and can be retried", async () => {
   const {supervisor, eventStore} = createHarness();
   eventStore.failNext = true;
