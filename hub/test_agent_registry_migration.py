@@ -42,8 +42,10 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 action TEXT NOT NULL, detail TEXT
             );
             CREATE TABLE messages(
-                id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL,
-                kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER
+                id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL,
+                task_id INTEGER, created_at REAL NOT NULL,
+                deleted_at REAL, edited_at REAL
             );
             CREATE TABLE review_log(
                 id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, created_at REAL NOT NULL
@@ -173,8 +175,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     [(detail,) for detail in details],
                 )
                 connection.executemany(
-                    "INSERT INTO messages(author_id,kind,body,task_id) "
-                    "VALUES(1,'approval_request',?,NULL)",
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
+                    "VALUES(1,1,'approval_request',?,NULL,1)",
                     [("申请批准 任务#1：旧请求",), ("申请批准 任务#9223372036854775808：越界",)],
                 )
                 connection.commit()
@@ -306,11 +308,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 )
                 connection.executescript(
                     """
-                    CREATE TABLE messages(
-                        id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
-                        author_id INTEGER NOT NULL, kind TEXT NOT NULL,
-                        body TEXT NOT NULL, created_at REAL NOT NULL
-                    );
+
                     CREATE TABLE tasks(
                         id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
                         title TEXT NOT NULL, body TEXT NOT NULL,
@@ -348,8 +346,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                         member_id INTEGER NOT NULL, op_key TEXT NOT NULL,
                         message_id INTEGER, created_at REAL NOT NULL
                     );
-                    INSERT INTO messages VALUES(
-                        41,1,1,'chat','legacy-message-sentinel',11
+                    INSERT INTO messages(id,room_id,author_id,kind,body,task_id,created_at) VALUES(
+                        41,1,1,'chat','legacy-message-sentinel',NULL,11
                     );
                     INSERT INTO tasks VALUES(
                         51,1,'legacy-task-sentinel','task-body-sentinel',
