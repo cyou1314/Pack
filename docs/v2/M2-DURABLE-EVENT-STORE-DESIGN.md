@@ -46,7 +46,7 @@
 
 同一 eventId 且内容一致时返回 `inserted: false`。同一 eventId 对应不同内容时返回 `event_id_conflict`，不静默覆盖。
 
-默认单事件上限为 4 MiB，可在打开存储时调整，允许范围为 1 KiB 至 64 MiB。Payload 最大嵌套深度为 64，避免恶意或异常深层对象造成递归栈溢出。
+默认单事件上限为 4 MiB，可在打开存储时调整，允许范围为 1 KiB 至 64 MiB。整个事件对象（包括 payload）的最大嵌套深度为 64，避免恶意或异常深层对象造成递归栈溢出。
 
 ### listPending({ limit })
 
