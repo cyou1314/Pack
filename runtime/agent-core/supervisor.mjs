@@ -370,6 +370,7 @@ export class RuntimeSupervisor {
     handle.startupFailed = false;
     handle.targetStatus = "disconnected";
     if (!handle.adapter) {
+      handle.disconnectFailed = false;
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
       handle.connectionEstablished = false;
@@ -381,11 +382,23 @@ export class RuntimeSupervisor {
     await this.#waitForCommands(handle);
     const adapter = handle.adapter;
     const unsubscribe = handle.unsubscribe;
+    handle.disconnectFailed = false;
+
     let disconnectError = null;
     try {
       await adapter.disconnect();
     } catch (error) {
       disconnectError = error;
+    }
+
+    if (disconnectError) {
+      handle.disconnectFailed = true;
+      handle.targetStatus = "failed";
+      const flushed = await this.#drainEvents(handle);
+      if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+      handle.status = "failed";
+      handle.lastError = safeErrorCode(disconnectError);
+      throw new Error(handle.lastError);
     }
 
     if (handle.adapter === adapter) {
@@ -402,12 +415,8 @@ export class RuntimeSupervisor {
 
     const flushed = await this.#drainEvents(handle);
     if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
-    if (disconnectError) {
-      handle.status = "failed";
-      handle.lastError = safeErrorCode(disconnectError);
-      throw new Error(handle.lastError);
-    }
 
+    handle.disconnectFailed = false;
     handle.status = "disconnected";
     handle.lastError = null;
     return this.#snapshot(handle);
