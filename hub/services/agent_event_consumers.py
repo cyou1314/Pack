@@ -209,6 +209,8 @@ def claim_agent_events(
             selected = []
             selected_bytes = 0
             for row in rows:
+                if len(selected) >= limit:
+                    break
                 event_json = row["event_json"]
                 if not isinstance(event_json, str):
                     raise RuntimeError("agent_event_inbox_corrupt")
