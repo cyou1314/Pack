@@ -90,8 +90,17 @@ def list_tasks(context, me, status: str = "", assignee_name: str = "",
                 q += " AND t.status=?"
                 args.append(parts[0])
         if assignee_name:
-            q += " AND mb.name=?"
-            args.append(assignee_name)
+            assignee_row = conn.execute(
+                "SELECT id FROM members WHERE name=?", (assignee_name,)
+            ).fetchone()
+            if assignee_row:
+                # Resolve the name once so the assignee/priority index can
+                # satisfy both filtering and the stable queue ordering.
+                q += " AND t.assignee=?"
+                args.append(assignee_row["id"])
+            else:
+                q += " AND mb.name=?"
+                args.append(assignee_name)
         if room:
             room_row = conn.execute(
                 "SELECT id FROM rooms WHERE name=?", (room,)
