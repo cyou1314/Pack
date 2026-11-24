@@ -5,6 +5,8 @@ import sqlite3
 import time
 from os import PathLike
 
+from .task_refs import audit_task_id
+
 
 def connect(
     db_path: str | PathLike[str],
@@ -38,6 +40,6 @@ def write_audit(
     if timestamp is None:
         timestamp = time.time()
     connection.execute(
-        "INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
-        (timestamp, actor, action, detail),
+        "INSERT INTO audit(ts,actor,action,detail,task_id) VALUES(?,?,?,?,?)",
+        (timestamp, actor, action, detail, audit_task_id(detail)),
     )
