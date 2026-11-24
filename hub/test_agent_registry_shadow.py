@@ -30,6 +30,17 @@ class AgentRegistryShadowTests(unittest.TestCase):
                 login_state TEXT
             );
             CREATE TABLE rooms(id INTEGER PRIMARY KEY,name TEXT,created_at REAL);
+            CREATE TABLE audit(
+                id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL,
+                action TEXT NOT NULL, detail TEXT
+            );
+            CREATE TABLE messages(
+                id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL,
+                kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER
+            );
+            CREATE TABLE review_log(
+                id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, created_at REAL NOT NULL
+            );
             INSERT INTO rooms(id,name,created_at) VALUES(1,'room-a',1);
             INSERT INTO members(
                 id,name,role,created_at,provider,display_name,kind,login_state
