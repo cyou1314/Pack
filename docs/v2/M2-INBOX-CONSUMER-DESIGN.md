@@ -1,6 +1,6 @@
 # M2 Hub Inbox Consumer Lease / ACK Design
 
-状态：设计基线；尚未实现，不代表 Hub 已支持下游消费。
+状态：设计基线；Hub 内部服务层与 migration v6 已在 PR #45 实现，正在进行完整 CI 与审查验收。当前仍未合入 Foundation、未暴露 HTTP/MCP 消费端点、未接入业务副作用或生产 Runtime。
 
 ## 1. 目标与边界
 
