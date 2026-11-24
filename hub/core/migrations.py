@@ -387,6 +387,8 @@ _AGENT_EVENT_CONSUMER_V6 = Migration(
     version=6,
     name="agent_event_consumer_leases",
     statements=(
+        "CREATE INDEX idx_agent_event_inbox_agent_inbox_seq "
+        "ON agent_event_inbox(agent_id, inbox_seq)",
         """CREATE TABLE agent_event_consumer_cursors (
             consumer_id TEXT NOT NULL CHECK(length(trim(consumer_id)) BETWEEN 1 AND 80),
             agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
