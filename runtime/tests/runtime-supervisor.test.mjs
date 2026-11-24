@@ -472,6 +472,27 @@ test("Concurrent disconnect calls share one lifecycle operation", async () => {
   assert.equal(adapters[0].disconnectCalls, 1);
 });
 
+test("Startup cleanup failure retains the adapter for explicit disconnect retry", async () => {
+  const {supervisor, adapters} = createHarness({
+    connectError: "provider_connect_failed",
+    disconnectFailures: 1,
+  });
+
+  await assert.rejects(
+    () => supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"}),
+    /provider_stop_failed/,
+  );
+  assert.equal(supervisor.getAgentStatus("agent-1").disconnectFailed, true);
+  assert.equal(adapters[0].connected, true);
+  assert.equal(adapters[0].listeners.size, 1);
+
+  const disconnected = await supervisor.disconnectAgent("agent-1");
+  assert.equal(disconnected.status, "disconnected");
+  assert.equal(adapters[0].disconnectCalls, 2);
+  assert.equal(adapters[0].connected, false);
+  assert.equal(adapters[0].listeners.size, 0);
+});
+
 test("Disconnect failure retains the adapter for a later cleanup retry", async () => {
   const {supervisor, adapters} = createHarness({disconnectFailures: 1});
   await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
