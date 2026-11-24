@@ -47,7 +47,7 @@ Supervisor 构造时必须注入 `eventStore.append(event)`。该实现必须：
 - 同一 Agent 的并发 disconnect 复用同一个停止 Promise，disconnect 期间拒绝 reconnect；
 - disconnect 先阻止新命令，再等待已开始的命令完成，之后才停止 Adapter；
 - Provider 启动失败与 Event Store 降级分别记录；连接尚未完成时，事件恢复只能回到 `connecting`，不能提前提升为 ready；存储恢复也不能把最终启动失败提升为 ready；
-- Adapter disconnect 失败时保留实例与事件监听，标记 `disconnectFailed` 并允许显式重试；清理成功前禁止重新 connect；
+- Adapter disconnect 失败时（包括启动失败后的 cleanup）保留实例与事件监听，标记 `disconnectFailed` 并允许显式重试；清理成功前禁止重新 connect；
 - shutdown 期间等待正在进行的 connect、command 和 disconnect 生命周期收敛，不能在清理旧实例后再启动新 Provider；
 - 每个 Agent 只接受与自身 `agentId` 和注册 Provider 一致的事件；
 - 事件按单 Adapter 到达顺序串行 append，不允许后续事件越过失败事件；
