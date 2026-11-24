@@ -167,6 +167,12 @@ test("The store rejects non-JSON payloads and oversized events", async (t) => {
     () => store.append(makeEvent("event-large", {text: "x".repeat(2048)})),
     /event_too_large/,
   );
+  let deeplyNested = {value: "x"};
+  for (let index = 0; index < 70; index += 1) deeplyNested = {child: deeplyNested};
+  await assert.rejects(
+    () => store.append(makeEvent("event-deep", {nested: deeplyNested})),
+    /event_payload_too_deep/,
+  );
   await store.close();
 });
 
