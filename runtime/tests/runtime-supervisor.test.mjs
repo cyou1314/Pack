@@ -22,13 +22,15 @@ const descriptor = {
 };
 
 class FakeAdapter {
-  constructor(agentId, {connectGate, onCreate} = {}) {
+  constructor(agentId, {connectGate, disconnectGate, onCreate} = {}) {
     this.agentId = agentId;
     this.connected = false;
     this.sequence = 0;
     this.listeners = new Set();
     this.responses = [];
+    this.disconnectCalls = 0;
     this.connectGate = connectGate;
+    this.disconnectGate = disconnectGate;
     onCreate?.(this);
   }
 
@@ -61,6 +63,8 @@ class FakeAdapter {
   }
 
   async disconnect() {
+    this.disconnectCalls += 1;
+    if (this.disconnectGate) await this.disconnectGate;
     this.connected = false;
     this.emit("connection.changed", {status: "disconnected"});
   }
@@ -121,7 +125,7 @@ class FakeEventStore {
   }
 }
 
-function createHarness({authorizeApproval, connectGate, onCreate} = {}) {
+function createHarness({authorizeApproval, connectGate, disconnectGate, onCreate} = {}) {
   const registry = new AgentAdapterRegistry();
   const adapters = [];
   registry.register({
@@ -129,6 +133,7 @@ function createHarness({authorizeApproval, connectGate, onCreate} = {}) {
     create: async ({agentId}) => {
       const adapter = new FakeAdapter(agentId, {
         connectGate,
+        disconnectGate,
         onCreate: (instance) => {
           adapters.push(instance);
           onCreate?.(instance);
@@ -255,6 +260,39 @@ test("Supervisor fails closed when the approval service errors", async () => {
   assert.deepEqual(adapters[0].responses, []);
 });
 
+test("Supervisor revalidates readiness after asynchronous approval authorization", async () => {
+  let beginAuthorization;
+  let releaseAuthorization;
+  const authorizationStarted = new Promise((resolve) => { beginAuthorization = resolve; });
+  const authorizationGate = new Promise((resolve) => { releaseAuthorization = resolve; });
+  const {supervisor, adapters, eventStore} = createHarness({
+    authorizeApproval: async () => {
+      beginAuthorization();
+      await authorizationGate;
+      return true;
+    },
+  });
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+  adapters[0].requestApproval();
+  await supervisor.retryEvents("agent-1");
+
+  const response = supervisor.respondToApproval({
+    agentId: "agent-1",
+    requestId: "approval-1",
+    decision: "accept",
+  });
+  await authorizationStarted;
+
+  eventStore.failNext = true;
+  adapters[0].emit("run.started", {text: "event write failure"});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(supervisor.getAgentStatus("agent-1").status, "degraded");
+
+  releaseAuthorization();
+  await assert.rejects(response, /agent_not_ready/);
+  assert.deepEqual(adapters[0].responses, []);
+});
+
 test("Event persistence failure degrades the agent and can be retried", async () => {
   const {supervisor, eventStore} = createHarness();
   eventStore.failNext = true;
@@ -295,6 +333,33 @@ test("Supervisor drains the final connection event before disconnect completes",
   assert.ok(eventStore.events.some((event) =>
     event.eventType === "connection.changed" && event.payload.status === "disconnected"
   ));
+});
+
+test("Concurrent disconnect calls share one lifecycle operation", async () => {
+  let releaseDisconnect;
+  const disconnectGate = new Promise((resolve) => { releaseDisconnect = resolve; });
+  const {supervisor, adapters} = createHarness({disconnectGate});
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+
+  const first = supervisor.disconnectAgent("agent-1");
+  await new Promise((resolve) => {
+    const check = () => {
+      if (adapters[0].disconnectCalls === 1) resolve();
+      else setImmediate(check);
+    };
+    check();
+  });
+  const second = supervisor.disconnectAgent("agent-1");
+  await assert.rejects(
+    () => supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"}),
+    /agent_lifecycle_busy/,
+  );
+
+  releaseDisconnect();
+  const [firstStatus, secondStatus] = await Promise.all([first, second]);
+  assert.equal(firstStatus.status, "disconnected");
+  assert.equal(secondStatus.status, "disconnected");
+  assert.equal(adapters[0].disconnectCalls, 1);
 });
 
 test("Unexpected adapter disconnect updates state and permits a clean reconnect", async () => {
