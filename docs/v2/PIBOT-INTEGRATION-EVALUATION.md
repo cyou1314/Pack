@@ -94,6 +94,9 @@ PiBot 当前有 ACP attach 入口，可让外部客户端连接到已经运行�
 当前 Desktop ACP entry 位于：
 <https://github.com/w01fb0ss/PiBot/blob/main/apps/desktop/src/main/acp-entry.ts>
 
+当前 attach 实现只支持 macOS / Linux；必须先启动 PiBot Desktop，再由 ACP 客户端连接同版本的运行中实例。Windows 当前会返回 `attach_unsupported_platform`；Desktop 未运行、版本不匹配或已有编辑器占用时会分别失败（`app_not_running`、`version_mismatch`、`acp_busy`）。官方编辑器指南：
+<https://github.com/w01fb0ss/PiBot/blob/main/docs/guide/en/16-editor-acp.md>
+
 如果未来 Pack 需要从自己的 UI 主动启动 PiBot Bot、提交任务并接收结果，可以在 Pack Node runtime 增加 ACP client adapter。
 
 但这会引入额外工程：
