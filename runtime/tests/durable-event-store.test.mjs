@@ -30,9 +30,9 @@ function makeEvent(eventId, payload = {text: "hello"}, sequence = 1) {
 }
 
 async function temporaryDirectory(t) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "pack-event-store-"));
-  t.after(async () => rm(directory, {recursive: true, force: true}));
-  return directory;
+  const parent = await mkdtemp(path.join(os.tmpdir(), "pack-event-store-"));
+  t.after(async () => rm(parent, {recursive: true, force: true}));
+  return path.join(parent, "store");
 }
 
 test("DurableEventStore persists ordered pending events across reopen", async (t) => {
@@ -151,16 +151,15 @@ test("The store uses private directory and event-file permissions", async (t) =>
 test("Startup removes abandoned temporary files but rejects corrupt committed records", async (t) => {
   const directory = await temporaryDirectory(t);
   const pendingDirectory = path.join(directory, "pending");
-  const acknowledgedDirectory = path.join(directory, "acknowledged");
-  await mkdir(pendingDirectory, {recursive: true});
-  await mkdir(acknowledgedDirectory, {recursive: true});
-  await writeFile(path.join(pendingDirectory, ".tmp-abandoned"), "partial", {mode: 0o600});
-
   const store = await DurableEventStore.open({directory});
-  assert.deepEqual(await readdir(pendingDirectory), []);
   await store.close();
 
-  await writeFile(path.join(pendingDirectory, "invalid.json"), "{}\n", {mode: 0o600});
+  await writeFile(path.join(pendingDirectory, ".tmp-abandoned"), "partial", {mode: 0o600});
+  const reopened = await DurableEventStore.open({directory});
+  assert.deepEqual(await readdir(pendingDirectory), []);
+  await reopened.close();
+
+  await writeFile(path.join(pendingDirectory, "invalid.json"), "{}\\n", {mode: 0o600});
   await assert.rejects(
     () => DurableEventStore.open({directory}),
     /event_store_corrupt/,
@@ -169,7 +168,8 @@ test("Startup removes abandoned temporary files but rejects corrupt committed re
 
 test("The store refuses a symlink as its data directory", async (t) => {
   const target = await temporaryDirectory(t);
-  const linkPath = path.join(os.tmpdir(), "pack-event-store-link-" + process.pid);
+  await mkdir(target, {recursive: true});
+  const linkPath = path.join(os.tmpdir(), "pack-event-store-link-" + process.pid + "-" + Date.now());
   t.after(async () => rm(linkPath, {recursive: true, force: true}));
   await symlink(target, linkPath);
   await assert.rejects(
