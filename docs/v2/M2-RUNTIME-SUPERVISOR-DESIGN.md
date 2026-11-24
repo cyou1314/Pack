@@ -16,7 +16,8 @@
 - 按 Adapter 事件顺序调用注入的 Event Store；
 - 只有 Event Store 成功确认后，才向下游订阅者发布事件；
 - 事件写入失败时进入 `degraded`，阻止新的消息/工具动作，允许显式重试；
-- `approval.requested` 必须经过注入的授权回调，缺少授权服务或授权不明确时拒绝，不自动 accept。
+- `approval.requested` 必须经过注入的授权回调，授权完成后重新检查 Agent/Adapter/请求状态；缺少授权服务或授权不明确时拒绝，不自动 accept；
+- 同一审批请求只允许一个并发响应。
 
 ## 2. Event Store 契约
 
@@ -43,6 +44,8 @@ Supervisor 构造时必须注入 `eventStore.append(event)`。该实现必须：
 关键约束：
 
 - 同一 Agent 的并发 connect 复用同一个连接 Promise，避免创建多个 Adapter；
+- 同一 Agent 的并发 disconnect 复用同一个停止 Promise，disconnect 期间拒绝 reconnect；
+- Provider 启动失败与 Event Store 降级分别记录；存储恢复不能把未成功连接的 Adapter 提升为 ready；
 - 每个 Agent 只接受与自身 `agentId` 和注册 Provider 一致的事件；
 - 事件按单 Adapter 到达顺序串行 append，不允许后续事件越过失败事件；
 - 事件 append 成功前不通知 UI/下游消费者；
@@ -87,6 +90,9 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 - 错误 Agent/Provider 身份事件被拒绝；
 - 审批没有授权服务时拒绝；
 - 并发 connect 只创建一个 Adapter；
+- 并发 disconnect 只执行一次停止操作；
+- 启动失败与事件存储失败同时发生时，重试写入不会错误恢复为 ready；
+- 审批授权等待期间 Agent 降级时，不向 Provider 发送审批决定；
 - 意外断开后可显式重新连接，旧 Adapter 监听被清理；
 - disconnect 结束前持久化最终状态事件。
 
