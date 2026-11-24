@@ -47,10 +47,13 @@ bash installer/mac-inventory.sh
 5. 在同一副本上运行只读 Shadow CLI：
 
 ```bash
+HUB="$HOME/.pack/local-hub"
 SHADOW_ROOT="$HOME/commander-work/pack-shadow"
-mkdir -p "$SHADOW_ROOT/hub"
+mkdir -p "$SHADOW_ROOT"
 ditto "$DMG_NEW/hub" "$SHADOW_ROOT/hub"
 cp "$BACKUP_DB" "$SHADOW_ROOT/hub/pack.db"
+cp "$HUB/.dispatcher_token" "$SHADOW_ROOT/hub/.dispatcher_token"
+chmod 600 "$SHADOW_ROOT/hub/pack.db" "$SHADOW_ROOT/hub/.dispatcher_token"
 
 "$DMG_NEW/python/bin/python3" "$SHADOW_ROOT/hub/hub.py" init
 
