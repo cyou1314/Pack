@@ -22,7 +22,7 @@ const descriptor = {
 };
 
 class FakeAdapter {
-  constructor(agentId, {connectGate, disconnectGate, disconnectFailures = 0, connectError, sendGate, onCreate} = {}) {
+  constructor(agentId, {connectGate, disconnectGate, disconnectFailures = 0, connectError, sendGate, sessionGate, onCreate} = {}) {
     this.agentId = agentId;
     this.connected = false;
     this.sequence = 0;
@@ -34,6 +34,7 @@ class FakeAdapter {
     this.disconnectGate = disconnectGate;
     this.connectError = connectError;
     this.sendGate = sendGate;
+    this.sessionGate = sessionGate;
     this.sendCalls = 0;
     onCreate?.(this);
   }
@@ -83,6 +84,7 @@ class FakeAdapter {
   }
 
   async createSession({sessionId = "session-1"} = {}) {
+    if (this.sessionGate) await this.sessionGate;
     this.emit("session.created", {sessionId}, {sessionId});
     return {sessionId};
   }
@@ -138,7 +140,7 @@ class FakeEventStore {
   }
 }
 
-function createHarness({authorizeApproval, connectGate, disconnectGate, disconnectFailures, connectError, sendGate, onCreate} = {}) {
+function createHarness({authorizeApproval, connectGate, disconnectGate, disconnectFailures, connectError, sendGate, sessionGate, onCreate} = {}) {
   const registry = new AgentAdapterRegistry();
   const adapters = [];
   registry.register({
@@ -150,6 +152,7 @@ function createHarness({authorizeApproval, connectGate, disconnectGate, disconne
         disconnectFailures,
         connectError,
         sendGate,
+        sessionGate,
         onCreate: (instance) => {
           adapters.push(instance);
           onCreate?.(instance);
@@ -602,6 +605,43 @@ test("Successful cleanup resets a fatal event validation latch for reconnect", a
   assert.equal(reconnected.status, "ready");
   assert.equal(reconnected.lastError, null);
   assert.equal(adapters.length, 2);
+});
+
+test("Reconnect waits for in-flight session creation and discards the old session result", async () => {
+  let releaseSession;
+  const sessionGate = new Promise((resolve) => { releaseSession = resolve; });
+  const {supervisor, adapters} = createHarness({sessionGate});
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+
+  const creating = supervisor.createSession("agent-1", {sessionId: "old-session"});
+  await new Promise((resolve) => {
+    const check = () => {
+      if (supervisor.getAgentStatus("agent-1")?.inFlightCommands === 1) resolve();
+      else setImmediate(check);
+    };
+    check();
+  });
+
+  adapters[0].connected = false;
+  adapters[0].emit("connection.changed", {status: "disconnected"});
+  await supervisor.retryEvents("agent-1");
+  assert.equal(supervisor.getAgentStatus("agent-1").status, "disconnected");
+
+  const reconnecting = supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(adapters.length, 1);
+
+  releaseSession();
+  const created = await creating;
+  assert.equal(created.sessionId, "old-session");
+  const reconnected = await reconnecting;
+  assert.equal(reconnected.status, "ready");
+  assert.equal(adapters.length, 2);
+  assert.deepEqual(reconnected.sessionIds, []);
+  await assert.rejects(
+    () => supervisor.sendMessage({agentId: "agent-1", sessionId: "old-session", text: "must not cross adapters"}),
+    /session_not_managed/,
+  );
 });
 
 test("Concurrent connect calls share one adapter instance", async () => {
