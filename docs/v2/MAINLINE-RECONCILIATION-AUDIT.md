@@ -26,7 +26,7 @@
 | `fa703dff06` | 审批/任务审计查询索引 | Foundation 已通过 migration v2 具备结构化 task_id 与审批查询索引 |
 | `1d03464507` | WAL 从每连接设置改为 Hub init 一次 | 已在 PR #25 移植 |
 | `39d88e704d` | Runtime CI 固定 Node 22 | Foundation 已使用 Node 22 |
-| `4d7c767d59` | PiBot 成员 token / task 权限说明 | 需要核对文档语义，不直接覆盖现有 PiBot 评估 |
+| `4d7c767d59` | PiBot 成员 token / task 权限说明 | 已由 PR #35 的源码级评估补充 MCP / ACP 接入边界 |
 | `cffef379d7` | task 热路径索引、审计 task_id 结构化关联 | 结构化审计已由 Foundation migration v2 实现；热路径索引由 PR #34 以 migration v3 移植 |
 | `f13dd29edd` | Hub SQLite migration/query-plan CI smoke | PR #34 增加 Foundation 原生 HubContext / EXPLAIN QUERY PLAN 回归 |
 | `988823a4b8` | clean-clone macOS installer build、App bundle 测试 | Foundation 已有 release bundle 构建，但缺少完整的 no-clobber 路径回归 |
@@ -99,7 +99,7 @@ main 的 `app/make-bundle.sh` 增加显式输出路径校验、拒绝已存在�
 - 为使 assignee / room 复合索引实际承担筛选与排序，`list_tasks()` 先将名称解析为 member / room ID，再对 tasks 表按 ID 过滤；未知名称仍返回空结果；
 - 更新 fresh / legacy-migrated SQLite contract snapshots。
 
-PR #34 新增独立、版本化、带 checksum 的 migration v3；v1/v2 保持冻结。旧库在 `hub.init()` 完成 `sched_at`、`urgent`、`next_claim_at`、transfer `status` / `expires_at` 等兼容列升级后才应用 v3。测试覆盖 fresh DB、缺少这些列的旧 DB、迁移重跑、索引安装与查询计划。
+PR #34 已合并独立、版本化、带 checksum 的 migration v3；v1/v2 保持冻结。旧库在 `hub.init()` 完成 `sched_at`、`urgent`、`next_claim_at`、transfer `status` / `expires_at` 等兼容列升级后才应用 v3。测试覆盖 fresh DB、缺少这些列的旧 DB、迁移重跑、索引安装与查询计划。PR #36 后续保留 room/member name residual predicates，确保名称在 ID lookup 后并发变化时仍与原单查询语义一致，同时复验复合索引仍被采用。
 
 ### 3.6 staging56 专项回归
 
@@ -113,8 +113,9 @@ Foundation 将历史 suite 移入 `tests/archive/hub-staging56`。PR #29 已将 
 | 2 | Installer test path isolation | PR #26 已合并 | 仅 test-mode 路径变化 |
 | 3 | App bundle 原子 no-clobber 发布 | PR #28 已合并 | 保留 Foundation release/codesign 能力 |
 | 4 | staging56 专项 CI | PR #29 已合并 | 独立运行归档回归，不污染默认 suite |
-| 5 | Task hot-path indexes | PR #34 待验收 | migration v3；v1/v2 冻结；真实服务 SQL + query-plan tests |
-| 6 | 其余 PiBot / 文档差异 | 待审查 | 不覆盖现有评估与安全边界 |
+| 5 | Task hot-path indexes 与过滤语义 | PR #34 / #36 已合并 | migration v3；v1/v2 冻结；真实服务 SQL、并发重命名语义与 query-plan tests |
+| 6 | PiBot MCP / ACP 评估 | PR #35 已合并 | 推荐 external member MCP POC；不把 ChatGPT OAuth 误称为 App 原生记忆 |
+| 7 | 其余文档 / 产品差异 | 待审查 | 不覆盖现有评估与安全边界 |
 
 ## 5. M1c 与真实 Mac 数据库门槛
 
@@ -140,4 +141,4 @@ M1c API 不因本审计完成而自动解锁。仍需对真实 Mac 数据库的�
 
 ## 7. 本次审计结论
 
-当前已将 WAL、installer test-mode isolation、App Bundle 原子发布和 staging56 专项回归分批移植并合并。Foundation 原有 migration v2 已覆盖结构化 task audit；PR #34 正在以 migration v3 补齐 task queue / lease / unclaimed / transfer 索引及查询计划验证。真实 Mac 数据库 shadow preflight 仍是独立门槛，Mac 设备离线期间不读取或迁移生产数据库。
+当前已将 WAL、installer test-mode isolation、App Bundle 原子发布、staging56 专项回归、task hot-path migration v3、room/member 查询过滤语义保护和 PiBot MCP/ACP 评估分批移植并合并。Foundation 原有 migration v2 已覆盖结构化 task audit；migration v3 补齐 task queue / lease / unclaimed / transfer 索引及查询计划验证。真实 Mac 数据库 shadow preflight 仍是独立门槛，Mac 设备离线期间不读取或迁移生产数据库。
