@@ -22,7 +22,7 @@ const descriptor = {
 };
 
 class FakeAdapter {
-  constructor(agentId, {connectGate, disconnectGate, onCreate} = {}) {
+  constructor(agentId, {connectGate, disconnectGate, connectError, onCreate} = {}) {
     this.agentId = agentId;
     this.connected = false;
     this.sequence = 0;
@@ -31,6 +31,7 @@ class FakeAdapter {
     this.disconnectCalls = 0;
     this.connectGate = connectGate;
     this.disconnectGate = disconnectGate;
+    this.connectError = connectError;
     onCreate?.(this);
   }
 
@@ -59,6 +60,7 @@ class FakeAdapter {
     this.connected = true;
     this.emit("connection.changed", {status: "ready"});
     if (this.connectGate) await this.connectGate;
+    if (this.connectError) throw new Error(this.connectError);
     return this.getHealth();
   }
 
@@ -125,7 +127,7 @@ class FakeEventStore {
   }
 }
 
-function createHarness({authorizeApproval, connectGate, disconnectGate, onCreate} = {}) {
+function createHarness({authorizeApproval, connectGate, disconnectGate, connectError, onCreate} = {}) {
   const registry = new AgentAdapterRegistry();
   const adapters = [];
   registry.register({
@@ -134,6 +136,7 @@ function createHarness({authorizeApproval, connectGate, disconnectGate, onCreate
       const adapter = new FakeAdapter(agentId, {
         connectGate,
         disconnectGate,
+        connectError,
         onCreate: (instance) => {
           adapters.push(instance);
           onCreate?.(instance);
@@ -258,6 +261,23 @@ test("Supervisor fails closed when the approval service errors", async () => {
     /approval_authorization_failed/,
   );
   assert.deepEqual(adapters[0].responses, []);
+});
+
+test("Connection failure remains failed when startup event persistence also fails", async () => {
+  const {supervisor, eventStore, adapters} = createHarness({
+    connectError: "provider_connect_failed",
+  });
+  eventStore.failNext = true;
+
+  await assert.rejects(
+    () => supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"}),
+    /provider_connect_failed/,
+  );
+  assert.equal(adapters[0].connected, false);
+  assert.equal(supervisor.getAgentStatus("agent-1").status, "failed");
+
+  const afterRetry = await supervisor.retryEvents("agent-1");
+  assert.equal(afterRetry.status, "failed");
 });
 
 test("Supervisor revalidates readiness after asynchronous approval authorization", async () => {
