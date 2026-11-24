@@ -1553,6 +1553,7 @@ def build_server(context: HubContext | None = None):
         from .services.agent_event_auth import create_agent_event_pair_code as _create_agent_event_pair_code
         from .services.agent_event_auth import redeem_agent_event_pair_code as _redeem_agent_event_pair_code
         from .services.agent_event_auth import revoke_agent_event_tokens as _revoke_agent_event_tokens
+        from .services.agent_event_auth import get_agent_event_capabilities as _get_agent_event_capabilities
         from .services.agent_events import AgentEventRateLimited as _AgentEventRateLimited
         from .services.agent_events import ingest_agent_event_with_token as _ingest_agent_event_with_token
     else:
@@ -1605,6 +1606,7 @@ def build_server(context: HubContext | None = None):
         from services.agent_event_auth import create_agent_event_pair_code as _create_agent_event_pair_code
         from services.agent_event_auth import redeem_agent_event_pair_code as _redeem_agent_event_pair_code
         from services.agent_event_auth import revoke_agent_event_tokens as _revoke_agent_event_tokens
+        from services.agent_event_auth import get_agent_event_capabilities as _get_agent_event_capabilities
         from services.agent_events import AgentEventRateLimited as _AgentEventRateLimited
         from services.agent_events import ingest_agent_event_with_token as _ingest_agent_event_with_token
     if __package__:
@@ -2992,6 +2994,40 @@ def build_server(context: HubContext | None = None):
         except ValueError:
             # Do not reveal whether a code exists, expired, was redeemed or locked.
             return JSONResponse({"error": "invalid_agent_pair_code"}, status_code=400)
+
+    @mcp.custom_route("/agent/capabilities", methods=["GET"])
+    async def agent_event_capabilities(request):
+        """Authenticated read-only negotiation for additive Agent Event fields."""
+        from starlette.responses import JSONResponse
+        authorization = request.headers.get("authorization", "")
+        response_headers = {
+            "Cache-Control": "no-store",
+            "Vary": "Authorization",
+        }
+        if not authorization.lower().startswith("bearer "):
+            return JSONResponse(
+                {"error": "agent_event_unauthorized"},
+                status_code=401,
+                headers=response_headers,
+            )
+        token = authorization[7:].strip()
+        if not token or len(token) > 256:
+            return JSONResponse(
+                {"error": "agent_event_unauthorized"},
+                status_code=401,
+                headers=response_headers,
+            )
+        try:
+            return JSONResponse(
+                _get_agent_event_capabilities(context, token, hash_token=hash_token),
+                headers=response_headers,
+            )
+        except PermissionError:
+            return JSONResponse(
+                {"error": "agent_event_unauthorized"},
+                status_code=401,
+                headers=response_headers,
+            )
 
     @mcp.custom_route("/agent/events", methods=["POST"])
     async def agent_event_ingest(request):
