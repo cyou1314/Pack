@@ -254,27 +254,45 @@ export class RuntimeSupervisor {
     requestId = requiredText(requestId, "approval_request_id");
     decision = requiredText(decision, "approval_decision", 32);
     if (!APPROVAL_DECISIONS.has(decision)) throw new Error("unsupported_approval_decision");
+    if (handle.approvalInFlight.has(requestId)) throw new Error("approval_response_in_progress");
 
     const approvalEvent = handle.pendingApprovals.get(requestId);
     if (!approvalEvent) throw new Error("approval_not_pending");
     if (!this.#authorizeApproval) throw new Error("approval_service_unavailable");
-    let authorized = false;
-    try {
-      authorized = await this.#authorizeApproval({
-        agentId: handle.agentId,
-        requestId,
-        decision,
-        event: approvalEvent,
-      });
-    } catch {
-      throw new Error("approval_authorization_failed");
-    }
-    if (authorized !== true) throw new Error("approval_not_authorized");
 
-    const result = await handle.adapter.respondToApproval({requestId, decision});
-    handle.pendingApprovals.delete(requestId);
-    await this.#flushOrThrow(handle);
-    return result;
+    const adapter = handle.adapter;
+    handle.approvalInFlight.add(requestId);
+    try {
+      let authorized = false;
+      try {
+        authorized = await this.#authorizeApproval({
+          agentId: handle.agentId,
+          requestId,
+          decision,
+          event: approvalEvent,
+        });
+      } catch {
+        throw new Error("approval_authorization_failed");
+      }
+      if (authorized !== true) throw new Error("approval_not_authorized");
+
+      if (
+        this.#agents.get(handle.agentId) !== handle ||
+        handle.adapter !== adapter ||
+        handle.status !== "ready" ||
+        handle.eventQueue.length ||
+        handle.pendingApprovals.get(requestId) !== approvalEvent
+      ) {
+        throw new Error("agent_not_ready");
+      }
+
+      const result = await adapter.respondToApproval({requestId, decision});
+      handle.pendingApprovals.delete(requestId);
+      await this.#flushOrThrow(handle);
+      return result;
+    } finally {
+      handle.approvalInFlight.delete(requestId);
+    }
   }
 
   async disconnectAgent(agentId) {
