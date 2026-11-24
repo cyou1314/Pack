@@ -222,8 +222,8 @@ class TaskQueryIndexTests(unittest.TestCase):
             ),
             (
                 "assignee task ordering",
-                task_select + " WHERE mb.name=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
-                (f"index-member-0", 0),
+                task_select + " WHERE t.assignee=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
+                (self.member_ids[0], 0),
                 "idx_tasks_assignee_urgent_id",
             ),
             (
