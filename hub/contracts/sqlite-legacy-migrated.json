@@ -255,7 +255,7 @@
         {
           "default": null,
           "name": "lease_id",
-          "notnull": false,
+          "notnull": true,
           "primary_key_position": 1,
           "type": "TEXT"
         },
@@ -391,17 +391,6 @@
             "lease_token_hash"
           ],
           "name": "sqlite_autoindex_agent_event_consumer_leases_2",
-          "origin": "u",
-          "partial": false,
-          "sql": null,
-          "unique": true
-        },
-        {
-          "columns": [
-            "lease_id",
-            "agent_id"
-          ],
-          "name": "sqlite_autoindex_agent_event_consumer_leases_3",
           "origin": "u",
           "partial": false,
           "sql": null,
