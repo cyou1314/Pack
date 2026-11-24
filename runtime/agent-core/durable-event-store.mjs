@@ -105,8 +105,9 @@ function canonicalJson(value) {
 
 
 function normalizeEvent(input, maxEventBytes) {
-  if (!isPlainObject(input) || Object.getOwnPropertySymbols(input).length) {
-    return createAgentEvent(input);
+  if (!isPlainObject(input)) return createAgentEvent(input);
+  if (Object.getOwnPropertySymbols(input).length) {
+    throw new TypeError("event_not_json_serializable");
   }
   if (Object.getOwnPropertyDescriptor(input, "toJSON")) {
     throw new TypeError("event_not_json_serializable");
