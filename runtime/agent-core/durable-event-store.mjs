@@ -7,6 +7,7 @@ import {
   open,
   readFile,
   readdir,
+  stat as statPath,
   unlink,
 } from "node:fs/promises";
 import path from "node:path";
@@ -30,6 +31,10 @@ function requiredText(value, field, maxLength = 160) {
 
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function eventIdDigest(value) {
+  return digest(JSON.stringify(value));
 }
 
 function isPlainObject(value) {
@@ -154,7 +159,21 @@ function isMissing(error) {
 
 async function initializeStoreDirectory(directory) {
   if (directory === path.parse(directory).root) throw new Error("event_store_unsafe_path");
-  await mkdir(directory, {recursive: true, mode: 0o700});
+  const parentDirectory = path.dirname(directory);
+  let parentStat;
+  try {
+    parentStat = await statPath(parentDirectory);
+  } catch (error) {
+    if (isMissing(error)) throw new Error("event_store_parent_missing");
+    throw error;
+  }
+  if (!parentStat.isDirectory()) throw new Error("event_store_unsafe_path");
+
+  try {
+    await mkdir(directory, {mode: 0o700});
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
   const stat = await lstat(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error("event_store_unsafe_path");
@@ -192,17 +211,31 @@ async function initializeStoreDirectory(directory) {
     throw new Error("event_store_corrupt");
   }
   await chmod(directory, 0o700);
+  await syncFile(markerPath);
   await syncDirectory(directory);
-  await syncDirectory(path.dirname(directory));
+  await syncDirectory(parentDirectory);
 }
 
 async function ensurePrivateDirectory(directory) {
-  await mkdir(directory, {recursive: true, mode: 0o700});
+  try {
+    await mkdir(directory, {mode: 0o700});
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
   const stat = await lstat(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error("event_store_unsafe_path");
   }
   await chmod(directory, 0o700);
+}
+
+async function syncFile(filePath) {
+  const handle = await open(filePath, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 async function syncDirectory(directory) {
@@ -240,7 +273,7 @@ async function readJsonRecord(filePath, kind, expectedHash, maxBytes) {
       record.version !== FORMAT_VERSION ||
       record.kind !== kind ||
       typeof record.eventId !== "string" ||
-      digest(record.eventId) !== expectedHash ||
+      eventIdDigest(record.eventId) !== expectedHash ||
       !Number.isSafeInteger(record.order) ||
       record.order < 1 ||
       typeof record.eventHash !== "string" ||
@@ -430,7 +463,7 @@ export class DurableEventStore {
     return this.#enqueue(async () => {
       try {
         const {event, eventHash} = normalizeEvent(input, this.#maxEventBytes);
-        const hash = digest(event.eventId);
+        const hash = eventIdDigest(event.eventId);
         const pendingPath = path.join(this.#pendingDirectory, hash + ".json");
         const acknowledgedPath = path.join(this.#acknowledgedDirectory, hash + ".json");
 
@@ -549,7 +582,7 @@ export class DurableEventStore {
     eventId = requiredText(eventId, "event_id");
     return this.#enqueue(async () => {
       try {
-        const hash = digest(eventId);
+        const hash = eventIdDigest(eventId);
         const pendingPath = path.join(this.#pendingDirectory, hash + ".json");
         const acknowledgedPath = path.join(this.#acknowledgedDirectory, hash + ".json");
         const existingAck = await readJsonRecord(
