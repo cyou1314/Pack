@@ -159,7 +159,7 @@ test("Startup removes abandoned temporary files but rejects corrupt committed re
   assert.deepEqual(await readdir(pendingDirectory), []);
   await reopened.close();
 
-  await writeFile(path.join(pendingDirectory, "invalid.json"), "{}\\n", {mode: 0o600});
+  await writeFile(path.join(pendingDirectory, "invalid.json"), "{}\n", {mode: 0o600});
   await assert.rejects(
     () => DurableEventStore.open({directory}),
     /event_store_corrupt/,
