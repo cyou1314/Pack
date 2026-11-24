@@ -374,6 +374,12 @@ export class RuntimeSupervisor {
         if (event.eventType === "approval.requested") {
           handle.pendingApprovals.set(event.payload.requestId, event);
         }
+        if (event.eventType === "connection.changed" && event.payload.status === "disconnected") {
+          handle.targetStatus = "disconnected";
+          if (handle.status !== "disconnecting") handle.status = "disconnected";
+          handle.sessions.clear();
+          handle.pendingApprovals.clear();
+        }
         if (result.inserted) this.#publish(event);
       }
 
