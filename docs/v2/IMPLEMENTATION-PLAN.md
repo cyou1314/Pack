@@ -62,7 +62,7 @@
 
 回滚：切回旧 Runtime 与旧 Hub 同步路径；新 Supervisor 尚未接入生产入口，不影响 v1。
 
-**2026-11-24 第二切片：本地 Durable Event Store / Outbox：** 已新增 `runtime/agent-core/durable-event-store.mjs`，采用无第三方依赖的私有文件存储：事件正文先写临时文件并 fsync，再以原子 no-overwrite 方式进入 Pending；确认使用独立 Tombstone，确认记录先持久化，之后才删除 Pending 正文；按 eventId SHA-256 去重，并对同 ID 不同内容报冲突。新增重启恢复、子进程退出恢复、并发重复写、确认后去重、损坏 fail-closed、权限和符号链接测试。该切片尚待 CI/Review；尚未注入 RuntimeSupervisor，尚未接 Hub Inbox/Outbox、Gateway 或网络发送循环。当前按一个 Runtime 进程独占一个事件目录设计，确认 Tombstone 暂不清理。
+**2026-11-24 第二切片：本地 Durable Event Store / Outbox：** 已新增 `runtime/agent-core/durable-event-store.mjs`，采用无第三方依赖的私有文件存储：事件正文先写临时文件并 fsync，再以原子 no-overwrite 方式进入 Pending；确认使用独立 Tombstone，确认记录先持久化，之后才删除 Pending 正文；按 JSON-escaped eventId 的 SHA-256 去重，并对同 ID 不同内容报冲突；追加/读取/确认遇到已有记录时会重新 fsync 对应目录，Marker 在每次打开时重新 fsync。事件库只创建单层根目录，要求直接父目录预先存在且由启动器保证其祖先链持久化。新增重启恢复、子进程退出恢复、并发重复写、确认后去重、Marker/Pending/Acknowledged fsync 故障注入、Unicode surrogate ID、损坏 fail-closed、权限和符号链接测试。该切片尚待 CI/Review；尚未注入 RuntimeSupervisor，尚未接 Hub Inbox/Outbox、Gateway 或网络发送循环。当前按一个 Runtime 进程独占一个事件目录设计，确认 Tombstone 暂不清理。
 
 ### M3：Provider Adapters
 
