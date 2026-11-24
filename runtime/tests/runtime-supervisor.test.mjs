@@ -282,11 +282,6 @@ test("Concurrent connect calls share one adapter instance", async () => {
   let releaseConnect;
   const connectGate = new Promise((resolve) => { releaseConnect = resolve; });
   const {supervisor, adapters} = createHarness({connectGate});
-  let created;
-  const adapterCreated = new Promise((resolve) => { created = resolve; });
-  const second = createHarness;
-  void second;
-
   const firstConnect = supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
   await new Promise((resolve) => {
     const check = () => {
