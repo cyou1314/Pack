@@ -101,24 +101,26 @@ export class RuntimeSupervisor {
   }
 
   async #connectAgentInternal(handle, context) {
+    if (this.#stopping) throw new Error("runtime_supervisor_stopping");
+
     if (handle.status === "ready") {
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
-      if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+      if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
       if (handle.status === "ready") return this.#snapshot(handle);
     }
     if (handle.status === "degraded") {
       const recovered = await this.#drainEvents(handle);
       if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
-      if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+      if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
       if (handle.status === "ready") return this.#snapshot(handle);
     }
     if (handle.eventQueue.length || handle.fatalEventError) {
       const recovered = await this.#drainEvents(handle);
       if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
-      if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+      if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
     }
-    if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+    if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
     if (handle.status === "disconnecting" || handle.status === "connecting") {
       throw new Error("agent_lifecycle_busy");
     }
@@ -126,16 +128,12 @@ export class RuntimeSupervisor {
     if (handle.status === "disconnected" && handle.adapter) {
       handle.targetStatus = "disconnected";
       handle.status = "disconnecting";
-      const staleAdapter = handle.adapter;
       const staleUnsubscribe = handle.unsubscribe;
-      try { await staleAdapter.disconnect(); } catch {}
-      if (handle.adapter === staleAdapter) {
-        handle.adapter = null;
-        handle.connectionEstablished = false;
-        handle.sessions.clear();
-        handle.pendingApprovals.clear();
-        handle.approvalInFlight.clear();
-      }
+      handle.adapter = null;
+      handle.connectionEstablished = false;
+      handle.sessions.clear();
+      handle.pendingApprovals.clear();
+      handle.approvalInFlight.clear();
       if (handle.unsubscribe === staleUnsubscribe) {
         try { staleUnsubscribe?.(); } catch {}
         handle.unsubscribe = null;
@@ -143,14 +141,15 @@ export class RuntimeSupervisor {
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
       handle.status = "disconnected";
-      if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+      if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
     }
 
-    if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+    if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
     handle.status = "connecting";
-    handle.targetStatus = "ready";
+    handle.targetStatus = "connecting";
     handle.connectionEstablished = false;
     handle.startupFailed = false;
+    handle.disconnectFailed = false;
     handle.lastError = null;
     handle.fatalEventError = false;
     handle.sessions.clear();
@@ -158,7 +157,7 @@ export class RuntimeSupervisor {
     handle.approvalInFlight.clear();
 
     const snapshot = await this.#connectHandle(handle, context);
-    if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+    if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
     return snapshot;
   }
 
@@ -181,16 +180,14 @@ export class RuntimeSupervisor {
       if (health?.status !== "ready") throw new Error("adapter_not_ready");
       handle.connectionEstablished = true;
       handle.startupFailed = false;
+      handle.disconnectFailed = false;
+      handle.targetStatus = "ready";
 
       if (handle.status === "degraded") {
-        handle.targetStatus = "ready";
         throw new Error(handle.lastError || "event_persistence_failed");
       }
       const flushed = await this.#drainEvents(handle);
-      if (!flushed) {
-        handle.targetStatus = "ready";
-        throw new Error(handle.lastError || "event_persistence_failed");
-      }
+      if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
 
       handle.status = "ready";
       handle.targetStatus = "ready";
@@ -204,7 +201,21 @@ export class RuntimeSupervisor {
 
       handle.startupFailed = true;
       handle.targetStatus = "failed";
-      try { await handle.adapter?.disconnect?.(); } catch {}
+      let cleanupError = null;
+      try { await handle.adapter?.disconnect?.(); }
+      catch (disconnectError) { cleanupError = disconnectError; }
+
+      if (cleanupError) {
+        handle.disconnectFailed = true;
+        handle.targetStatus = "failed";
+        const flushed = await this.#drainEvents(handle);
+        if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+        handle.status = "failed";
+        handle.lastError = safeErrorCode(cleanupError);
+        throw new Error(handle.lastError);
+      }
+
+      handle.disconnectFailed = false;
       const flushed = await this.#drainEvents(handle);
       try { handle.unsubscribe?.(); } catch {}
       handle.unsubscribe = null;
