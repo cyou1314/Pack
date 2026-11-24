@@ -556,10 +556,12 @@ export class RuntimeSupervisor {
       agentId: handle.agentId,
       adapterId: handle.adapterId,
       status: handle.status,
+      connectionEstablished: handle.connectionEstablished,
       health,
       sessionIds: Object.freeze([...handle.sessions].sort()),
       pendingApprovalCount: handle.pendingApprovals.size,
       pendingEventCount: handle.eventQueue.length,
+      inFlightCommands: handle.inFlightCommands,
       lastError: handle.lastError,
     });
   }
