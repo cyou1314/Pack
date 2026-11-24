@@ -113,6 +113,286 @@
       "columns": [
         {
           "default": null,
+          "name": "consumer_id",
+          "notnull": true,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 2,
+          "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "acked_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agents",
+          "to": "agent_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "consumer_id",
+            "agent_id"
+          ],
+          "name": "sqlite_autoindex_agent_event_consumer_cursors_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_event_consumer_cursors"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "lease_id",
+          "notnull": true,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "inbox_seq",
+          "notnull": true,
+          "primary_key_position": 2,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "acked_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "inbox_seq",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_inbox",
+          "to": "inbox_seq"
+        },
+        {
+          "from": "lease_id",
+          "on_delete": "CASCADE",
+          "on_update": "NO ACTION",
+          "table": "agent_event_consumer_leases",
+          "to": "lease_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "inbox_seq"
+          ],
+          "name": "idx_agent_event_consumer_lease_items_inbox",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_consumer_lease_items_inbox\n            ON agent_event_consumer_lease_items(inbox_seq)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "lease_id",
+            "inbox_seq"
+          ],
+          "name": "idx_agent_event_consumer_lease_items_pending",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE INDEX idx_agent_event_consumer_lease_items_pending\n            ON agent_event_consumer_lease_items(lease_id, inbox_seq)\n            WHERE acked_at IS NULL",
+          "unique": false
+        },
+        {
+          "columns": [
+            "lease_id",
+            "inbox_seq"
+          ],
+          "name": "sqlite_autoindex_agent_event_consumer_lease_items_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_event_consumer_lease_items"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "lease_id",
+          "notnull": true,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "consumer_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "lease_token_hash",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "from_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "through_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": "0",
+          "name": "acked_through_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "expires_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "completed_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "ack_retry_until",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "closed_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agents",
+          "to": "agent_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "status",
+            "expires_at"
+          ],
+          "name": "idx_agent_event_consumer_leases_expiry",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_consumer_leases_expiry\n            ON agent_event_consumer_leases(status, expires_at)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "consumer_id",
+            "agent_id"
+          ],
+          "name": "idx_agent_event_consumer_one_active_lease",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE UNIQUE INDEX idx_agent_event_consumer_one_active_lease\n            ON agent_event_consumer_leases(consumer_id, agent_id)\n            WHERE status='active'",
+          "unique": true
+        },
+        {
+          "columns": [
+            "lease_id"
+          ],
+          "name": "sqlite_autoindex_agent_event_consumer_leases_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        },
+        {
+          "columns": [
+            "lease_token_hash"
+          ],
+          "name": "sqlite_autoindex_agent_event_consumer_leases_2",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_event_consumer_leases"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
           "name": "inbox_seq",
           "notnull": false,
           "primary_key_position": 1,
@@ -206,6 +486,17 @@
         }
       ],
       "indexes": [
+        {
+          "columns": [
+            "agent_id",
+            "inbox_seq"
+          ],
+          "name": "idx_agent_event_inbox_agent_inbox_seq",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_inbox_agent_inbox_seq ON agent_event_inbox(agent_id, inbox_seq)",
+          "unique": false
+        },
         {
           "columns": [
             "agent_id",
