@@ -293,6 +293,35 @@ test("Connection failure remains failed when startup event persistence also fail
   assert.equal(afterRetry.status, "failed");
 });
 
+test("Event recovery cannot mark a still-pending connection ready", async () => {
+  let releaseConnect;
+  const connectGate = new Promise((resolve) => { releaseConnect = resolve; });
+  const {supervisor, eventStore} = createHarness({connectGate});
+  eventStore.failNext = true;
+
+  const connecting = supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+  await new Promise((resolve) => {
+    const check = () => {
+      if (supervisor.getAgentStatus("agent-1")?.status === "degraded") resolve();
+      else setImmediate(check);
+    };
+    check();
+  });
+
+  const recoveredEvents = await supervisor.retryEvents("agent-1");
+  assert.equal(recoveredEvents.status, "connecting");
+  assert.equal(recoveredEvents.connectionEstablished, false);
+  await assert.rejects(
+    () => supervisor.sendMessage({agentId: "agent-1", sessionId: "session-1", text: "blocked"}),
+    /agent_not_ready/,
+  );
+
+  releaseConnect();
+  const ready = await connecting;
+  assert.equal(ready.status, "ready");
+  assert.equal(ready.connectionEstablished, true);
+});
+
 test("Supervisor revalidates readiness after asynchronous approval authorization", async () => {
   let beginAuthorization;
   let releaseAuthorization;
@@ -427,6 +456,29 @@ test("Concurrent disconnect calls share one lifecycle operation", async () => {
   assert.equal(adapters[0].disconnectCalls, 1);
 });
 
+test("Disconnect failure retains the adapter for a later cleanup retry", async () => {
+  const {supervisor, adapters} = createHarness({disconnectFailures: 1});
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+
+  await assert.rejects(() => supervisor.disconnectAgent("agent-1"), /provider_stop_failed/);
+  const failed = supervisor.getAgentStatus("agent-1");
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.disconnectFailed, true);
+  assert.equal(adapters[0].connected, true);
+  assert.equal(adapters[0].listeners.size, 1);
+
+  await assert.rejects(
+    () => supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"}),
+    /agent_disconnect_failed/,
+  );
+
+  const disconnected = await supervisor.disconnectAgent("agent-1");
+  assert.equal(disconnected.status, "disconnected");
+  assert.equal(adapters[0].disconnectCalls, 2);
+  assert.equal(adapters[0].connected, false);
+  assert.equal(adapters[0].listeners.size, 0);
+});
+
 test("Unexpected adapter disconnect updates state and permits a clean reconnect", async () => {
   const {supervisor, adapters} = createHarness();
   await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
@@ -443,6 +495,30 @@ test("Unexpected adapter disconnect updates state and permits a clean reconnect"
   assert.equal(reconnected.status, "ready");
   assert.equal(adapters.length, 2);
   assert.equal(adapters[0].listeners.size, 0);
+});
+
+test("Shutdown accounts for reconnect cleanup already in progress", async () => {
+  let releaseAppend;
+  const appendGate = new Promise((resolve) => { releaseAppend = resolve; });
+  const {supervisor, adapters, eventStore} = createHarness();
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+
+  eventStore.appendGate = appendGate;
+  adapters[0].connected = false;
+  adapters[0].emit("connection.changed", {status: "disconnected"});
+
+  const reconnecting = supervisor.connectAgent({
+    agentId: "agent-1",
+    adapterId: "test.adapter",
+  });
+  const shuttingDown = supervisor.shutdown();
+  releaseAppend();
+
+  await assert.rejects(reconnecting, /agent_lifecycle_busy/);
+  const states = await shuttingDown;
+  assert.equal(adapters.length, 1);
+  assert.equal(states[0].status, "disconnected");
+  assert.equal(adapters[0].disconnectCalls, 1);
 });
 
 test("Concurrent connect calls share one adapter instance", async () => {
