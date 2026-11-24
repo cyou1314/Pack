@@ -209,6 +209,18 @@
         {
           "columns": [
             "agent_id",
+            "received_at",
+            "inbox_seq"
+          ],
+          "name": "idx_agent_event_inbox_agent_received",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_inbox_agent_received ON agent_event_inbox(agent_id, received_at, inbox_seq)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "agent_id",
             "event_sequence",
             "inbox_seq"
           ],
@@ -242,6 +254,263 @@
         }
       ],
       "name": "agent_event_inbox"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "ts",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": "0",
+          "name": "success",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "ts"
+          ],
+          "name": "idx_agent_event_pair_attempts_ts",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_pair_attempts_ts ON agent_event_pair_attempts(ts)",
+          "unique": false
+        }
+      ],
+      "name": "agent_event_pair_attempts"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "code_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "code_hash",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_by",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "expires_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "redeemed_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "revoked_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": "0",
+          "name": "fail_count",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "locked_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agents",
+          "to": "agent_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "agent_id",
+            "created_at"
+          ],
+          "name": "idx_agent_event_pair_agent_created",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_pair_agent_created ON agent_event_pair_codes(agent_id, created_at DESC)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "agent_id"
+          ],
+          "name": "idx_agent_event_pair_one_active",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE UNIQUE INDEX idx_agent_event_pair_one_active ON agent_event_pair_codes(agent_id) WHERE redeemed_at IS NULL AND revoked_at IS NULL AND locked_at IS NULL",
+          "unique": true
+        },
+        {
+          "columns": [
+            "code_hash"
+          ],
+          "name": "sqlite_autoindex_agent_event_pair_codes_1",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_event_pair_codes"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "token_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "token_hash",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "scope",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_by",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "expires_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "revoked_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "last_used_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agents",
+          "to": "agent_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "agent_id",
+            "revoked_at",
+            "expires_at"
+          ],
+          "name": "idx_agent_event_tokens_agent_active",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_tokens_agent_active ON agent_event_tokens(agent_id, revoked_at, expires_at)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "token_hash"
+          ],
+          "name": "sqlite_autoindex_agent_event_tokens_1",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_event_tokens"
     },
     {
       "columns": [
