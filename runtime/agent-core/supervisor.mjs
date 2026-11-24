@@ -92,6 +92,8 @@ export class RuntimeSupervisor {
         sessions: new Set(),
         pendingApprovals: new Map(),
         approvalInFlight: new Set(),
+        inFlightCommands: 0,
+        commandWaiters: [],
         eventQueue: [],
         drainPromise: null,
         unsubscribe: null,
