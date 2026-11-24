@@ -354,6 +354,7 @@ export class RuntimeSupervisor {
       try { await handle.connectPromise; } catch {}
     }
 
+    handle.startupFailed = false;
     handle.targetStatus = "disconnected";
     if (!handle.adapter) {
       const flushed = await this.#drainEvents(handle);
