@@ -228,8 +228,8 @@ class TaskQueryIndexTests(unittest.TestCase):
             ),
             (
                 "room task ordering",
-                task_select + " WHERE rm.name=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
-                (f"index-room-0", 0),
+                task_select + " WHERE t.room_id=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
+                (self.room_ids[0], 0),
                 "idx_tasks_room_urgent_id",
             ),
             (
