@@ -136,6 +136,63 @@ class TaskQueryIndexTests(unittest.TestCase):
         }
         self.assertEqual(repeated, versions)
 
+    def test_v3_runs_after_legacy_task_and_transfer_columns_are_upgraded(self):
+        self.conn.close()
+        legacy = __import__("sqlite3").connect(self.context.db_path)
+        legacy.executescript("""
+            CREATE TABLE members(
+                id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, role TEXT NOT NULL,
+                token_hash TEXT NOT NULL, profile TEXT, last_heartbeat REAL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE rooms(
+                id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, created_at REAL NOT NULL
+            );
+            CREATE TABLE messages(
+                id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, author_id INTEGER NOT NULL,
+                kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER, created_at REAL NOT NULL
+            );
+            CREATE TABLE tasks(
+                id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL, title TEXT NOT NULL,
+                body TEXT NOT NULL, created_by INTEGER NOT NULL, assignee INTEGER,
+                status TEXT NOT NULL, claim_token TEXT, lease_expires REAL,
+                attempts INTEGER NOT NULL DEFAULT 0, result TEXT, review_note TEXT,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL
+            );
+            CREATE TABLE task_transfers(
+                id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL,
+                from_member TEXT NOT NULL, to_member TEXT NOT NULL, reason TEXT,
+                actor TEXT NOT NULL, created_at REAL NOT NULL
+            );
+            CREATE TABLE audit(
+                id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL,
+                action TEXT NOT NULL, detail TEXT
+            );
+        """)
+        legacy.commit()
+        legacy.close()
+
+        hub.init(self.context)
+        self.conn = self.context.connect()
+        task_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(tasks)")
+        }
+        transfer_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(task_transfers)")
+        }
+        self.assertTrue({"sched_at", "urgent", "next_claim_at"} <= task_columns)
+        self.assertTrue({"status", "accepted_at", "expires_at"} <= transfer_columns)
+        indexes = {
+            row["name"] for row in self.conn.execute("PRAGMA index_list(tasks)")
+        }
+        self.assertTrue(
+            EXPECTED_INDEXES - {"idx_task_transfers_pending_expiry"} <= indexes
+        )
+        transfer_indexes = {
+            row["name"] for row in self.conn.execute("PRAGMA index_list(task_transfers)")
+        }
+        self.assertIn("idx_task_transfers_pending_expiry", transfer_indexes)
+
     def test_task_list_and_sweeper_query_plans_use_hotpath_indexes(self):
         task_select = """SELECT t.id,t.title,t.body,t.status,
                                 mb.name AS assignee,cr.name AS created_by,rm.name AS room
