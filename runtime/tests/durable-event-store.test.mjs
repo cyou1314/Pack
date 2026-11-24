@@ -99,7 +99,7 @@ test("Startup treats a durable acknowledgement as authoritative after an interru
     eventHash: pendingRecord.eventHash,
     order: pendingRecord.order,
     acknowledgedAt: "2026-11-24T03:05:00.000Z",
-  }) + "\\n", {mode: 0o600});
+  }) + "\n", {mode: 0o600});
 
   const recovered = await DurableEventStore.open({directory});
   assert.deepEqual(await recovered.listPending(), []);
