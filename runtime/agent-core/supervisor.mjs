@@ -280,7 +280,17 @@ export class RuntimeSupervisor {
     agentId = requiredText(agentId, "agent_id");
     const handle = this.#agents.get(agentId);
     if (!handle) return null;
+    if (handle.disconnectPromise) return handle.disconnectPromise;
 
+    handle.disconnectPromise = this.#disconnectHandle(handle);
+    try {
+      return await handle.disconnectPromise;
+    } finally {
+      handle.disconnectPromise = null;
+    }
+  }
+
+  async #disconnectHandle(handle) {
     if (handle.connectPromise) {
       try { await handle.connectPromise; } catch {}
     }
@@ -289,22 +299,31 @@ export class RuntimeSupervisor {
     if (!handle.adapter) {
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+      handle.connectionEstablished = false;
       handle.status = "disconnected";
       return this.#snapshot(handle);
     }
 
     handle.status = "disconnecting";
+    const adapter = handle.adapter;
+    const unsubscribe = handle.unsubscribe;
     let disconnectError = null;
     try {
-      await handle.adapter.disconnect();
+      await adapter.disconnect();
     } catch (error) {
       disconnectError = error;
     }
-    try { handle.unsubscribe?.(); } catch {}
-    handle.unsubscribe = null;
-    handle.adapter = null;
-    handle.sessions.clear();
-    handle.pendingApprovals.clear();
+
+    if (handle.adapter === adapter) {
+      handle.adapter = null;
+      handle.connectionEstablished = false;
+      handle.sessions.clear();
+      handle.pendingApprovals.clear();
+    }
+    if (handle.unsubscribe === unsubscribe) {
+      try { unsubscribe?.(); } catch {}
+      handle.unsubscribe = null;
+    }
 
     const flushed = await this.#drainEvents(handle);
     if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
