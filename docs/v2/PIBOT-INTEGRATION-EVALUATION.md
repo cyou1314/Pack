@@ -73,7 +73,7 @@ Pack 当前采用 SwiftUI/macOS App + Python/SQLite Hub + Node runtime。PiBot �
 5. 只给一个测试 Bot 开启该 MCP 工具权限。
 6. 手动触发 Bot，先调用 `inbox_pull` 读取消息；若 `has_more=true`，用上一页最后一条已读取消息的 ID 继续拉取，直到读完本轮要处理的消息。
 7. 只对实际读过的消息调用 `inbox_mark_read(up_to_id=<highest-consumed-message-id>)`，不要直接把游标推进到最新消息。随后执行 `task_claim` → `task_update`。
-8. 发送回报前再次 `inbox_pull` 检查新消息；读完并标记已读后再调用 `inbox_send`。如果返回 `blocked="new_messages"`，先读取返回的新消息、推进到实际读过的最高 ID，再重试；不要用 `ignore_new` 绕过盲发保护。
+8. 发送回报前再次 `inbox_pull` 检查新消息；读完并标记已读后再调用 `inbox_send`。如果返回 `blocked="new_messages"`，以返回的 `cursor` 作为 `since_id` 再调用 `inbox_pull` 分页读取全部未读消息（`new_messages` 只是预览，不保证覆盖全部），只将实际读过的最高 ID 标记已读后再重试；不要用 `ignore_new` 绕过盲发保护。
 9. 在 Pack 侧检查任务归属、审计记录、external whitelist、egress policy 和 token 撤销。
 
 ### POC 验收
