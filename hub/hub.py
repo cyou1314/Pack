@@ -1549,6 +1549,12 @@ def build_server(context: HubContext | None = None):
         from .services.pairing import list_pair_codes as _list_pair_codes
         from .services.pairing import revoke_pair_code as _revoke_pair_code
         from .services.pairing import set_external_gate as _set_external_gate
+        from .services.agent_event_auth import AgentPairRateLimited as _AgentPairRateLimited
+        from .services.agent_event_auth import create_agent_event_pair_code as _create_agent_event_pair_code
+        from .services.agent_event_auth import redeem_agent_event_pair_code as _redeem_agent_event_pair_code
+        from .services.agent_event_auth import revoke_agent_event_tokens as _revoke_agent_event_tokens
+        from .services.agent_events import AgentEventRateLimited as _AgentEventRateLimited
+        from .services.agent_events import ingest_agent_event_with_token as _ingest_agent_event_with_token
     else:
         from services.rooms import list_rooms as _list_rooms
         from services.rooms import get_room_summary as _get_room_summary
@@ -1595,6 +1601,12 @@ def build_server(context: HubContext | None = None):
         from services.pairing import list_pair_codes as _list_pair_codes
         from services.pairing import revoke_pair_code as _revoke_pair_code
         from services.pairing import set_external_gate as _set_external_gate
+        from services.agent_event_auth import AgentPairRateLimited as _AgentPairRateLimited
+        from services.agent_event_auth import create_agent_event_pair_code as _create_agent_event_pair_code
+        from services.agent_event_auth import redeem_agent_event_pair_code as _redeem_agent_event_pair_code
+        from services.agent_event_auth import revoke_agent_event_tokens as _revoke_agent_event_tokens
+        from services.agent_events import AgentEventRateLimited as _AgentEventRateLimited
+        from services.agent_events import ingest_agent_event_with_token as _ingest_agent_event_with_token
     if __package__:
         from .services.members import list_members as _list_members
         from .services.members import register_member as _register_member
