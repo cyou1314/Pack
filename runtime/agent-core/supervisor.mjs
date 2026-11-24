@@ -124,6 +124,9 @@ export class RuntimeSupervisor {
       handle.unsubscribe = handle.adapter.subscribe((event) => this.#enqueueEvent(handle, event));
       await handle.adapter.connect();
 
+      if (handle.status === "degraded") {
+        throw new Error(handle.lastError || "event_persistence_failed");
+      }
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
 
