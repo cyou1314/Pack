@@ -304,6 +304,32 @@ class AgentEventConsumerTests(unittest.TestCase):
         self.assertEqual(sum(result == "busy" for result in results), 1)
         self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
 
+    def test_claim_concurrency_across_independent_context_locks(self):
+        self.append()
+        other_context = HubContext(
+            base_dir=self.context.base_dir,
+            db_path=self.context.db_path,
+            attachment_dir=self.context.attachment_dir,
+            lock=threading.Lock(),
+            clock=lambda: self.now[0],
+        )
+        barrier = threading.Barrier(2)
+
+        def attempt(context):
+            barrier.wait()
+            try:
+                return claim_agent_events(
+                    context, self.principal, "agent-1",
+                    token_factory=self.token_factory,
+                )
+            except AgentEventLeaseBusy:
+                return "busy"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(attempt, [self.context, other_context]))
+        self.assertEqual(sum(result == "busy" for result in results), 1)
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+
     def test_partial_ack_advances_only_prefix_and_final_ack_completes(self):
         first = self.append(sequence=1)
         self.append(sequence=2)
