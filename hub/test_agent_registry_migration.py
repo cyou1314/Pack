@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for the additive Agent Registry schema migration."""
 import sqlite3
+import re
 import tempfile
 import threading
 import unittest
@@ -218,6 +219,21 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     [1, 1, 1, 12, None, None, None, 9223372036854775807],
                 )
             finally:
+                connection.close()
+
+    def test_task_audit_backfill_changes_are_detected_by_ledger_checksum(self):
+        from core import migrations
+
+        with tempfile.TemporaryDirectory(prefix="pack-task-audit-checksum-") as directory:
+            connection = self._database(directory)
+            original = migrations.APPROVAL_TASK_RE
+            try:
+                apply_migrations(connection, clock=lambda: 100.0)
+                migrations.APPROVAL_TASK_RE = re.compile(r"task:([0-9]+)")
+                with self.assertRaisesRegex(RuntimeError, "checksum mismatch at version 2"):
+                    apply_migrations(connection, clock=lambda: 200.0)
+            finally:
+                migrations.APPROVAL_TASK_RE = original
                 connection.close()
 
     def test_backfill_mapping_changes_are_detected_by_ledger_checksum(self):
