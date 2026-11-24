@@ -61,21 +61,18 @@ bash installer/mac-inventory.sh
 set -euo pipefail
 DMG_NEW="/Volumes/Pack-candidate"       # 替换为已挂载的候选 DMG
 BACKUP_DB="/path/to/verified/pack.db"  # 替换为停机后生成并验证过的备份快照
-HUB="$HOME/.pack/local-hub"
-
 [[ -f "$BACKUP_DB" && ! -L "$BACKUP_DB" ]]
-[[ -f "$HUB/.dispatcher_token" && ! -L "$HUB/.dispatcher_token" ]]
 mkdir -p "$HOME/commander-work"
-chmod 700 "$HOME/commander-work"
 SHADOW_ROOT="$(mktemp -d "$HOME/commander-work/pack-shadow.XXXXXX")"
 chmod 700 "$SHADOW_ROOT"
-REPORT="$(mktemp "$HOME/commander-work/agent-registry-shadow.XXXXXX")"
+REPORT_DIR="$(mktemp -d "$HOME/commander-work/agent-registry-shadow-report.XXXXXX")"
+chmod 700 "$REPORT_DIR"
+REPORT="$REPORT_DIR/report.json"
 trap 'rm -rf "$SHADOW_ROOT"' EXIT
 
 ditto "$DMG_NEW/hub" "$SHADOW_ROOT/hub"
 cp "$BACKUP_DB" "$SHADOW_ROOT/hub/pack.db"
-cp "$HUB/.dispatcher_token" "$SHADOW_ROOT/hub/.dispatcher_token"
-chmod 600 "$SHADOW_ROOT/hub/pack.db" "$SHADOW_ROOT/hub/.dispatcher_token"
+chmod 600 "$SHADOW_ROOT/hub/pack.db"
 
 "$DMG_NEW/python/bin/python3" "$SHADOW_ROOT/hub/hub.py" init
 
@@ -106,7 +103,7 @@ assert r.get("unexpected_legacy_mapping_count") == 0
 )
 ```
 
-Shadow CLI 以 SQLite `mode=ro` + `query_only=ON` 打开指定副本。候选 `hub.py init` 是唯一会写这个 staging 副本的步骤；不要把 `BACKUP_DB` 指向 live DB。
+Shadow CLI 以 SQLite `mode=ro` + `query_only=ON` 打开指定副本。候选 `hub.py init` 是唯一会写这个 staging 副本的步骤；不要把 `BACKUP_DB` 指向 live DB。整个流程不需要复制真实 dispatcher token、Keychain、配置或 Engine 登录态；报告目录单独以 0700 权限创建，避免修改用户已有的 `commander-work` 目录权限。
 
 6. 报告必须同时满足：
    - `ok=true`、`ready=true`；
