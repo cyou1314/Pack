@@ -2858,26 +2858,101 @@ def build_server(context: HubContext | None = None):
         require(me)
         return _heartbeat(context, me)
 
-    @mcp.tool
-    def agent_event_pair_code_create(agent_id: str, ttl_seconds: int = 600) -> dict:
-        """调度员为一个已登记 Agent 创建一次性短期事件网关配对码。
-        配对码只返回一次；兑换后生成独立 events:write Token，不复用成员 Bearer Token。"""
-        me = authenticate()
-        require(me, "dispatcher")
-        return _create_agent_event_pair_code(
-            context, me, agent_id, ttl_seconds,
-            token_factory=lambda: "pk-pair-" + secrets.token_urlsafe(32),
-            hash_token=hash_token,
-        )
+    def _agent_gateway_dispatcher(request):
+        """Authenticate dispatcher control requests without reusing Agent tokens."""
+        authorization = request.headers.get("authorization", "")
+        if not authorization.lower().startswith("bearer "):
+            return None, 401
+        token = authorization[7:].strip()
+        if not token or len(token) > 256:
+            return None, 401
+        connection = context.connect()
+        try:
+            member = connection.execute(
+                "SELECT * FROM members WHERE token_hash=?",
+                (hash_token(token),),
+            ).fetchone()
+            if not member or member["removed_at"] is not None:
+                return None, 401
+            if "kind" in member.keys() and (member["kind"] or "") == "external":
+                if not _external_enabled(connection):
+                    return None, 401
+            if member["role"] != "dispatcher":
+                return None, 403
+            return dict(member), 200
+        finally:
+            connection.close()
 
-    @mcp.tool
-    def agent_event_tokens_revoke(agent_id: str, token_id: int = 0) -> dict:
-        """调度员撤销指定 Agent 的一个事件 Token；token_id=0 撤销该 Agent 全部事件 Token。"""
-        me = authenticate()
-        require(me, "dispatcher")
-        return _revoke_agent_event_tokens(
-            context, me, agent_id, token_id if token_id > 0 else None,
-        )
+    @mcp.custom_route("/agent/pair/create", methods=["POST"])
+    async def agent_event_pair_create(request):
+        """仅调度员可为已登记 Agent 创建一次性事件网关配对码。"""
+        from starlette.responses import JSONResponse
+        import json as _json
+        actor, status = _agent_gateway_dispatcher(request)
+        if actor is None:
+            return JSONResponse(
+                {"error": "unauthorized" if status == 401 else "forbidden"},
+                status_code=status,
+            )
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 2048:
+                return JSONResponse({"error": "invalid_agent_pair_request"}, status_code=400)
+            body.extend(chunk)
+        try:
+            payload = _json.loads(body or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "invalid_agent_pair_request"}, status_code=400)
+        try:
+            result = _create_agent_event_pair_code(
+                context, actor, payload.get("agent_id"), payload.get("ttl_seconds", 600),
+                token_factory=lambda: "pk-pair-" + secrets.token_urlsafe(32),
+                hash_token=hash_token,
+            )
+            return JSONResponse(result)
+        except ValueError as error:
+            code = str(error)
+            if not code.replace("_", "").isalnum() or len(code) > 80:
+                code = "invalid_agent_pair_request"
+            return JSONResponse({"error": code}, status_code=400)
+
+    @mcp.custom_route("/agent/tokens/revoke", methods=["POST"])
+    async def agent_event_tokens_revoke(request):
+        """仅调度员可撤销一个 Agent 的单个或全部事件写入 Token。"""
+        from starlette.responses import JSONResponse
+        import json as _json
+        actor, status = _agent_gateway_dispatcher(request)
+        if actor is None:
+            return JSONResponse(
+                {"error": "unauthorized" if status == 401 else "forbidden"},
+                status_code=status,
+            )
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 2048:
+                return JSONResponse({"error": "invalid_agent_token_revoke_request"}, status_code=400)
+            body.extend(chunk)
+        try:
+            payload = _json.loads(body or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "invalid_agent_token_revoke_request"}, status_code=400)
+        token_id = payload.get("token_id")
+        if token_id == 0:
+            token_id = None
+        try:
+            result = _revoke_agent_event_tokens(
+                context, actor, payload.get("agent_id"), token_id,
+            )
+            return JSONResponse(result)
+        except ValueError as error:
+            code = str(error)
+            if not code.replace("_", "").isalnum() or len(code) > 80:
+                code = "invalid_agent_token_revoke_request"
+            return JSONResponse({"error": code}, status_code=400)
 
     @mcp.custom_route("/agent/pair/redeem", methods=["POST"])
     async def agent_event_pair_redeem(request):
