@@ -32,7 +32,7 @@ _EVENT_TYPES = frozenset({
 })
 _EVENT_FIELDS = frozenset({
     "eventId", "eventType", "providerId", "agentId", "sequence",
-    "occurredAt", "payload", "roomId", "sessionId", "runId",
+    "occurredAt", "payload", "roomId", "sessionId", "runId", "hubSessionId",
 })
 _SENSITIVE_KEYS = frozenset({
     "apikey", "xapikey", "accesstoken", "refreshtoken", "oauthtoken",
@@ -114,9 +114,11 @@ def _normalize_event(event: Any) -> dict[str, Any]:
     if parsed.tzinfo is None:
         raise ValueError("occurred_at_timezone_required")
 
-    for field in ("roomId", "sessionId", "runId"):
+    for field in ("roomId", "sessionId", "runId", "hubSessionId"):
         if field in event and event[field] is not None:
             normalized[field] = _text(event[field], field, 160)
+    if "hubSessionId" in normalized and "sessionId" not in normalized:
+        raise ValueError("hub_session_id_requires_session_id")
 
     try:
         _safe_payload(normalized["payload"])
