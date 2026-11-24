@@ -372,6 +372,7 @@ export class DurableEventStore {
 
       const acknowledged = await this.#scanDirectory(this.#acknowledgedDirectory, "ack");
       const pending = await this.#scanDirectory(this.#pendingDirectory, "event");
+      if (acknowledged.size) await syncDirectory(this.#acknowledgedDirectory);
       let removedPending = false;
 
       for (const record of acknowledged.values()) {
@@ -437,6 +438,7 @@ export class DurableEventStore {
         );
         if (acknowledged) {
           if (acknowledged.eventHash !== eventHash) throw new Error("event_id_conflict");
+          await syncDirectory(this.#acknowledgedDirectory);
           this.#lastOrder = Math.max(this.#lastOrder, acknowledged.order);
           return {inserted: false, order: acknowledged.order};
         }
@@ -520,6 +522,7 @@ export class DurableEventStore {
                 acknowledged.order !== record.order) {
               throw new Error("event_store_corrupt");
             }
+            await syncDirectory(this.#acknowledgedDirectory);
             await unlink(path.join(this.#pendingDirectory, hash + ".json"));
             removedPending = true;
             continue;
