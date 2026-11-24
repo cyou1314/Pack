@@ -142,14 +142,20 @@ export class RuntimeSupervisor {
       }
       handle.targetStatus = "disconnected";
       try { await handle.adapter?.disconnect?.(); } catch {}
+      const flushed = await this.#drainEvents(handle);
       try { handle.unsubscribe?.(); } catch {}
       handle.unsubscribe = null;
       handle.adapter = null;
-      if (handle.status !== "degraded") {
-        handle.status = "failed";
-        handle.lastError = safeErrorCode(error);
+      if (!flushed || handle.status === "degraded") {
+        if (handle.status !== "degraded") {
+          handle.status = "degraded";
+          handle.lastError = "event_persistence_failed";
+        }
+        throw new Error(handle.lastError || "event_persistence_failed");
       }
-      throw new Error(handle.lastError || safeErrorCode(error));
+      handle.status = "failed";
+      handle.lastError = safeErrorCode(error);
+      throw new Error(handle.lastError);
     }
   }
 
