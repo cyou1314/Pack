@@ -137,12 +137,12 @@ Hub 递归拒绝 API Key、Token、Authorization、Cookie、Password、Credentia
 
 ## 5. 当前不承诺的能力
 
-- 没有 Outbox → Hub 网络投递 Worker。
-- `POST /agent/events` 返回的 `accepted/duplicate + inboxSeq` 只确认 Hub Inbox 已提交，是传输级持久化回执，不代表下游消费者已处理。
-- 尚无下游消费者的批量拉取、租约、消费 ACK、游标或断线补拉。
-- 没有端到端至少一次/恰好一次传输保证。
-- 没有把 Hub Inbox 事件自动转换为 UI 消息、任务、审批或 Provider Session 状态。
-- 没有接入 `runtime/runtime.mjs` 生产入口；旧 Muse Runtime 不受影响。
-- 没有在用户 Mac 上创建 Token、登录 Provider、运行或部署。
+- AgentEventDeliveryWorker 已有独立实现：按 Outbox 顺序逐条 POST，使用持久化退避、Retry-After、请求超时和事件大小限制；但当前只提供 caller-scheduled 的 runOnce()，尚未接入 RuntimeSupervisor 或生产 Runtime。
+- POST /agent/events 返回的 accepted/duplicate + inboxSeq 只确认 Hub Inbox 事务已提交，是传输级持久化回执，不代表下游消费者已处理。
+- 尚无 Hub Inbox 下游消费者的批量拉取、租约、消费 ACK、连续游标或断线补拉。
+- 至少一次投递是当前 Worker 的协议目标，仍需通过崩溃、响应丢失、重启和重复投递故障注入验收；不承诺恰好一次。
+- 尚未把 Hub Inbox 事件自动转换为 UI 消息、任务、审批或 Provider Session 状态。
+- 尚未接入 runtime/runtime.mjs 生产入口；旧 Muse Runtime 不受影响。
+- 尚未在用户 Mac 上创建 Token、登录 Provider、运行或部署。
 
-下一阶段先实现 Outbox 投递 Worker 与 Hub Inbox 消费/ACK 状态机，再做断线恢复与 Session Cursor。只有这些语义通过故障注入和重启测试，才允许接生产 Runtime。
+下一阶段实现 Hub Inbox 下游消费租约/ACK 与连续游标，再做断线恢复和 Session replay。只有投递与消费两侧通过故障注入和重启测试，才允许接生产 Runtime。
