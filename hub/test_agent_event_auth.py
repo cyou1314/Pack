@@ -287,6 +287,91 @@ class AgentEventGatewayTests(unittest.TestCase):
                 hash_token=hub.hash_token,
             )
 
+    def test_http_gateway_routes_enforce_separate_dispatcher_and_agent_credentials(self):
+        from starlette.testclient import TestClient
+
+        dispatcher_token = "pk-mem-dispatcher-" + ("d" * 48)
+        member_token = "pk-mem-member-" + ("m" * 48)
+        db = self.connect()
+        try:
+            db.execute(
+                "INSERT INTO members(name,role,token_hash,created_at) VALUES(?,?,?,?)",
+                ("gateway-dispatcher", "dispatcher", hub.hash_token(dispatcher_token), 1.0),
+            )
+            db.execute(
+                "INSERT INTO members(name,role,token_hash,created_at) VALUES(?,?,?,?)",
+                ("gateway-member", "member", hub.hash_token(member_token), 1.0),
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        server = hub.build_server(self.context)
+        with TestClient(server.http_app()) as client:
+            denied = client.post(
+                "/agent/pair/create",
+                json={"agent_id": "agent-1"},
+            )
+            self.assertEqual(denied.status_code, 401)
+
+            forbidden = client.post(
+                "/agent/pair/create",
+                headers={"Authorization": f"Bearer {member_token}"},
+                json={"agent_id": "agent-1"},
+            )
+            self.assertEqual(forbidden.status_code, 403)
+
+            created = client.post(
+                "/agent/pair/create",
+                headers={"Authorization": f"Bearer {dispatcher_token}"},
+                json={"agent_id": "agent-1", "ttl_seconds": 600},
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            pair_code = created.json()["pair_code"]
+
+            redeemed = client.post(
+                "/agent/pair/redeem",
+                json={"code": pair_code},
+            )
+            self.assertEqual(redeemed.status_code, 200, redeemed.text)
+            agent_token = redeemed.json()["token"]
+
+            accepted = client.post(
+                "/agent/events",
+                headers={"Authorization": f"Bearer {agent_token}"},
+                json=self.event(),
+            )
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertFalse(accepted.json()["duplicate"])
+
+            duplicate = client.post(
+                "/agent/events",
+                headers={"Authorization": f"Bearer {agent_token}"},
+                json=self.event(),
+            )
+            self.assertEqual(duplicate.status_code, 200, duplicate.text)
+            self.assertTrue(duplicate.json()["duplicate"])
+
+            member_token_denied = client.post(
+                "/agent/events",
+                headers={"Authorization": f"Bearer {dispatcher_token}"},
+                json=self.event(eventId="member-token-event"),
+            )
+            self.assertEqual(member_token_denied.status_code, 401)
+
+            revoked = client.post(
+                "/agent/tokens/revoke",
+                headers={"Authorization": f"Bearer {dispatcher_token}"},
+                json={"agent_id": "agent-1", "token_id": redeemed.json()["token_id"]},
+            )
+            self.assertEqual(revoked.status_code, 200, revoked.text)
+            after_revoke = client.post(
+                "/agent/events",
+                headers={"Authorization": f"Bearer {agent_token}"},
+                json=self.event(eventId="after-revoke"),
+            )
+            self.assertEqual(after_revoke.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
