@@ -46,12 +46,17 @@ function assertJsonValue(value, seen = new Set()) {
 
   seen.add(value);
   if (Array.isArray(value)) {
-    if (Object.getPrototypeOf(value) !== Array.prototype || Object.keys(value).length !== value.length) {
+    if (Object.getPrototypeOf(value) !== Array.prototype ||
+        Object.keys(value).length !== value.length ||
+        Object.getOwnPropertySymbols(value).length) {
       throw new TypeError("event_not_json_serializable");
     }
     for (let index = 0; index < value.length; index += 1) {
-      if (!Object.hasOwn(value, index)) throw new TypeError("event_not_json_serializable");
-      assertJsonValue(value[index], seen);
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
+        throw new TypeError("event_not_json_serializable");
+      }
+      assertJsonValue(descriptor.value, seen);
     }
   } else {
     if (!isPlainObject(value) || Object.getOwnPropertySymbols(value).length) {
@@ -79,8 +84,12 @@ function canonicalJson(value) {
 }
 
 function normalizeEvent(input, maxEventBytes) {
-  if (input && typeof input === "object" && input.payload !== undefined) {
-    assertJsonValue(input.payload);
+  if (isPlainObject(input)) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, "payload");
+    if (descriptor && (!descriptor.enumerable || !Object.hasOwn(descriptor, "value"))) {
+      throw new TypeError("event_not_json_serializable");
+    }
+    if (descriptor?.value !== undefined) assertJsonValue(descriptor.value);
   }
   const event = createAgentEvent(input);
   assertJsonValue(event);
