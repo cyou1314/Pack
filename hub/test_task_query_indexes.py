@@ -222,14 +222,14 @@ class TaskQueryIndexTests(unittest.TestCase):
             ),
             (
                 "assignee task ordering",
-                task_select + " WHERE t.assignee=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
-                (self.member_ids[0], 0),
+                task_select + " WHERE t.assignee=? AND mb.name=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
+                (self.member_ids[0], "index-member-0", 0),
                 "idx_tasks_assignee_urgent_id",
             ),
             (
                 "room task ordering",
-                task_select + " WHERE t.room_id=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
-                (self.room_ids[0], 0),
+                task_select + " WHERE t.room_id=? AND rm.name=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
+                (self.room_ids[0], "index-room-0", 0),
                 "idx_tasks_room_urgent_id",
             ),
             (
