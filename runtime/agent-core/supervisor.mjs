@@ -137,13 +137,16 @@ export class RuntimeSupervisor {
       if (handle.status === "degraded") {
         throw new Error(handle.lastError || "event_persistence_failed");
       }
+      handle.targetStatus = "disconnected";
       try { await handle.adapter?.disconnect?.(); } catch {}
       try { handle.unsubscribe?.(); } catch {}
       handle.unsubscribe = null;
       handle.adapter = null;
-      handle.status = "failed";
-      handle.lastError = safeErrorCode(error);
-      throw new Error(handle.lastError);
+      if (handle.status !== "degraded") {
+        handle.status = "failed";
+        handle.lastError = safeErrorCode(error);
+      }
+      throw new Error(handle.lastError || safeErrorCode(error));
     }
   }
 
@@ -268,12 +271,12 @@ export class RuntimeSupervisor {
     handle.pendingApprovals.clear();
 
     const flushed = await this.#drainEvents(handle);
+    if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
     if (disconnectError) {
       handle.status = "failed";
       handle.lastError = safeErrorCode(disconnectError);
       throw new Error(handle.lastError);
     }
-    if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
 
     handle.status = "disconnected";
     handle.lastError = null;
