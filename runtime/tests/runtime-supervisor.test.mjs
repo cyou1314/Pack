@@ -22,7 +22,7 @@ const descriptor = {
 };
 
 class FakeAdapter {
-  constructor(agentId, {connectGate, disconnectGate, connectError, onCreate} = {}) {
+  constructor(agentId, {connectGate, disconnectGate, connectError, sendGate, onCreate} = {}) {
     this.agentId = agentId;
     this.connected = false;
     this.sequence = 0;
@@ -32,6 +32,8 @@ class FakeAdapter {
     this.connectGate = connectGate;
     this.disconnectGate = disconnectGate;
     this.connectError = connectError;
+    this.sendGate = sendGate;
+    this.sendCalls = 0;
     onCreate?.(this);
   }
 
@@ -85,6 +87,8 @@ class FakeAdapter {
   }
 
   async sendMessage({sessionId, text}) {
+    this.sendCalls += 1;
+    if (this.sendGate) await this.sendGate;
     this.emit("run.started", {text}, {sessionId, runId: "run-1"});
     return {accepted: true, runId: "run-1"};
   }
@@ -127,7 +131,7 @@ class FakeEventStore {
   }
 }
 
-function createHarness({authorizeApproval, connectGate, disconnectGate, connectError, onCreate} = {}) {
+function createHarness({authorizeApproval, connectGate, disconnectGate, connectError, sendGate, onCreate} = {}) {
   const registry = new AgentAdapterRegistry();
   const adapters = [];
   registry.register({
@@ -137,6 +141,7 @@ function createHarness({authorizeApproval, connectGate, disconnectGate, connectE
         connectGate,
         disconnectGate,
         connectError,
+        sendGate,
         onCreate: (instance) => {
           adapters.push(instance);
           onCreate?.(instance);
@@ -353,6 +358,38 @@ test("Supervisor drains the final connection event before disconnect completes",
   assert.ok(eventStore.events.some((event) =>
     event.eventType === "connection.changed" && event.payload.status === "disconnected"
   ));
+});
+
+test("Disconnect waits for in-flight commands before stopping the adapter", async () => {
+  let releaseSend;
+  const sendGate = new Promise((resolve) => { releaseSend = resolve; });
+  const {supervisor, adapters} = createHarness({sendGate});
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+  await supervisor.createSession("agent-1");
+
+  const sending = supervisor.sendMessage({
+    agentId: "agent-1",
+    sessionId: "session-1",
+    text: "finish before shutdown",
+  });
+  await new Promise((resolve) => {
+    const check = () => {
+      if (adapters[0].sendCalls === 1) resolve();
+      else setImmediate(check);
+    };
+    check();
+  });
+
+  const disconnecting = supervisor.disconnectAgent("agent-1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(adapters[0].disconnectCalls, 0);
+
+  releaseSend();
+  const sent = await sending;
+  const disconnected = await disconnecting;
+  assert.equal(sent.accepted, true);
+  assert.equal(disconnected.status, "disconnected");
+  assert.equal(adapters[0].disconnectCalls, 1);
 });
 
 test("Concurrent disconnect calls share one lifecycle operation", async () => {
