@@ -58,7 +58,9 @@
 - 加入幂等、游标、断线恢复。
 - 现有 Muse Runtime 通过兼容 Adapter 接入。
 
-回滚：切回旧 Runtime 与旧 Hub 同步路径。
+**2026-11-24 首个切片：** `runtime/agent-core/supervisor.mjs` 已加入 Adapter 生命周期、Session create/resume/interrupt、事件身份/敏感字段校验、注入式 Event Store、事件写入失败降级与审批 fail-closed。当前只用 fake Adapter / fake Event Store 测试，未接入 `runtime/runtime.mjs`，也没有生产 Event Store、Hub Inbox/Outbox、Event Gateway、游标/ack/replay 或自动重连。详细边界见 `M2-RUNTIME-SUPERVISOR-DESIGN.md`。
+
+回滚：切回旧 Runtime 与旧 Hub 同步路径；新 Supervisor 尚未接入生产入口，不影响 v1。
 
 ### M3：Provider Adapters
 
@@ -177,7 +179,7 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 
 - **M0 Agent Core Foundation：** Descriptor / Registry / Event Envelope / Context Package / Codex App Server Adapter 与 mock contract tests 已存在；这只代表基础骨架完成，不代表已装配到生产 Runtime。
 - **M1 Agent Registry：** M1a/M1b 已合入 v2 Foundation（PR #21/#22/#23）；并发迁移、只读 CLI 和敏感字段输出测试通过 CI。PR #24 已将 SQLite quick_check / foreign_key_check 加入 Shadow readiness；PR #34 已增加 task hot-path migration v3，M1c Shadow CLI 会核对当前全部 migration checksum。真实 Mac 数据库尚未检查，M1c API 尚未开放。
-- **M2 Runtime / Event Gateway：** 尚未实施。当前 `runtime/runtime.mjs` 仍是 Muse ego v1 主循环；AgentAdapterRegistry/Codex Adapter 未进入生产入口，事件仍为进程内回调，没有 durable Inbox/Outbox、游标恢复和 Hub/App 审批闭环。
+- **M2 Runtime / Event Gateway：** 首个 Supervisor 切片已实现，负责 Adapter 生命周期、Session 操作、事件校验/串行 append 和审批 fail-closed；但 `runtime/runtime.mjs` 仍是 Muse ego v1 主循环，Supervisor 未接入生产入口。Event Store 目前只有注入式接口，没有生产 durable Inbox/Outbox、Hub Gateway、游标/ack/replay、自动重连或 Hub/App 审批闭环。
 - **M3 Provider Adapter：** Codex Adapter 有 mock 测试，但真实 Mac App Server 登录、Session/Turn、断线恢复和审批闭环未验收；ChatGPT、Doubao 等 Adapter 仍按 Provider Matrix 单独验证。
 - **安全门槛：** 在 M2 Event Gateway、Hub Permission/Approval/Audit 与 SwiftUI 人工审批闭环完成前，不开放 Codex command/file 高风险工具自动执行。
 - **执行顺序：** M1a additive migration → M1b shadow read → M1c read-only API 评估 → M2 Supervisor/Session Manager/Inbox-Outbox/Event Gateway → M3 真实 Provider 验收。真实 Mac 部署继续后置。
