@@ -335,7 +335,54 @@ _AGENT_EVENT_INBOX_V4 = Migration(
 )
 
 
-MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3, _AGENT_EVENT_INBOX_V4)
+_AGENT_EVENT_GATEWAY_V5 = Migration(
+    version=5,
+    name="agent_event_gateway_credentials",
+    statements=(
+        """CREATE TABLE agent_event_pair_codes (
+            code_id INTEGER PRIMARY KEY,
+            agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+            code_hash TEXT NOT NULL UNIQUE,
+            created_by TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            redeemed_at REAL,
+            revoked_at REAL,
+            fail_count INTEGER NOT NULL DEFAULT 0 CHECK(fail_count >= 0),
+            locked_at REAL
+        )""",
+        """CREATE UNIQUE INDEX idx_agent_event_pair_one_active
+           ON agent_event_pair_codes(agent_id)
+           WHERE redeemed_at IS NULL AND revoked_at IS NULL AND locked_at IS NULL""",
+        "CREATE INDEX idx_agent_event_pair_agent_created "
+        "ON agent_event_pair_codes(agent_id, created_at DESC)",
+        """CREATE TABLE agent_event_tokens (
+            token_id INTEGER PRIMARY KEY,
+            agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+            token_hash TEXT NOT NULL UNIQUE,
+            scope TEXT NOT NULL CHECK(scope='events:write'),
+            created_by TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            revoked_at REAL,
+            last_used_at REAL
+        )""",
+        "CREATE INDEX idx_agent_event_tokens_agent_active "
+        "ON agent_event_tokens(agent_id, revoked_at, expires_at)",
+        """CREATE TABLE agent_event_pair_attempts (
+            id INTEGER PRIMARY KEY,
+            ts REAL NOT NULL,
+            success INTEGER NOT NULL DEFAULT 0 CHECK(success IN (0,1))
+        )""",
+        "CREATE INDEX idx_agent_event_pair_attempts_ts "
+        "ON agent_event_pair_attempts(ts)",
+        "CREATE INDEX idx_agent_event_inbox_agent_received "
+        "ON agent_event_inbox(agent_id, received_at, inbox_seq)",
+    ),
+)
+
+
+MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3, _AGENT_EVENT_INBOX_V4, _AGENT_EVENT_GATEWAY_V5)
 
 
 def apply_migrations(
