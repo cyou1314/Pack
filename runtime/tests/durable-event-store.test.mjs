@@ -382,6 +382,61 @@ test("Startup removes abandoned temporary files but rejects corrupt committed re
   );
 });
 
+test("The store requires its parent hierarchy to exist before creating the data directory", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const nestedDirectory = path.join(directory, "missing-parent", "store");
+  await assert.rejects(
+    () => DurableEventStore.open({directory: nestedDirectory}),
+    /event_store_parent_missing/,
+  );
+});
+
+test("A retry re-syncs an existing marker after its first file sync fails", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const parent = path.dirname(directory);
+  const handle = await open(parent, "r");
+  const prototype = Object.getPrototypeOf(handle);
+  await handle.close();
+  const originalSync = prototype.sync;
+  let syncCalls = 0;
+  prototype.sync = async function(...args) {
+    syncCalls += 1;
+    if (syncCalls === 1) throw new Error("injected_marker_sync_failure");
+    return originalSync.apply(this, args);
+  };
+
+  try {
+    await assert.rejects(
+      () => DurableEventStore.open({directory}),
+      /injected_marker_sync_failure/,
+    );
+  } finally {
+    prototype.sync = originalSync;
+  }
+
+  const recovered = await DurableEventStore.open({directory});
+  await recovered.append(makeEvent("event-after-marker-retry"));
+  await recovered.close();
+
+  const reopened = await DurableEventStore.open({directory});
+  assert.equal((await reopened.listPending()).length, 1);
+  await reopened.close();
+});
+
+test("Event ID hashing preserves distinct unpaired UTF-16 surrogates", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const store = await DurableEventStore.open({directory});
+  const firstId = "event-\\uD800";
+  const secondId = "event-\\uD801";
+  await store.append(makeEvent(firstId, {text: "first identity"}));
+
+  assert.deepEqual(await store.acknowledge(secondId), {acknowledged: false});
+  assert.equal((await store.listPending()).length, 1);
+  assert.deepEqual(await store.acknowledge(firstId), {acknowledged: true});
+  assert.deepEqual(await store.listPending(), []);
+  await store.close();
+});
+
 test("The store refuses a symlink as its data directory", async (t) => {
   const target = await temporaryDirectory(t);
   await mkdir(target, {recursive: true});
