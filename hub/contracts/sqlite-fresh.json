@@ -378,10 +378,20 @@
         },
         {
           "columns": [
+            "lease_token_hash"
+          ],
+          "name": "sqlite_autoindex_agent_event_consumer_leases_2",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        },
+        {
+          "columns": [
             "lease_id",
             "agent_id"
           ],
-          "name": "sqlite_autoindex_agent_event_consumer_leases_2",
+          "name": "sqlite_autoindex_agent_event_consumer_leases_3",
           "origin": "u",
           "partial": false,
           "sql": null,
