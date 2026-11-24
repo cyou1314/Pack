@@ -382,7 +382,58 @@ _AGENT_EVENT_GATEWAY_V5 = Migration(
 )
 
 
-MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3, _AGENT_EVENT_INBOX_V4, _AGENT_EVENT_GATEWAY_V5)
+
+_AGENT_EVENT_CONSUMER_V6 = Migration(
+    version=6,
+    name="agent_event_consumer_leases",
+    statements=(
+        """CREATE TABLE agent_event_consumer_cursors (
+            consumer_id TEXT NOT NULL CHECK(length(trim(consumer_id)) BETWEEN 1 AND 80),
+            agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+            acked_inbox_seq INTEGER NOT NULL DEFAULT 0 CHECK(acked_inbox_seq >= 0),
+            updated_at REAL NOT NULL,
+            PRIMARY KEY(consumer_id, agent_id)
+        )""",
+        """CREATE TABLE agent_event_consumer_leases (
+            lease_id TEXT PRIMARY KEY,
+            consumer_id TEXT NOT NULL CHECK(length(trim(consumer_id)) BETWEEN 1 AND 80),
+            agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+            lease_token_hash TEXT NOT NULL UNIQUE,
+            from_inbox_seq INTEGER NOT NULL CHECK(from_inbox_seq > 0),
+            through_inbox_seq INTEGER NOT NULL CHECK(through_inbox_seq >= from_inbox_seq),
+            acked_through_inbox_seq INTEGER NOT NULL DEFAULT 0
+                CHECK(acked_through_inbox_seq >= 0),
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL CHECK(expires_at >= created_at),
+            completed_at REAL,
+            ack_retry_until REAL,
+            closed_at REAL,
+            status TEXT NOT NULL CHECK(status IN ('active','completed','expired','released')),
+            CHECK(ack_retry_until IS NULL OR completed_at IS NOT NULL),
+            UNIQUE(lease_id, agent_id)
+        )""",
+        """CREATE UNIQUE INDEX idx_agent_event_consumer_one_active_lease
+            ON agent_event_consumer_leases(consumer_id, agent_id)
+            WHERE status='active'""",
+        """CREATE INDEX idx_agent_event_consumer_leases_expiry
+            ON agent_event_consumer_leases(status, expires_at)""",
+        """CREATE TABLE agent_event_consumer_lease_items (
+            lease_id TEXT NOT NULL REFERENCES agent_event_consumer_leases(lease_id)
+                ON DELETE CASCADE,
+            inbox_seq INTEGER NOT NULL REFERENCES agent_event_inbox(inbox_seq)
+                ON DELETE RESTRICT,
+            acked_at REAL,
+            PRIMARY KEY(lease_id, inbox_seq)
+        )""",
+        """CREATE INDEX idx_agent_event_consumer_lease_items_inbox
+            ON agent_event_consumer_lease_items(inbox_seq)""",
+        """CREATE INDEX idx_agent_event_consumer_lease_items_pending
+            ON agent_event_consumer_lease_items(lease_id, inbox_seq)
+            WHERE acked_at IS NULL""",
+    ),
+)
+
+MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3, _AGENT_EVENT_INBOX_V4, _AGENT_EVENT_GATEWAY_V5, _AGENT_EVENT_CONSUMER_V6)
 
 
 def apply_migrations(
