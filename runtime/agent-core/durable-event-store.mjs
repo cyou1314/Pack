@@ -227,6 +227,7 @@ async function ensurePrivateDirectory(directory) {
     throw new Error("event_store_unsafe_path");
   }
   await chmod(directory, 0o700);
+  await syncDirectory(directory);
 }
 
 async function syncFile(filePath) {
