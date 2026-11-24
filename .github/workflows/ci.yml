@@ -101,6 +101,10 @@ jobs:
           python hub/test_packaging.py
           bash app/test-make-bundle.sh
           python hub/test_policy_helpers.py
+      - name: Diagnose exact SQLite contract snapshot differences
+        run: |
+          python hub/export_contracts.py --write
+          git diff -- hub/contracts/sqlite-fresh.json hub/contracts/sqlite-legacy-migrated.json
       - name: Verify MCP and SQLite contract snapshots
         run: python hub/export_contracts.py --check
       - name: Default staging regression
