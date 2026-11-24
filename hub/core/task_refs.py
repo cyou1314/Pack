@@ -5,7 +5,7 @@ import re
 
 
 SQLITE_INT_MAX = (1 << 63) - 1
-AUDIT_TASK_RE = re.compile(r"^task ([0-9]+)(?:\\Z|[: ])")
+AUDIT_TASK_RE = re.compile(r"^task ([0-9]+)(?:\Z|[: ])")
 
 
 def bounded_task_id(match) -> int | None:
