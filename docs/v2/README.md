@@ -16,7 +16,7 @@
 - M2-AGENT-EVENT-GATEWAY.md：Agent 专属配对凭证、事件写入 HTTP 契约和安全限制。
 - M2-OUTBOX-DELIVERY-WORKER.md：本地 Outbox 到 Hub Event Gateway 的持久化投递、重试与 ACK 语义。
 - M2-INBOX-CONSUMER-DESIGN.md：Hub Inbox 下游 Consumer 的 Lease、连续游标、部分 ACK、幂等和故障注入设计（内部服务与 migration v6 已在 PR #45 实现，尚未接业务投影）。
-- M2-SESSION-BINDING-PROJECTION-DESIGN.md：Hub 签发 Session 身份、可信 Room 绑定、Agent Session Message / Run 独立模型，以及投影副作用与 Inbox ACK 同事务提交的设计。
+- M2-SESSION-BINDING-PROJECTION-DESIGN.md：Hub 签发 Session 身份、可信 Room 绑定、Agent Session Message / Run 独立模型，以及投影副作用与 Inbox ACK 同事务提交的设计（M2a foundation 在 PR #47 实现中）。
 - PIBOT-REFERENCE-ASSESSMENT.md：PiBot 源码级参考评估、可借鉴模式与不引入边界。
 
 文档优先级：
