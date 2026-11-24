@@ -64,12 +64,9 @@ class TaskHistoryTests(unittest.TestCase):
     def test_task_audit_matches_only_exact_task_prefix_and_includes_ledger(self):
         for detail in (
             "task 1", "task 1: assigned", "task 1 completed",
-            "task 12 ignored", "task 10 ignored", "task 1x ignored",
+            "task 12 ignored", "task 10 ignored", "task 01 leading zero", "task 1x ignored",
         ):
-            self.conn.execute(
-                "INSERT INTO audit(ts,actor,action,detail) VALUES(8000,'tester','task_test',?)",
-                (detail,),
-            )
+            self.context.audit(self.conn, "tester", "task_test", detail)
         self.conn.commit()
         output = get_task_audit(self.context, 1)
         self.assertEqual(output["task"]["title"], "task-1")
@@ -86,11 +83,10 @@ class TaskHistoryTests(unittest.TestCase):
             get_task_audit(self.context, 999)
 
     def test_task_audit_caps_at_200_events_and_sets_truncated_flag(self):
-        self.conn.executemany(
-            "INSERT INTO audit(ts,actor,action,detail) "
-            "VALUES(8000,'tester','task_test',?)",
-            [(f"task 1 event {i:03}",) for i in range(205)],
-        )
+        for index in range(205):
+            self.context.audit(
+                self.conn, "tester", "task_test", f"task 1 event {index:03}"
+            )
         self.conn.commit()
         output = get_task_audit(self.context, 1)
         self.assertEqual(len(output["events"]), 200)
