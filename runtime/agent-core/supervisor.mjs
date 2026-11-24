@@ -641,6 +641,7 @@ export class RuntimeSupervisor {
   }
 
   #requireReady(agentId) {
+    if (this.#stopping) throw new Error("runtime_supervisor_stopping");
     const handle = this.#requireHandle(agentId);
     if (
       handle.status !== "ready" ||
