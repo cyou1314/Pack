@@ -1,5 +1,6 @@
 """Hub Inbox Consumer lease, cursor, ACK and recovery tests."""
 import sqlite3
+from dataclasses import replace
 import tempfile
 import threading
 import time
@@ -126,6 +127,7 @@ class AgentEventConsumerTests(unittest.TestCase):
             }
             self.assertIn("idx_agent_event_consumer_one_active_lease", indexes)
             self.assertIn("idx_agent_event_consumer_lease_items_pending", indexes)
+            self.assertIn("idx_agent_event_inbox_agent_inbox_seq", indexes)
         finally:
             connection.close()
 
@@ -229,6 +231,29 @@ class AgentEventConsumerTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM agent_event_consumer_cursors"
                 ).fetchone()[0],
                 1,
+            )
+        finally:
+            connection.close()
+
+    def test_claim_query_uses_agent_cursor_index_without_sort_temp_table(self):
+        connection = self.connect()
+        try:
+            plan = [
+                row["detail"] for row in connection.execute(
+                    """EXPLAIN QUERY PLAN
+                       SELECT inbox_seq,event_json FROM agent_event_inbox
+                       WHERE agent_id=? AND inbox_seq>?
+                       ORDER BY inbox_seq ASC LIMIT ?""",
+                    ("agent-1", 0, 100),
+                )
+            ]
+            self.assertTrue(
+                any("idx_agent_event_inbox_agent_inbox_seq" in detail for detail in plan),
+                plan,
+            )
+            self.assertFalse(
+                any("USE TEMP B-TREE FOR ORDER BY" in detail for detail in plan),
+                plan,
             )
         finally:
             connection.close()
@@ -379,6 +404,14 @@ class AgentEventConsumerTests(unittest.TestCase):
             ConsumerPrincipal("hub-event-projector", object())
         with self.assertRaises(PermissionError):
             _issue_consumer_principal("caller-selected-consumer")
+        forged_identity = replace(
+            self.principal, consumer_id="hub-session-projector",
+        )
+        with self.assertRaises(AgentEventLeaseUnauthorized):
+            claim_agent_events(self.context, forged_identity, "agent-1")
+        forged_copy = replace(self.principal)
+        with self.assertRaises(AgentEventLeaseUnauthorized):
+            claim_agent_events(self.context, forged_copy, "agent-1")
         with self.assertRaises(AgentEventLeaseUnauthorized):
             claim_agent_events(self.context, object(), "agent-1")
 
