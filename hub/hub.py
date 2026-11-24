@@ -1278,7 +1278,7 @@ READONLY_ALLOWED_TOOLS = frozenset({
 # 规则引擎本身。
 WORKSPACE_DENIED_TOOLS = frozenset({
     "egress_check", "skill_publish", "skill_assign", "skill_unassign",
-    "skill_rollback",
+    "skill_rollback", "agent_event_pair_create", "agent_event_tokens_revoke",
 })
 
 
@@ -2858,7 +2858,7 @@ def build_server(context: HubContext | None = None):
         require(me)
         return _heartbeat(context, me)
 
-    def _agent_gateway_dispatcher(request):
+    def _agent_gateway_dispatcher(request, tool_name):
         """Authenticate dispatcher control requests without reusing Agent tokens."""
         authorization = request.headers.get("authorization", "")
         if not authorization.lower().startswith("bearer "):
@@ -2879,7 +2879,13 @@ def build_server(context: HubContext | None = None):
                     return None, 401
             if member["role"] != "dispatcher":
                 return None, 403
-            return dict(member), 200
+            member = dict(member)
+            try:
+                _ext_check(member, tool_name)
+                _mode_check(member, tool_name)
+            except ValueError:
+                return None, 403
+            return member, 200
         finally:
             connection.close()
 
@@ -2888,7 +2894,7 @@ def build_server(context: HubContext | None = None):
         """仅调度员可为已登记 Agent 创建一次性事件网关配对码。"""
         from starlette.responses import JSONResponse
         import json as _json
-        actor, status = _agent_gateway_dispatcher(request)
+        actor, status = _agent_gateway_dispatcher(request, "agent_event_pair_create")
         if actor is None:
             return JSONResponse(
                 {"error": "unauthorized" if status == 401 else "forbidden"},
@@ -2923,7 +2929,7 @@ def build_server(context: HubContext | None = None):
         """仅调度员可撤销一个 Agent 的单个或全部事件写入 Token。"""
         from starlette.responses import JSONResponse
         import json as _json
-        actor, status = _agent_gateway_dispatcher(request)
+        actor, status = _agent_gateway_dispatcher(request, "agent_event_tokens_revoke")
         if actor is None:
             return JSONResponse(
                 {"error": "unauthorized" if status == 401 else "forbidden"},
