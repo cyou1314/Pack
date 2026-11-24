@@ -299,7 +299,7 @@ test("A process restart recovers an event committed before process exit", async 
 
 test("The store rejects non-JSON payloads and oversized events", async (t) => {
   const directory = await temporaryDirectory(t);
-  const store = await DurableEventStore.open({directory, maxEventBytes: 1024});
+  const store = await DurableEventStore.open({directory, maxEventBytes: 2048});
 
   await assert.rejects(
     () => store.append(makeEvent("event-undefined", {nested: {value: undefined}})),
@@ -320,9 +320,13 @@ test("The store rejects non-JSON payloads and oversized events", async (t) => {
     /event_not_json_serializable/,
   );
   await assert.rejects(
-    () => store.append(makeEvent("event-large", {text: "x".repeat(2048)})),
+    () => store.append(makeEvent("event-large", {text: "x".repeat(4096)})),
     /event_too_large/,
   );
+  let depthBoundary = {leaf: true};
+  for (let index = 0; index < 62; index += 1) depthBoundary = {child: depthBoundary};
+  await store.append(makeEvent("event-depth-boundary", {nested: depthBoundary}));
+
   let deeplyNested = {value: "x"};
   for (let index = 0; index < 70; index += 1) deeplyNested = {child: deeplyNested};
   await assert.rejects(
