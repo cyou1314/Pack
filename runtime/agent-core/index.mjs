@@ -10,6 +10,7 @@ export {
 
 export {AgentAdapterRegistry} from "./registry.mjs";
 export {RuntimeSupervisor} from "./supervisor.mjs";
+export {DurableEventStore} from "./durable-event-store.mjs";
 export {createContextPackage} from "./context-package.mjs";
 export {
   CodexAppServerAdapter,
