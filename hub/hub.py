@@ -2858,6 +2858,93 @@ def build_server(context: HubContext | None = None):
         require(me)
         return _heartbeat(context, me)
 
+    @mcp.tool
+    def agent_event_pair_code_create(agent_id: str, ttl_seconds: int = 600) -> dict:
+        """调度员为一个已登记 Agent 创建一次性短期事件网关配对码。
+        配对码只返回一次；兑换后生成独立 events:write Token，不复用成员 Bearer Token。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        return _create_agent_event_pair_code(
+            context, me, agent_id, ttl_seconds,
+            token_factory=lambda: "pk-pair-" + secrets.token_urlsafe(32),
+            hash_token=hash_token,
+        )
+
+    @mcp.tool
+    def agent_event_tokens_revoke(agent_id: str, token_id: int = 0) -> dict:
+        """调度员撤销指定 Agent 的一个事件 Token；token_id=0 撤销该 Agent 全部事件 Token。"""
+        me = authenticate()
+        require(me, "dispatcher")
+        return _revoke_agent_event_tokens(
+            context, me, agent_id, token_id if token_id > 0 else None,
+        )
+
+    @mcp.custom_route("/agent/pair/redeem", methods=["POST"])
+    async def agent_event_pair_redeem(request):
+        """公开的一次性 Agent 事件配对码兑换端点；不接受成员 Token。"""
+        from starlette.responses import JSONResponse
+        import json as _json
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 1024:
+                return JSONResponse({"error": "invalid_agent_pair_code"}, status_code=400)
+            body.extend(chunk)
+        try:
+            payload = _json.loads(body or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            payload = {}
+        code = payload.get("code") if isinstance(payload, dict) else None
+        try:
+            result = _redeem_agent_event_pair_code(
+                context, code,
+                token_factory=lambda: "pk-agent-event-" + secrets.token_urlsafe(32),
+                hash_token=hash_token,
+            )
+            return JSONResponse(result)
+        except _AgentPairRateLimited:
+            return JSONResponse({"error": "agent_pair_rate_limited"}, status_code=429)
+        except ValueError:
+            # Do not reveal whether a code exists, expired, was redeemed or locked.
+            return JSONResponse({"error": "invalid_agent_pair_code"}, status_code=400)
+
+    @mcp.custom_route("/agent/events", methods=["POST"])
+    async def agent_event_ingest(request):
+        """Agent 专用事件写入端点；只接受独立 events:write Token。"""
+        from starlette.responses import JSONResponse
+        import json as _json
+        authorization = request.headers.get("authorization", "")
+        if not authorization.lower().startswith("bearer "):
+            return JSONResponse({"error": "agent_event_unauthorized"}, status_code=401)
+        token = authorization[7:].strip()
+        if not token or len(token) > 256:
+            return JSONResponse({"error": "agent_event_unauthorized"}, status_code=401)
+
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 256 * 1024:
+                return JSONResponse({"error": "agent_event_too_large"}, status_code=413)
+            body.extend(chunk)
+        try:
+            event = _json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse({"error": "invalid_agent_event_json"}, status_code=400)
+        if not isinstance(event, dict):
+            return JSONResponse({"error": "invalid_agent_event"}, status_code=400)
+        try:
+            result = _ingest_agent_event_with_token(
+                context, token, event, hash_token=hash_token,
+            )
+            return JSONResponse(result)
+        except PermissionError:
+            return JSONResponse({"error": "agent_event_unauthorized"}, status_code=401)
+        except _AgentEventRateLimited:
+            return JSONResponse({"error": "agent_event_rate_limited"}, status_code=429)
+        except ValueError as error:
+            code = str(error)
+            if not code.replace("_", "").isalnum() or len(code) > 80:
+                code = "invalid_agent_event"
+            return JSONResponse({"error": code}, status_code=400)
+
     @mcp.custom_route("/pair", methods=["POST"])
     async def pair_redeem(request):
         """公开兑换路由（件一）：只验配对码本身、不经 authenticate
