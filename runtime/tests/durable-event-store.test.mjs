@@ -5,6 +5,7 @@ import {createHash} from "node:crypto";
 import {
   mkdtemp,
   mkdir,
+  open,
   readFile,
   readdir,
   rm,
@@ -148,6 +149,61 @@ test("Acknowledgements survive reopen and preserve eventId deduplication", async
     /event_id_conflict/,
   );
   await reopened.close();
+});
+
+test("A failed acknowledgement directory sync leaves Pending intact and retries the sync", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const store = await DurableEventStore.open({directory});
+  const event = makeEvent("event-ack-sync-failure");
+  await store.append(event);
+
+  const handle = await open(directory, "r");
+  const prototype = Object.getPrototypeOf(handle);
+  await handle.close();
+  const originalSync = prototype.sync;
+  let syncCalls = 0;
+  prototype.sync = async function(...args) {
+    syncCalls += 1;
+    if (syncCalls === 2) throw new Error("injected_sync_failure");
+    return originalSync.apply(this, args);
+  };
+
+  try {
+    await assert.rejects(() => store.acknowledge(event.eventId), /injected_sync_failure/);
+  } finally {
+    prototype.sync = originalSync;
+  }
+
+  assert.equal((await store.listPending()).length, 1);
+  assert.deepEqual(await store.acknowledge(event.eventId), {acknowledged: false});
+  assert.deepEqual(await store.listPending(), []);
+  assert.deepEqual(await store.append(event), {inserted: false, order: 1});
+  await store.close();
+});
+
+test("A failed record serialization removes its temp file and permits retry", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const store = await DurableEventStore.open({directory});
+  const event = makeEvent("event-temp-cleanup");
+  const originalStringify = JSON.stringify;
+  JSON.stringify = function(value, ...args) {
+    if (value?.kind === "event") throw new Error("injected_record_serialization_failure");
+    return originalStringify.call(this, value, ...args);
+  };
+
+  try {
+    await assert.rejects(
+      () => store.append(event),
+      /injected_record_serialization_failure/,
+    );
+  } finally {
+    JSON.stringify = originalStringify;
+  }
+
+  assert.deepEqual(await readdir(path.join(directory, "pending")), []);
+  assert.deepEqual(await store.append(event), {inserted: true, order: 1});
+  assert.equal((await store.listPending()).length, 1);
+  await store.close();
 });
 
 test("Startup treats a durable acknowledgement as authoritative after an interrupted cleanup", async (t) => {
