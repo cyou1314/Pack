@@ -46,7 +46,9 @@ Supervisor 构造时必须注入 `eventStore.append(event)`。该实现必须：
 - 同一 Agent 的并发 connect 复用同一个连接 Promise，避免创建多个 Adapter；
 - 同一 Agent 的并发 disconnect 复用同一个停止 Promise，disconnect 期间拒绝 reconnect；
 - disconnect 先阻止新命令，再等待已开始的命令完成，之后才停止 Adapter；
-- Provider 启动失败与 Event Store 降级分别记录；存储恢复不能把未成功连接的 Adapter 提升为 ready；
+- Provider 启动失败与 Event Store 降级分别记录；连接尚未完成时，事件恢复只能回到 `connecting`，不能提前提升为 ready；存储恢复也不能把最终启动失败提升为 ready；
+- Adapter disconnect 失败时保留实例与事件监听，标记 `disconnectFailed` 并允许显式重试；清理成功前禁止重新 connect；
+- shutdown 期间等待正在进行的 connect、command 和 disconnect 生命周期收敛，不能在清理旧实例后再启动新 Provider；
 - 每个 Agent 只接受与自身 `agentId` 和注册 Provider 一致的事件；
 - 事件按单 Adapter 到达顺序串行 append，不允许后续事件越过失败事件；
 - 事件 append 成功前不通知 UI/下游消费者；
@@ -93,7 +95,9 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 - 并发 connect 只创建一个 Adapter；
 - 并发 disconnect 只执行一次停止操作；
 - disconnect 等待正在执行的消息命令完成后再关闭 Adapter；
-- 启动失败与事件存储失败同时发生时，重试写入不会错误恢复为 ready；
+- disconnect 失败时保留 Adapter 和监听，第二次 cleanup 可成功；
+- 启动尚未完成时恢复事件只能保持 connecting；启动失败与事件存储失败同时发生时，重试写入不会错误恢复为 ready；
+- shutdown 与 reconnect cleanup 重叠时，不会创建未被 shutdown 管理的新 Adapter；
 - 审批授权等待期间 Agent 降级时，不向 Provider 发送审批决定；
 - 意外断开后可显式重新连接，旧 Adapter 监听被清理；
 - disconnect 结束前持久化最终状态事件。
