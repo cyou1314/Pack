@@ -17,6 +17,8 @@ const DEFAULT_MAX_EVENT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 1000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
+const STORE_MARKER = ".pack-event-store";
+const STORE_MARKER_CONTENT = "pack-runtime-event-store-v1\\n";
 
 function requiredText(value, field, maxLength = 160) {
   if (typeof value !== "string" || !value.trim() || value.trim().length > maxLength) {
@@ -96,6 +98,50 @@ function storeError(error) {
 
 function isMissing(error) {
   return error?.code === "ENOENT";
+}
+
+async function initializeStoreDirectory(directory) {
+  if (directory === path.parse(directory).root) throw new Error("event_store_unsafe_path");
+  await mkdir(directory, {recursive: true, mode: 0o700});
+  const stat = await lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error("event_store_unsafe_path");
+  }
+
+  const markerPath = path.join(directory, STORE_MARKER);
+  let markerExists = true;
+  try {
+    await lstat(markerPath);
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+    markerExists = false;
+  }
+
+  if (!markerExists) {
+    if ((await readdir(directory)).length) throw new Error("event_store_unsafe_path");
+    let handle;
+    try {
+      handle = await open(markerPath, "wx", 0o600);
+      await handle.writeFile(STORE_MARKER_CONTENT, "utf8");
+      await handle.sync();
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  }
+
+  const markerStat = await lstat(markerPath);
+  if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
+    throw new Error("event_store_unsafe_path");
+  }
+  await chmod(markerPath, 0o600);
+  if ((await readFile(markerPath, "utf8")) !== STORE_MARKER_CONTENT) {
+    throw new Error("event_store_corrupt");
+  }
+  await chmod(directory, 0o700);
+  await syncDirectory(directory);
+  await syncDirectory(path.dirname(directory));
 }
 
 async function ensurePrivateDirectory(directory) {
@@ -259,7 +305,7 @@ export class DurableEventStore {
 
   async #initialize() {
     try {
-      await ensurePrivateDirectory(this.#directory);
+      await initializeStoreDirectory(this.#directory);
       await ensurePrivateDirectory(this.#pendingDirectory);
       await ensurePrivateDirectory(this.#acknowledgedDirectory);
       await syncDirectory(this.#directory);
