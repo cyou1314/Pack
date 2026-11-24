@@ -15,6 +15,8 @@ import {
 import os from "node:os";
 import path from "node:path";
 import {createAgentEvent} from "../agent-core/contract.mjs";
+import {AgentAdapterRegistry} from "../agent-core/registry.mjs";
+import {RuntimeSupervisor} from "../agent-core/supervisor.mjs";
 import {DurableEventStore} from "../agent-core/durable-event-store.mjs";
 
 const moduleUrl = new URL("../agent-core/durable-event-store.mjs", import.meta.url).href;
@@ -58,6 +60,73 @@ test("DurableEventStore persists ordered pending events across reopen", async (t
   const pending = await reopened.listPending();
   assert.deepEqual(pending.map((item) => item.order), [1, 2]);
   assert.deepEqual(pending.map((item) => item.event.payload.text), ["one", "two"]);
+  await reopened.close();
+});
+
+test("DurableEventStore can back RuntimeSupervisor event persistence", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const descriptor = {
+    adapterId: "store.integration",
+    providerId: "store-test",
+    displayName: "Store Integration Adapter",
+    version: "1.0.0",
+    mode: "local_runtime",
+    authKind: "local_process",
+    capabilities: ["events.push"],
+  };
+  class StoreIntegrationAdapter {
+    constructor(agentId) {
+      this.agentId = agentId;
+      this.connected = false;
+      this.sequence = 0;
+      this.listeners = new Set();
+    }
+    subscribe(handler) {
+      this.listeners.add(handler);
+      return () => this.listeners.delete(handler);
+    }
+    emit(status) {
+      const event = createAgentEvent({
+        eventId: "store-integration-" + (++this.sequence),
+        eventType: "connection.changed",
+        providerId: "store-test",
+        agentId: this.agentId,
+        occurredAt: "2026-11-24T03:00:00.000Z",
+        sequence: this.sequence,
+        payload: {status},
+      });
+      for (const listener of this.listeners) listener(event);
+    }
+    async connect() {
+      this.connected = true;
+      this.emit("ready");
+    }
+    async disconnect() {
+      this.connected = false;
+      this.emit("disconnected");
+    }
+    async sendMessage() { return {accepted: true}; }
+    getHealth() { return {status: this.connected ? "ready" : "disconnected"}; }
+  }
+
+  const registry = new AgentAdapterRegistry();
+  registry.register({
+    descriptor,
+    create: async ({agentId}) => new StoreIntegrationAdapter(agentId),
+  });
+  const store = await DurableEventStore.open({directory});
+  const supervisor = new RuntimeSupervisor({registry, eventStore: store});
+  const connected = await supervisor.connectAgent({
+    agentId: "store-agent",
+    adapterId: descriptor.adapterId,
+  });
+  assert.equal(connected.status, "ready");
+  await supervisor.shutdown();
+  await store.close();
+
+  const reopened = await DurableEventStore.open({directory});
+  const pending = await reopened.listPending();
+  assert.deepEqual(pending.map((item) => item.event.payload.status), ["ready", "disconnected"]);
   await reopened.close();
 });
 
