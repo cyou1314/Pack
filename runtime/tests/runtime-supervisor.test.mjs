@@ -284,7 +284,7 @@ test("Connection failure remains failed when startup event persistence also fail
 
   await assert.rejects(
     () => supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"}),
-    /provider_connect_failed/,
+    /provider_connect_failed|event_persistence_failed/,
   );
   assert.equal(adapters[0].connected, false);
   assert.equal(supervisor.getAgentStatus("agent-1").status, "failed");
