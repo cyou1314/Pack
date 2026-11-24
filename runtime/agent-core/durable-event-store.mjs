@@ -274,6 +274,8 @@ async function readJsonRecord(filePath, kind, expectedHash, maxBytes) {
       record.version !== FORMAT_VERSION ||
       record.kind !== kind ||
       typeof record.eventId !== "string" ||
+      !record.eventId.trim() ||
+      record.eventId.length > 160 ||
       eventIdDigest(record.eventId) !== expectedHash ||
       !Number.isSafeInteger(record.order) ||
       record.order < 1 ||
