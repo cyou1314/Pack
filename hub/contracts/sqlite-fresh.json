@@ -536,10 +536,29 @@
           "notnull": false,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "INTEGER"
         }
       ],
       "foreign_keys": [],
-      "indexes": [],
+      "indexes": [
+        {
+          "columns": [
+            "task_id",
+            "id"
+          ],
+          "name": "idx_audit_task",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_audit_task ON audit(task_id,id)",
+          "unique": false
+        }
+      ],
       "name": "audit"
     },
     {
@@ -1240,6 +1259,28 @@
       "indexes": [
         {
           "columns": [
+            "task_id",
+            "id"
+          ],
+          "name": "idx_messages_approval_task",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE INDEX idx_messages_approval_task\n           ON messages(task_id,id DESC) WHERE kind='approval_request'",
+          "unique": false
+        },
+        {
+          "columns": [
+            "author_id",
+            "id"
+          ],
+          "name": "idx_messages_dispatch_decisions",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE INDEX idx_messages_dispatch_decisions\n           ON messages(author_id,id) WHERE kind IN ('chat','decision')",
+          "unique": false
+        },
+        {
+          "columns": [
             "room_id",
             "id"
           ],
@@ -1527,7 +1568,19 @@
         }
       ],
       "foreign_keys": [],
-      "indexes": [],
+      "indexes": [
+        {
+          "columns": [
+            "task_id",
+            "created_at"
+          ],
+          "name": "idx_review_log_task_time",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_review_log_task_time ON review_log(task_id,created_at)",
+          "unique": false
+        }
+      ],
       "name": "review_log"
     },
     {

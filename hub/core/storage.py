@@ -5,6 +5,8 @@ import sqlite3
 import time
 from os import PathLike
 
+from .task_refs import audit_task_id
+
 
 def connect(
     db_path: str | PathLike[str],
@@ -37,7 +39,18 @@ def write_audit(
     """Insert one audit row without committing the caller's transaction."""
     if timestamp is None:
         timestamp = time.time()
-    connection.execute(
-        "INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
-        (timestamp, actor, action, detail),
-    )
+    try:
+        connection.execute(
+            "INSERT INTO audit(ts,actor,action,detail,task_id) VALUES(?,?,?,?,?)",
+            (timestamp, actor, action, detail, audit_task_id(detail)),
+        )
+    except sqlite3.OperationalError as error:
+        if "no column named task_id" not in str(error):
+            raise
+        # HubContext can be used by bootstrap/tests before hub.init() has
+        # upgraded a legacy audit table. Keep that write compatible; v2
+        # backfills it after the column is added.
+        connection.execute(
+            "INSERT INTO audit(ts,actor,action,detail) VALUES(?,?,?,?)",
+            (timestamp, actor, action, detail),
+        )

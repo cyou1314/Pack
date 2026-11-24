@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for the additive Agent Registry schema migration."""
 import sqlite3
+import re
 import tempfile
 import threading
 import unittest
@@ -35,6 +36,19 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 created_at REAL NOT NULL
+            );
+            CREATE TABLE audit(
+                id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL,
+                action TEXT NOT NULL, detail TEXT
+            );
+            CREATE TABLE messages(
+                id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL,
+                task_id INTEGER, created_at REAL NOT NULL,
+                deleted_at REAL, edited_at REAL
+            );
+            CREATE TABLE review_log(
+                id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, created_at REAL NOT NULL
             );
             INSERT INTO rooms(id,name,created_at) VALUES(1,'room-a',1);
             INSERT INTO members(id,name,role,created_at,provider,display_name,kind,login_state)
@@ -109,7 +123,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     connection.execute(
-                        "SELECT version,name FROM hub_schema_migrations"
+                        "SELECT version,name FROM hub_schema_migrations WHERE version=1"
                     ).fetchone()["name"],
                     "additive_agent_registry",
                 )
@@ -131,7 +145,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 self.assertEqual([tuple(row) for row in first], [tuple(row) for row in second])
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    1,
+                    2,
                 )
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
@@ -140,6 +154,88 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     )
                 connection.rollback()
             finally:
+                connection.close()
+
+    def test_structured_task_audit_backfill_is_exact_bounded_and_idempotent(self):
+        with tempfile.TemporaryDirectory(prefix="pack-task-audit-migration-") as directory:
+            connection = self._database(directory)
+            try:
+                details = (
+                    "task 1",
+                    "task 1: assigned",
+                    "task 1 completed",
+                    "task 12 ignored",
+                    "task 01 leading zero",
+                    "task 1x suffix",
+                    "task 9223372036854775808 overflow",
+                    "task 9223372036854775807 boundary",
+                )
+                connection.executemany(
+                    "INSERT INTO audit(ts,actor,action,detail) VALUES(1,'legacy','test',?)",
+                    [(detail,) for detail in details],
+                )
+                connection.executemany(
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) "
+                    "VALUES(1,1,'approval_request',?,NULL,1)",
+                    [("申请批准 任务#1：旧请求",), ("申请批准 任务#9223372036854775808：越界",)],
+                )
+                connection.commit()
+
+                apply_migrations(connection, clock=lambda: 100.0)
+                rows = connection.execute(
+                    "SELECT detail,task_id FROM audit ORDER BY id"
+                ).fetchall()
+                self.assertEqual(
+                    [(row["detail"], row["task_id"]) for row in rows],
+                    [
+                        ("task 1", 1),
+                        ("task 1: assigned", 1),
+                        ("task 1 completed", 1),
+                        ("task 12 ignored", 12),
+                        ("task 01 leading zero", None),
+                        ("task 1x suffix", None),
+                        ("task 9223372036854775808 overflow", None),
+                        ("task 9223372036854775807 boundary", 9223372036854775807),
+                    ],
+                )
+                indexes = {
+                    row["name"] for row in connection.execute("PRAGMA index_list(audit)")
+                }
+                self.assertIn("idx_audit_task", indexes)
+                approval_ids = [
+                    row["task_id"] for row in connection.execute(
+                        "SELECT task_id FROM messages ORDER BY id"
+                    )
+                ]
+                self.assertEqual(approval_ids, [1, None])
+
+                apply_migrations(connection, clock=lambda: 200.0)
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
+                    2,
+                )
+                self.assertEqual(
+                    [row["task_id"] for row in connection.execute(
+                        "SELECT task_id FROM audit ORDER BY id"
+                    )],
+                    [1, 1, 1, 12, None, None, None, 9223372036854775807],
+                )
+            finally:
+                connection.close()
+
+    def test_task_audit_backfill_changes_are_detected_by_ledger_checksum(self):
+        from core import migrations
+
+        with tempfile.TemporaryDirectory(prefix="pack-task-audit-checksum-") as directory:
+            connection = self._database(directory)
+            original = migrations.APPROVAL_TASK_RE
+            try:
+                apply_migrations(connection, clock=lambda: 100.0)
+                migrations.APPROVAL_TASK_RE = re.compile(r"task:([0-9]+)")
+                with self.assertRaisesRegex(RuntimeError, "checksum mismatch at version 2"):
+                    apply_migrations(connection, clock=lambda: 200.0)
+            finally:
+                migrations.APPROVAL_TASK_RE = original
                 connection.close()
 
     def test_backfill_mapping_changes_are_detected_by_ledger_checksum(self):
@@ -191,7 +287,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     verify.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    1,
+                    2,
                 )
                 self.assertEqual(
                     verify.execute("SELECT COUNT(*) FROM agents").fetchone()[0],
@@ -212,11 +308,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 )
                 connection.executescript(
                     """
-                    CREATE TABLE messages(
-                        id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
-                        author_id INTEGER NOT NULL, kind TEXT NOT NULL,
-                        body TEXT NOT NULL, created_at REAL NOT NULL
-                    );
+
                     CREATE TABLE tasks(
                         id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
                         title TEXT NOT NULL, body TEXT NOT NULL,
@@ -254,8 +346,8 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                         member_id INTEGER NOT NULL, op_key TEXT NOT NULL,
                         message_id INTEGER, created_at REAL NOT NULL
                     );
-                    INSERT INTO messages VALUES(
-                        41,1,1,'chat','legacy-message-sentinel',11
+                    INSERT INTO messages(id,room_id,author_id,kind,body,task_id,created_at) VALUES(
+                        41,1,1,'chat','legacy-message-sentinel',NULL,11
                     );
                     INSERT INTO tasks VALUES(
                         51,1,'legacy-task-sentinel','task-body-sentinel',

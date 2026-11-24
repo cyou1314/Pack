@@ -1,7 +1,7 @@
 """Canonical SQLite base schema for the Pack Hub.
 
-Incremental upgrades remain in hub.init() until the migration sequence has
-explicit fixtures and a stable migration runner.
+The base schema creates fresh databases. Legacy compatibility columns remain
+in hub.init(); additive data backfills and query indexes use core.migrations.
 """
 
 SCHEMA = """
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS tasks(
   result TEXT, envelope TEXT, review_note TEXT, fail_class TEXT, next_claim_at REAL,
   created_at REAL NOT NULL, updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS audit(
-  id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT);
+  id INTEGER PRIMARY KEY, ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT, task_id INTEGER);
 CREATE TABLE IF NOT EXISTS room_summaries(
   room_id INTEGER PRIMARY KEY, data TEXT NOT NULL,
   updated_at REAL NOT NULL, updated_by TEXT NOT NULL);

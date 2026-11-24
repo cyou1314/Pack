@@ -8,6 +8,11 @@ from __future__ import annotations
 
 import json
 
+if __package__ and "." in __package__:
+    from ..core.task_refs import bounded_task_id
+else:
+    from core.task_refs import bounded_task_id
+
 
 def post_message(context, me, room: str, body: str, kind: str = "chat",
                     attachment_ids: str = "", reply_to_id: int = 0,
@@ -68,25 +73,30 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
                           f"kind={kind} room={room}")
                     conn.commit()
                 raise ValueError(f"kind not allowed for external members: {kind}")
+        msg_task_id = None
+        msg_payload = None
         if kind == "approval_request":
             m = task_ref_re.search(body or "")
+            task_id = bounded_task_id(m)
             t = None
-            if m:
-                t = conn.execute("SELECT assignee, status FROM tasks WHERE id=?",
-                                 (int(m.group(1)),)).fetchone()
+            if task_id is not None:
+                t = conn.execute(
+                    "SELECT assignee, status FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
             if not t:
                 raise ValueError("approval_request must reference an existing task")
             if me["role"] != "dispatcher" and (
                     t["assignee"] != me["id"] or t["status"] not in ("claimed", "working")):
                 raise ValueError("approval_request only from the member executing that task")
-        msg_task_id = None
-        msg_payload = None
+            msg_task_id = task_id
         if kind == "question":
             m = task_ref_re.search(body or "")
+            task_id = bounded_task_id(m)
             t = None
-            if m:
-                t = conn.execute("SELECT id, assignee, status FROM tasks WHERE id=?",
-                                 (int(m.group(1)),)).fetchone()
+            if task_id is not None:
+                t = conn.execute(
+                    "SELECT id, assignee, status FROM tasks WHERE id=?", (task_id,)
+                ).fetchone()
             if not t:
                 raise ValueError("question must reference an existing task")
             if me["role"] != "dispatcher" and (
@@ -120,14 +130,14 @@ def post_message(context, me, room: str, body: str, kind: str = "chat",
             msg_task_id = tgt["task_id"]
             if msg_task_id is None:
                 mq = task_ref_re.search(tgt["body"] or "")
-                msg_task_id = int(mq.group(1)) if mq else None
+                msg_task_id = bounded_task_id(mq)
         if ext:
             # 频控在落库前判定：普通消息走三窗口（approval_request 不
             # 计入），approval_request 走独立硬顶（单任务 + 单成员每小时）。
             nowx = context.clock()
             if kind == "approval_request":
                 m2 = task_ref_re.search(body or "")
-                tid2 = int(m2.group(1)) if m2 else None
+                tid2 = bounded_task_id(m2)
                 per_task = conn.execute(
                     "SELECT COUNT(*) AS n FROM messages WHERE author_id=?"
                     " AND kind='approval_request' AND task_id=?",

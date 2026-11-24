@@ -74,7 +74,7 @@ class StorageTests(unittest.TestCase):
             try:
                 connection.execute(
                     "CREATE TABLE audit(ts REAL NOT NULL, actor TEXT NOT NULL, "
-                    "action TEXT NOT NULL, detail TEXT)"
+                    "action TEXT NOT NULL, detail TEXT, task_id INTEGER)"
                 )
                 write_audit(
                     connection,
@@ -83,8 +83,17 @@ class StorageTests(unittest.TestCase):
                     "task=9",
                     timestamp=123.5,
                 )
-                row = connection.execute("SELECT * FROM audit").fetchone()
-                self.assertEqual(tuple(row), (123.5, "member-a", "task_update", "task=9"))
+                write_audit(
+                    connection, "member-b", "task_claim", "task 9 claimed", timestamp=124.5
+                )
+                rows = connection.execute("SELECT * FROM audit ORDER BY ts").fetchall()
+                self.assertEqual(
+                    [tuple(row) for row in rows],
+                    [
+                        (123.5, "member-a", "task_update", "task=9", None),
+                        (124.5, "member-b", "task_claim", "task 9 claimed", 9),
+                    ],
+                )
                 self.assertTrue(connection.in_transaction)
                 connection.rollback()
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit").fetchone()[0], 0)

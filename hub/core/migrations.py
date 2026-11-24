@@ -1,8 +1,9 @@
-"""Versioned, additive SQLite migrations for the Pack Agent Registry.
+"""Versioned, additive SQLite migrations for Pack Hub data.
 
-Migrations are deliberately separate from the legacy Hub initializer. Each
-migration is applied under BEGIN IMMEDIATE and recorded with a content
-checksum so repeated or concurrent initialization is safe.
+The ledger currently covers the Agent Registry (v1) and structured task audit
+plus approval lookup indexes (v2). Each migration is applied under BEGIN
+IMMEDIATE and recorded with a content checksum so repeated or concurrent
+initialization is safe.
 """
 from __future__ import annotations
 
@@ -12,6 +13,11 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from typing import Callable
+
+from .task_refs import (
+    APPROVAL_TASK_RE, AUDIT_TASK_RE, SQLITE_INT_MAX,
+    audit_task_id, bounded_task_id,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +130,16 @@ def _checksum(migration: Migration) -> str:
             "provider_for_source": _normalized_function_source(_provider_for),
             "apply_registry_v1_source": _normalized_function_source(_apply_registry_v1),
         }
+    elif migration.version == 2:
+        # Freeze the structured audit parser and its backfill implementation.
+        payload["data_migration"] = {
+            "audit_task_pattern": AUDIT_TASK_RE.pattern,
+            "approval_task_pattern": APPROVAL_TASK_RE.pattern,
+            "sqlite_int_max": SQLITE_INT_MAX,
+            "bounded_task_id_source": _normalized_function_source(bounded_task_id),
+            "audit_task_id_source": _normalized_function_source(audit_task_id),
+            "apply_task_audit_v2_source": _normalized_function_source(_apply_task_audit_v2),
+        }
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
@@ -204,7 +220,70 @@ def _apply_registry_v1(connection: sqlite3.Connection, now: float) -> None:
         )
 
 
-MIGRATIONS = (_REGISTRY_V1,)
+def _apply_task_audit_v2(connection: sqlite3.Connection) -> None:
+    """Add structured audit ownership, backfill legacy prefixes and index lookups."""
+    required_tables = {"audit", "messages", "review_log"}
+    existing_tables = {
+        row["name"] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    missing = sorted(required_tables - existing_tables)
+    if missing:
+        raise RuntimeError(
+            "structured task audit migration requires tables: " + ", ".join(missing)
+        )
+
+    audit_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(audit)")
+    }
+    if "task_id" not in audit_columns:
+        connection.execute("ALTER TABLE audit ADD COLUMN task_id INTEGER")
+
+    # Preserve existing non-NULL associations and infer only canonical legacy
+    # prefixes. Task-like text elsewhere is deliberately left unassociated.
+    for row in connection.execute(
+        "SELECT id,detail FROM audit WHERE task_id IS NULL ORDER BY id"
+    ):
+        task_id = audit_task_id(row["detail"])
+        if task_id is not None:
+            connection.execute(
+                "UPDATE audit SET task_id=? WHERE id=? AND task_id IS NULL",
+                (task_id, row["id"]),
+            )
+
+    # Backfill historical approval requests so normal reads use the partial index.
+    for row in connection.execute(
+        "SELECT id,body FROM messages "
+        "WHERE kind='approval_request' AND task_id IS NULL ORDER BY id"
+    ):
+        task_id = bounded_task_id(APPROVAL_TASK_RE.search(row["body"] or ""))
+        if task_id is not None:
+            connection.execute(
+                "UPDATE messages SET task_id=? WHERE id=? AND task_id IS NULL",
+                (task_id, row["id"]),
+            )
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_audit_task ON audit(task_id,id)",
+        """CREATE INDEX IF NOT EXISTS idx_messages_approval_task
+           ON messages(task_id,id DESC) WHERE kind='approval_request'""",
+        """CREATE INDEX IF NOT EXISTS idx_messages_dispatch_decisions
+           ON messages(author_id,id) WHERE kind IN ('chat','decision')""",
+        "CREATE INDEX IF NOT EXISTS idx_review_log_task_time "
+        "ON review_log(task_id,created_at)",
+    ):
+        connection.execute(statement)
+
+
+_TASK_AUDIT_V2 = Migration(
+    version=2,
+    name="structured_task_audit_and_approval_indexes",
+    statements=(),
+)
+
+
+MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2)
 
 
 def apply_migrations(
@@ -212,7 +291,7 @@ def apply_migrations(
     *,
     clock: Callable[[], float],
 ) -> None:
-    """Apply pending Agent Registry migrations atomically and idempotently."""
+    """Apply pending Hub migrations atomically and idempotently."""
     connection.execute("BEGIN IMMEDIATE")
     try:
         connection.execute(
@@ -248,6 +327,8 @@ def apply_migrations(
                 connection.execute(statement)
             if migration.version == 1:
                 _apply_registry_v1(connection, float(clock()))
+            elif migration.version == 2:
+                _apply_task_audit_v2(connection)
             connection.execute(
                 "INSERT INTO hub_schema_migrations(version,name,checksum,applied_at) "
                 "VALUES(?,?,?,?)",

@@ -35,12 +35,11 @@ def get_task_audit(context, task_id: int) -> dict:
     if not t:
         conn.close()
         raise ValueError(f"no such task: {task_id}")
-    pre = f"task {task_id}"
     arows = conn.execute(
         """SELECT ts, actor, action, detail FROM audit
-           WHERE detail=? OR detail LIKE ? OR detail LIKE ?
-           ORDER BY id ASC LIMIT 201""",
-        (pre, pre + ":%", pre + " %")).fetchall()
+           WHERE task_id=? ORDER BY id ASC LIMIT 201""",
+        (task_id,),
+    ).fetchall()
     rrows = conn.execute(
         """SELECT r.fence, mb.name AS member, r.status, r.outcome, r.detail,
                   r.started_at, r.ended_at
@@ -1335,11 +1334,10 @@ def inspect_unclaimed_tasks(context, conn, now: float, *,
             if relayed:
                 continue
             seen = conn.execute(
-                "SELECT COUNT(*) AS n FROM audit "
-                "WHERE action='task_unclaimed_escalate' "
-                "AND detail LIKE ?",
-                (f"task {task['id']} assignee_id={task['assignee']} %",),
-            ).fetchone()["n"]
+                "SELECT 1 FROM audit WHERE task_id=? "
+                "AND action='task_unclaimed_escalate' AND detail LIKE ? LIMIT 1",
+                (task["id"], f"task {task['id']} assignee_id={task['assignee']} %"),
+            ).fetchone()
             if seen:
                 continue
             dispatcher = conn.execute(
