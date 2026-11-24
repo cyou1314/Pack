@@ -496,7 +496,8 @@ export class CodexAppServerAdapter {
     const params = message.params ?? {};
     const sessionId = params.threadId ?? params.turn?.threadId;
     const runId = params.turnId ?? params.turn?.id;
-    if (this.#pendingSessionStart && sessionId) {
+    if (message.method !== "serverRequest/resolved"
+        && this.#pendingSessionStart && sessionId) {
       this.#bufferedSessionEvents.push({kind: "notification", message});
       return;
     }
