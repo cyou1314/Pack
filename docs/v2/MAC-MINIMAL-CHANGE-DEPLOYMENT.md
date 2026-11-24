@@ -48,8 +48,13 @@ bash installer/mac-inventory.sh
 
 ```bash
 HUB="$HOME/.pack/local-hub"
-SHADOW_ROOT="$HOME/commander-work/pack-shadow"
-mkdir -p "$SHADOW_ROOT"
+mkdir -p "$HOME/commander-work"
+chmod 700 "$HOME/commander-work"
+SHADOW_ROOT="$(mktemp -d "$HOME/commander-work/pack-shadow.XXXXXX")"
+chmod 700 "$SHADOW_ROOT"
+REPORT="$HOME/commander-work/agent-registry-shadow-$(date -u '+%Y%m%dT%H%M%SZ').json"
+trap 'rm -rf "$SHADOW_ROOT"' EXIT
+
 ditto "$DMG_NEW/hub" "$SHADOW_ROOT/hub"
 cp "$BACKUP_DB" "$SHADOW_ROOT/hub/pack.db"
 cp "$HUB/.dispatcher_token" "$SHADOW_ROOT/hub/.dispatcher_token"
@@ -61,7 +66,9 @@ PYTHONPATH="$SHADOW_ROOT/hub" \
   "$DMG_NEW/python/bin/python3" \
   "$SHADOW_ROOT/hub/services/agent_registry_shadow.py" \
   --db "$SHADOW_ROOT/hub/pack.db" \
-  > "$SHADOW_ROOT/agent-registry-shadow.json"
+  > "$REPORT"
+chmod 600 "$REPORT"
+cat "$REPORT"
 ```
 
 Shadow CLI 以 SQLite `mode=ro` + `query_only=ON` 打开指定副本。候选 `hub.py init` 是唯一会写这个 staging 副本的步骤；不要把 `BACKUP_DB` 指向 live DB。
