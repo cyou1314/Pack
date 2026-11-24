@@ -10,7 +10,10 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VENV_PY = os.path.expanduser("~/workspace/pack/hub/.venv/bin/python")
+VENV_PY = os.environ.get("PACK_TEST_PY") or os.path.expanduser(
+    "~/workspace/pack/hub/.venv/bin/python")
+if not os.path.isfile(VENV_PY):
+    VENV_PY = sys.executable
 OLD = os.path.join(HERE, "mig56_old")
 NEW = os.path.join(HERE, "mig56_new")
 res = []

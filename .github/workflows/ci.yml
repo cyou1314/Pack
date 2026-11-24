@@ -31,6 +31,7 @@ jobs:
           bash -n hub/test_backup.sh
           bash -n hub/install-services.sh
           bash -n run-all-suites.sh
+          bash -n tests/archive/hub-staging56/run_tests.sh
           bash -n installer/build-dmg.sh
           bash -n installer/upgrade.command
           bash -n installer/mac-inventory.sh
@@ -100,6 +101,8 @@ jobs:
         run: python hub/export_contracts.py --check
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
+      - name: Staging56 access-mode and migration regression
+        run: PY=python ./tests/archive/hub-staging56/run_tests.sh
 
   runtime:
     name: Runtime / syntax and contracts
