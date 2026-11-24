@@ -38,45 +38,63 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function assertJsonValue(value, seen = new Set(), depth = 0) {
+function hasSerializationHook(value) {
+  for (let current = value; current; current = Object.getPrototypeOf(current)) {
+    if (Object.getOwnPropertyDescriptor(current, "toJSON")) return true;
+  }
+  return false;
+}
+
+function cloneJsonValue(value, seen = new Set(), depth = 0) {
   if (depth > MAX_EVENT_DEPTH) throw new TypeError("event_payload_too_deep");
-  if (value === null || typeof value === "string" || typeof value === "boolean") return;
-  if (typeof value === "number" && Number.isFinite(value)) return;
-  if (typeof value !== "object" || seen.has(value)) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "object" || seen.has(value) || hasSerializationHook(value)) {
     throw new TypeError("event_not_json_serializable");
   }
 
   seen.add(value);
+  let result;
   if (Array.isArray(value)) {
-    if (Object.getPrototypeOf(value) !== Array.prototype ||
+    const prototype = Object.getPrototypeOf(value);
+    if ((prototype !== Array.prototype && prototype !== null) ||
         Object.keys(value).length !== value.length ||
         Object.getOwnPropertySymbols(value).length) {
       throw new TypeError("event_not_json_serializable");
     }
+    result = [];
+    Object.setPrototypeOf(result, null);
     for (let index = 0; index < value.length; index += 1) {
       const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
       if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
         throw new TypeError("event_not_json_serializable");
       }
-      assertJsonValue(descriptor.value, seen, depth + 1);
+      result[index] = cloneJsonValue(descriptor.value, seen, depth + 1);
     }
   } else {
     if (!isPlainObject(value) || Object.getOwnPropertySymbols(value).length) {
       throw new TypeError("event_not_json_serializable");
     }
+    result = Object.create(null);
     for (const key of Object.keys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
         throw new TypeError("event_not_json_serializable");
       }
-      assertJsonValue(descriptor.value, seen, depth + 1);
+      result[key] = cloneJsonValue(descriptor.value, seen, depth + 1);
     }
   }
   seen.delete(value);
+  return result;
 }
 
+
 function canonicalJson(value) {
-  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  if (Array.isArray(value)) {
+    const parts = [];
+    for (let index = 0; index < value.length; index += 1) parts.push(canonicalJson(value[index]));
+    return "[" + parts.join(",") + "]";
+  }
   if (isPlainObject(value)) {
     return "{" + Object.keys(value).sort().map((key) =>
       JSON.stringify(key) + ":" + canonicalJson(value[key])
@@ -85,25 +103,44 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
+
 function normalizeEvent(input, maxEventBytes) {
-  if (isPlainObject(input)) {
-    const descriptor = Object.getOwnPropertyDescriptor(input, "payload");
-    if (descriptor && (!descriptor.enumerable || !Object.hasOwn(descriptor, "value"))) {
+  if (!isPlainObject(input) || Object.getOwnPropertySymbols(input).length) {
+    return createAgentEvent(input);
+  }
+  if (Object.getOwnPropertyDescriptor(input, "toJSON")) {
+    throw new TypeError("event_not_json_serializable");
+  }
+
+  const safeInput = Object.create(null);
+  for (const key of Object.keys(input)) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
       throw new TypeError("event_not_json_serializable");
     }
-    if (descriptor?.value !== undefined) assertJsonValue(descriptor.value);
+    safeInput[key] = descriptor.value;
   }
-  const event = createAgentEvent(input);
-  assertJsonValue(event);
-  const serialized = JSON.stringify(event);
+  const payloadDescriptor = Object.getOwnPropertyDescriptor(input, "payload");
+  if (payloadDescriptor && (!payloadDescriptor.enumerable || !Object.hasOwn(payloadDescriptor, "value"))) {
+    throw new TypeError("event_not_json_serializable");
+  }
+  if (payloadDescriptor?.value !== undefined) {
+    safeInput.payload = cloneJsonValue(payloadDescriptor.value);
+  }
+
+  const event = createAgentEvent(safeInput);
+  const safeEvent = cloneJsonValue(event);
+  const serialized = JSON.stringify(safeEvent);
   if (Buffer.byteLength(serialized, "utf8") > maxEventBytes) {
     throw new TypeError("event_too_large");
   }
+  const persistedEvent = JSON.parse(serialized);
   return {
-    event: JSON.parse(serialized),
-    eventHash: digest(canonicalJson(event)),
+    event: persistedEvent,
+    eventHash: digest(canonicalJson(persistedEvent)),
   };
 }
+
 
 function storeError(error) {
   if (error instanceof Error && /^[a-z0-9_.:-]{1,80}$/i.test(error.message)) return error;
@@ -213,18 +250,18 @@ async function readJsonRecord(filePath, kind, expectedHash, maxBytes) {
   if (kind === "event") {
     let event;
     try {
-      assertJsonValue(record.event?.payload ?? {});
-      event = createAgentEvent(record.event);
-      assertJsonValue(event);
+      const safePayload = cloneJsonValue(record.event?.payload ?? {});
+      event = createAgentEvent({...record.event, payload: safePayload});
+      const safeEvent = cloneJsonValue(event);
+      if (event.eventId !== record.eventId ||
+          canonicalJson(safeEvent) !== canonicalJson(record.event) ||
+          digest(canonicalJson(safeEvent)) !== record.eventHash) {
+        throw new Error("event_store_corrupt");
+      }
     } catch {
       throw new Error("event_store_corrupt");
     }
-    if (event.eventId !== record.eventId ||
-        canonicalJson(event) !== canonicalJson(record.event) ||
-        digest(canonicalJson(event)) !== record.eventHash) {
-      throw new Error("event_store_corrupt");
-    }
-    return {kind, eventId: record.eventId, eventHash: record.eventHash, order: record.order, event};
+    return {kind, eventId: record.eventId, eventHash: record.eventHash, order: record.order, event: record.event};
   }
 
   if (typeof record.acknowledgedAt !== "string" ||
@@ -240,27 +277,32 @@ async function readJsonRecord(filePath, kind, expectedHash, maxBytes) {
   };
 }
 
+
 async function atomicCreateJson(directory, target, record) {
   const temporary = path.join(directory, ".tmp-" + randomUUID());
   let handle;
+  let createdTemporary = false;
   try {
     handle = await open(temporary, "wx", 0o600);
+    createdTemporary = true;
     await handle.writeFile(JSON.stringify(record) + "\n", "utf8");
     await handle.sync();
+    await handle.close();
+    handle = null;
+
+    try {
+      await link(temporary, target);
+      return true;
+    } catch (error) {
+      if (error?.code === "EEXIST") return false;
+      throw error;
+    }
   } finally {
     await handle?.close().catch(() => {});
-  }
-
-  try {
-    await link(temporary, target);
-    return true;
-  } catch (error) {
-    if (error?.code === "EEXIST") return false;
-    throw error;
-  } finally {
-    await unlink(temporary).catch(() => {});
+    if (createdTemporary) await unlink(temporary).catch(() => {});
   }
 }
+
 
 async function cleanupTemporaryFiles(directory) {
   let changed = false;
@@ -505,7 +547,16 @@ export class DurableEventStore {
           acknowledgedPath, "ack", hash, this.#maxEventBytes,
         );
         if (existingAck) {
+          const pending = await readJsonRecord(
+            pendingPath, "event", hash, this.#maxEventBytes,
+          );
+          if (pending && (pending.eventHash !== existingAck.eventHash ||
+              pending.order !== existingAck.order)) {
+            throw new Error("event_id_conflict");
+          }
+          await syncDirectory(this.#acknowledgedDirectory);
           await unlink(pendingPath).catch((error) => { if (!isMissing(error)) throw error; });
+          await syncDirectory(this.#pendingDirectory);
           return {acknowledged: false};
         }
 
@@ -531,7 +582,7 @@ export class DurableEventStore {
         if (!ack || ack.eventHash !== pending.eventHash || ack.order !== pending.order) {
           throw new Error("event_id_conflict");
         }
-        if (created) await syncDirectory(this.#acknowledgedDirectory);
+        await syncDirectory(this.#acknowledgedDirectory);
         await unlink(pendingPath).catch((error) => { if (!isMissing(error)) throw error; });
         await syncDirectory(this.#pendingDirectory);
         return {acknowledged: created};
