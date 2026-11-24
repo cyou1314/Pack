@@ -1,6 +1,6 @@
 # Mainline / v2 Foundation 基线对账审计
 
-- 日期：2026-11-23
+- 日期：2026-11-24
 - 仓库：`cyou1314/Pack`
 - 目的：在合并 v2 Foundation 前，识别 main 新增的安全、性能、打包与 CI 修复，避免把两个已分叉的开发线直接合并。
 - 结论：**禁止直接合并 Umbrella PR #6；采用按风险拆分、逐项移植、每项独立 CI 的方式。**
@@ -127,11 +127,11 @@ M1c API 不因本审计完成而自动解锁。仍需对真实 Mac 数据库的�
 - 报告不含 token、profile、消息/任务正文或私人记忆；
 - 备份可恢复，记录恢复演练结果。
 
-本次检查到的 Desktop Commander 设备 `AppledeMacBook-Pro-jay.local` 当前 Offline，最后在线约 442 小时前。因此尚未执行任何用户 Mac 数据库读取、备份或 shadow report。设备恢复在线后，也只对备份副本执行只读检查；不会直接对生产数据库运行迁移。
+本次检查到的 Desktop Commander 设备 `AppledeMacBook-Pro-jay.local` 当前 Offline，最后在线约 456 小时前。因此尚未执行任何用户 Mac 数据库读取、备份或 shadow report。设备恢复在线后，也只对备份副本执行只读检查；不会直接对生产数据库运行迁移。
 
 ## 6. 合并策略
 
-- 不合并 PR #6 作为一个 340 文件的大包。
+- 不合并 PR #6 作为一个 346 文件的大包。
 - 不以 merge main 覆盖 Foundation 的模块化 Hub。
 - 每个 mainline 修复按上表独立移植到 Foundation，独立 PR、独立 CI、独立 Codex review。
 - 所有迁移变更使用新增 migration version；旧版本 checksum 冻结。
