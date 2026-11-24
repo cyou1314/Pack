@@ -41,8 +41,18 @@ bash installer/mac-inventory.sh
 ### 3.2 备份与影子迁移
 
 1. 区分全新安装与已有安装升级。已有安装必须先确认安装身份、真实数据路径、配置和凭证目录权限；不得先运行卸载器。
-2. 在停止所有 Pack 写服务并确认端口释放后，备份 SQLite 与 attachments；同时保留 Engine data、配置、Keychain / 登录态的独立恢复方案。记录备份校验结果并完成一次恢复演练。
-3. 不在 live DB 上做 M1a/M1b/M1c 影子检查。将备份数据库复制到独立 staging 目录。
+2. 在停止所有 Pack 写服务并确认端口释放后，使用 Hub 自带的 SQLite online backup 和附件归档脚本生成完整备份集；验证 manifest、SQLite 完整性和附件归档，并完成一次恢复演练。Engine data、配置、Keychain / 登录态另行保留恢复方案。
+   ```bash
+   HUB="$HOME/.pack/local-hub"
+   PACK_HUB_DIR="$HUB" PACK_BACKUP_DIR="$HUB/backups" /bin/bash "$HUB/backup-db.sh"
+   BACKUP_DB="$(ls -1t "$HUB"/backups/pack-*.db | head -1)"
+   STAMP="${BACKUP_DB##*/pack-}"
+   STAMP="${STAMP%.db}"
+   PACK_HUB_DIR="$HUB" PACK_BACKUP_DIR="$HUB/backups" /bin/bash "$HUB/verify-backup.sh" "$STAMP"
+   [[ -s "$BACKUP_DB" ]]
+   ```
+   只有 `verify-backup.sh` 成功且恢复演练通过后，才将该 `BACKUP_DB` 用作下面的 shadow 输入。
+3. 不在 live DB 上做 M1a/M1b/M1c 影子检查。将已验证备份数据库复制到独立 staging 目录。
 4. 将候选 DMG 的 `hub/` 代码复制到 staging，令备份副本位于 staging 的 `hub/pack.db`；只对这个副本运行候选版本 `hub.py init`，让 migration v1/v2/v3 在副本上应用。
 5. 在同一副本上运行只读 Shadow CLI：
 
@@ -84,6 +94,8 @@ cat "$REPORT"
 import json,sys
 r=json.load(open(sys.argv[1],encoding="utf-8"))
 assert r.get("ok") is True and r.get("ready") is True
+assert r.get("migration_version") == 3
+assert r.get("applied_migration_versions") == [1, 2, 3]
 assert r.get("migration_checksum_matches") is True
 assert r.get("database_integrity_ok") is True
 assert r.get("foreign_key_violation_count") == 0
