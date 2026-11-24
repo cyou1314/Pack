@@ -283,7 +283,33 @@ _TASK_AUDIT_V2 = Migration(
 )
 
 
-MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2)
+_TASK_HOTPATH_V3 = Migration(
+    version=3,
+    name="task_queue_lease_and_transfer_hotpath_indexes",
+    statements=(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_urgent_id "
+        "ON tasks(urgent DESC, id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_assignee_urgent_id "
+        "ON tasks(assignee, urgent DESC, id ASC)",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_room_urgent_id "
+        "ON tasks(room_id, urgent DESC, id ASC)",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_active_queue
+           ON tasks(urgent DESC, id ASC, assignee)
+           WHERE status IN ('open','claimed','working')""",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_lease_expiry
+           ON tasks(lease_expires)
+           WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_tasks_unclaimed_due
+           ON tasks(assignee, next_claim_at)
+           WHERE status='open' AND assignee IS NOT NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_task_transfers_pending_expiry
+           ON task_transfers(expires_at, id)
+           WHERE status='pending' AND expires_at IS NOT NULL""",
+    ),
+)
+
+
+MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3)
 
 
 def apply_migrations(

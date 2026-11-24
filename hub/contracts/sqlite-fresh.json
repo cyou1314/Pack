@@ -2032,6 +2032,17 @@
       "indexes": [
         {
           "columns": [
+            "expires_at",
+            "id"
+          ],
+          "name": "idx_task_transfers_pending_expiry",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE INDEX idx_task_transfers_pending_expiry\n           ON task_transfers(expires_at, id)\n           WHERE status='pending' AND expires_at IS NOT NULL",
+          "unique": false
+        },
+        {
+          "columns": [
             "task_id",
             "id"
           ],
@@ -2181,7 +2192,76 @@
         }
       ],
       "foreign_keys": [],
-      "indexes": [],
+      "indexes": [
+        {
+          "columns": [
+            "urgent",
+            "id",
+            "assignee"
+          ],
+          "name": "idx_tasks_active_queue",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE INDEX idx_tasks_active_queue\n           ON tasks(urgent DESC, id ASC, assignee)\n           WHERE status IN ('open','claimed','working')",
+          "unique": false
+        },
+        {
+          "columns": [
+            "assignee",
+            "urgent",
+            "id"
+          ],
+          "name": "idx_tasks_assignee_urgent_id",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_tasks_assignee_urgent_id ON tasks(assignee, urgent DESC, id ASC)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "lease_expires"
+          ],
+          "name": "idx_tasks_lease_expiry",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE INDEX idx_tasks_lease_expiry\n           ON tasks(lease_expires)\n           WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL",
+          "unique": false
+        },
+        {
+          "columns": [
+            "room_id",
+            "urgent",
+            "id"
+          ],
+          "name": "idx_tasks_room_urgent_id",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_tasks_room_urgent_id ON tasks(room_id, urgent DESC, id ASC)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "assignee",
+            "next_claim_at"
+          ],
+          "name": "idx_tasks_unclaimed_due",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE INDEX idx_tasks_unclaimed_due\n           ON tasks(assignee, next_claim_at)\n           WHERE status='open' AND assignee IS NOT NULL",
+          "unique": false
+        },
+        {
+          "columns": [
+            "urgent",
+            "id"
+          ],
+          "name": "idx_tasks_urgent_id",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_tasks_urgent_id ON tasks(urgent DESC, id ASC)",
+          "unique": false
+        }
+      ],
       "name": "tasks"
     }
   ],

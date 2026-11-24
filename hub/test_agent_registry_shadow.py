@@ -41,6 +41,22 @@ class AgentRegistryShadowTests(unittest.TestCase):
             CREATE TABLE review_log(
                 id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, created_at REAL NOT NULL
             );
+            CREATE TABLE tasks(
+                id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL,
+                title TEXT NOT NULL, body TEXT NOT NULL,
+                created_by INTEGER NOT NULL, assignee INTEGER, status TEXT NOT NULL,
+                claim_token TEXT, lease_expires REAL,
+                attempts INTEGER NOT NULL DEFAULT 0, result TEXT, envelope TEXT,
+                review_note TEXT, fail_class TEXT, next_claim_at REAL,
+                sched_at REAL, urgent INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL
+            );
+            CREATE TABLE task_transfers(
+                id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL,
+                from_member TEXT NOT NULL, to_member TEXT NOT NULL, reason TEXT,
+                actor TEXT NOT NULL, created_at REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending', accepted_at REAL, expires_at REAL
+            );
             INSERT INTO rooms(id,name,created_at) VALUES(1,'room-a',1);
             INSERT INTO members(
                 id,name,role,created_at,provider,display_name,kind,login_state
