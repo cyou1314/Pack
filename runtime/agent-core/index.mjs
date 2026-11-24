@@ -16,3 +16,4 @@ export {
   CODEX_APP_SERVER_DESCRIPTOR,
   registerCodexAppServerAdapter,
 } from "./adapters/codex-app-server.mjs";
+export {SqliteEventStore} from "./sqlite-event-store.mjs";

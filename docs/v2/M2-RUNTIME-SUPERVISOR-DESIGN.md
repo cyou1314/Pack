@@ -1,7 +1,8 @@
 # M2：Runtime Supervisor 首个实现切片
 
 - 日期：2026-11-24
-- 状态：**Supervisor 骨架与 mock 测试已实现；尚未接入生产 Runtime。**
+- 首个 Supervisor 切片 PR #39 已于 2026-11-24 合入 Foundation（merge commit `d181765a4d624542f95fea305494e2bed7f42021`）；本后续分支继续补齐 Outbox / Hub Inbox 基础层，尚未创建后续 PR。
+- 状态：**Supervisor 骨架与 mock 测试已实现；SQLite 本地 Durable Outbox 首个切片已实现；尚未接入生产 Runtime / Hub。**
 - 目标：在接入更多 Provider 之前，先把 Adapter 生命周期、Session 操作、事件持久化边界和审批 fail-closed 规则收敛到一个可测试的控制对象。
 
 ## 1. 本批范围
@@ -28,7 +29,7 @@ Supervisor 构造时必须注入 `eventStore.append(event)`。该实现必须：
 3. 返回 `{ inserted: boolean }`，重复事件返回 `inserted: false`；
 4. 写入失败时 reject，Supervisor 保留待写队列并进入 `degraded`。
 
-本批只定义并验证接口契约，**没有实现生产 Event Store、Hub Inbox/Outbox 或网络 Event Gateway**。因此不能将当前内存待写队列描述为崩溃安全的 durable outbox；生产接入前必须补齐真正的持久化实现。
+Supervisor 内存队列仍只承担当前进程内的短暂缓冲。新增 `SqliteEventStore` 将每个事件以 `eventId` 唯一键写入独立 SQLite 文件，启用 WAL 与 `synchronous=FULL`，事务提交后才 resolve；重复事件幂等去重，事件 ID 对应不同内容时拒绝；只有显式 `markDelivered()` 才会从 pending 列表移除。关闭并重新打开数据库后可恢复未确认事件。它目前是本机 Outbox 实现，不代表 Hub Inbox、网络投递或端到端至少一次交付已完成。
 
 ## 3. 生命周期与失败语义
 
@@ -54,7 +55,8 @@ Supervisor 构造时必须注入 `eventStore.append(event)`。该实现必须：
 - 事件 append 成功前不通知 UI/下游消费者；
 - 断开时先停止 Adapter，再持久化最后的连接状态事件；
 - 收到并持久化意外的 `connection.changed:disconnected` 后转入 `disconnected`；下一次 connect 先释放旧 Adapter 监听，再创建新实例；
-- 成功停止 Adapter 并完成所有有效事件写入后，可清除该实例的 fatal validation latch，允许创建新实例；保留 `agent_event_invalid` 诊断信息；
+- 成功停止 Adapter 并完成所有有效事件写入后，以 `fatalEventError` 与待写队列状态判断是否可清除 fatal validation latch，不依赖可能被存储故障覆盖的 `lastError`；清理成功后清空旧诊断并允许创建新实例；
+- `approval.requested` 与断开状态事件的本地状态副作用按 Event ID 在单个 Agent 生命周期内只应用一次；重复投递仍走持久化幂等检查，但不能重新激活已完成审批或清除更新状态；
 - 错误状态只暴露安全错误码，不暴露凭证或任意底层错误文本。
 
 ## 4. 审批边界
@@ -70,6 +72,14 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 
 缺少授权回调、授权返回 false 或授权服务异常时均 fail closed。当前没有接入 Hub Permission Service 或 SwiftUI 审批 UI。
 
+## 5.1 本地 SQLite Outbox 与 Hub Inbox 基础层（2026-11-24）
+
+- Runtime：`SqliteEventStore` 使用 Node `node:sqlite`，WAL + `synchronous=FULL`；事务提交后 append 才 resolve；eventId 幂等、冲突检测、pending replay、显式 delivered ack。
+- Hub：migration v4 新增 `agent_event_inbox`，唯一键为 `(agent_id,event_id)`，外键绑定 Agent/Provider；内部 `append_agent_event(connection,event,received_at=...)` 复核身份、事件类型、时间戳、序列号、payload 深度/大小与敏感字段，要求调用方负责事务提交。
+- 测试：Runtime 使用真实临时 SQLite 文件验证 close/reopen、pending replay、幂等、冲突与 ack；Hub 使用隔离数据库验证 migration、FK、幂等、回滚与恶意 payload 拒绝。
+- 边界：当前未实现 Hub Inbox MCP/HTTP 入口、认证中间件、网络投递 worker、远端 ack、消费租约、Session cursor/replay；不得把这两个存储层描述为端到端可靠传输。
+- Node 兼容：Node 22.13+ 才无需 `--experimental-sqlite` 启动参数；Node 22 的 `node:sqlite` 仍为 experimental API，需持续 CI 验证，未来可替换底层实现而不改变 Outbox 接口。
+
 ## 5. 非目标与当前限制
 
 本批不做：
@@ -77,7 +87,7 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 - 不修改 `runtime/runtime.mjs` v1 主循环，不替换现有 Muse Runtime；
 - 不启动真实 Codex/Gemini/OpenAI/Doubao Provider；
 - 不实现自动重连、指数退避、Session 游标、事件 replay；
-- 不实现生产 Inbox/Outbox、Hub Event Gateway 或新增 SQLite migration；
+- 不实现 Hub Inbox、Hub Event Gateway、网络投递 worker、远端 ack 或新增 Hub SQLite migration；
 - 不接入 Agent Registry 读 API，不解除 M1c 真实数据库 shadow gate；
 - 不接入 SwiftUI Activity/Approval 页面；
 - 不在用户 Mac 上登录、运行或部署。

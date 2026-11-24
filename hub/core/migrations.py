@@ -309,7 +309,33 @@ _TASK_HOTPATH_V3 = Migration(
 )
 
 
-MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3)
+_AGENT_EVENT_INBOX_V4 = Migration(
+    version=4,
+    name="agent_event_inbox",
+    statements=(
+        """CREATE TABLE agent_event_inbox (
+            inbox_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+            event_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL REFERENCES providers(provider_id) ON DELETE RESTRICT,
+            event_type TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL CHECK(event_sequence >= 0),
+            occurred_at TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            received_at REAL NOT NULL,
+            processed_at REAL,
+            process_error_code TEXT,
+            UNIQUE(agent_id, event_id)
+        )""",
+        "CREATE INDEX idx_agent_event_inbox_pending "
+        "ON agent_event_inbox(processed_at, inbox_seq)",
+        "CREATE INDEX idx_agent_event_inbox_agent_sequence "
+        "ON agent_event_inbox(agent_id, event_sequence, inbox_seq)",
+    ),
+)
+
+
+MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3, _AGENT_EVENT_INBOX_V4)
 
 
 def apply_migrations(

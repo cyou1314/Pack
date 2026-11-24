@@ -58,6 +58,12 @@
 - 加入幂等、游标、断线恢复。
 - 现有 Muse Runtime 通过兼容 Adapter 接入。
 
+**2026-11-24 Supervisor 审查修复：** Codex Review 指出的两个 P2 生命周期问题已修复并补回归：fatal validation latch 清理不再依赖可被持久化异常覆盖的 `lastError`；审批/断开事件状态副作用按 Event ID 在 Agent 生命周期内去重，防止重复 `approval.requested` 恢复已完成审批。两个原始 review thread 已回复并解决；Runtime 测试、Hub 回归和 macOS 构建通过。
+
+**2026-11-24 第三个切片（Hub Inbox 基础层）：** 新增 Hub migration v4 `agent_event_inbox`，以 `(agent_id,event_id)` 唯一键保存远端事件信封；新增 `hub/services/agent_events.py`，验证 Agent/Provider 绑定、事件类型、序列号、时间戳、payload 深度/大小与敏感字段；相同事件幂等返回原 inbox 序号，重复 ID 但内容不同则拒绝。新增隔离数据库测试，覆盖迁移、外键、事务回滚、跨 Agent 去重边界、敏感字段拒绝。**当前只是 Hub 内部存储服务，尚未注册 MCP 工具或 HTTP Event Gateway，也未开放网络写入口。**
+
+**2026-11-24 第二个切片（本地 Durable Outbox）：** 新增 `runtime/agent-core/sqlite-event-store.mjs` 的 `SqliteEventStore`，使用 Node `node:sqlite` / SQLite WAL / `synchronous=FULL`，以事务提交作为 append 成功边界；支持 eventId 幂等、同 ID 不同 payload 冲突拒绝、pending 顺序读取、显式 delivered ack、统计与关闭 checkpoint。新增真实临时 SQLite 文件的 reopen/replay/idempotency/ack/closed-state 测试，并从 Agent Core index 导出。**当前仍未接入 Supervisor 默认构造、Runtime 生产入口或 Hub 网络投递 Worker**；调用方仍需显式注入。Node 22.13 起 node:sqlite 无需实验 flag，但 Node 22 中 API 仍标记 experimental，必须继续由 Node 22 CI 和 macOS 构建验证，且将数据库实现封装在独立模块，避免 API 泄漏到业务层。
+
 **2026-11-24 首个切片：** `runtime/agent-core/supervisor.mjs` 已加入 Adapter 生命周期、Session create/resume/interrupt、事件身份/敏感字段校验、注入式 Event Store、事件写入失败降级、审批授权复核、并发生命周期串行化、disconnect 失败保留实例与 shutdown race 防护。当前只用 fake Adapter / fake Event Store 测试，未接入 `runtime/runtime.mjs`，也没有生产 Event Store、Hub Inbox/Outbox、Event Gateway、游标/ack/replay 或自动重连。详细边界见 `M2-RUNTIME-SUPERVISOR-DESIGN.md`。
 
 回滚：切回旧 Runtime 与旧 Hub 同步路径；新 Supervisor 尚未接入生产入口，不影响 v1。

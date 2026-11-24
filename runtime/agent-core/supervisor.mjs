@@ -89,6 +89,7 @@ export class RuntimeSupervisor {
         fatalEventError: false,
         sessions: new Set(),
         pendingApprovals: new Map(),
+        appliedStateEventIds: new Set(),
         approvalInFlight: new Set(),
         inFlightCommands: 0,
         commandWaiters: [],
@@ -533,8 +534,7 @@ export class RuntimeSupervisor {
   #clearValidationFailureAfterCleanup(handle) {
     if (
       !handle.fatalEventError ||
-      handle.eventQueue.length ||
-      handle.lastError !== "agent_event_invalid"
+      handle.eventQueue.length
     ) {
       return false;
     }
@@ -542,6 +542,7 @@ export class RuntimeSupervisor {
     handle.status = "disconnected";
     handle.targetStatus = "disconnected";
     handle.connectionEstablished = false;
+    handle.lastError = null;
     handle.sessions.clear();
     handle.pendingApprovals.clear();
     handle.approvalInFlight.clear();
@@ -592,23 +593,33 @@ export class RuntimeSupervisor {
           return false;
         }
         handle.eventQueue.shift();
-        if (
-          event.eventType === "approval.requested" &&
-          !handle.startupFailed &&
-          !handle.disconnectFailed &&
-          handle.targetStatus !== "disconnected" &&
-          handle.targetStatus !== "failed"
-        ) {
-          handle.pendingApprovals.set(event.payload.requestId, event);
-        }
-        if (event.eventType === "connection.changed" && event.payload.status === "disconnected") {
-          handle.connectionEstablished = false;
-          if (!handle.startupFailed && !handle.disconnectFailed) {
-            handle.targetStatus = "disconnected";
-            if (handle.status !== "disconnecting") handle.status = "disconnected";
+        const hasAppliedState = handle.appliedStateEventIds.has(event.eventId);
+        if (!hasAppliedState && (
+          event.eventType === "approval.requested" ||
+          (event.eventType === "connection.changed" && event.payload.status === "disconnected")
+        )) {
+          // Durable append can report a duplicate after adapter replay. Apply
+          // lifecycle effects once per event ID per managed Agent so a replay
+          // cannot resurrect a completed approval or clear newer state.
+          handle.appliedStateEventIds.add(event.eventId);
+          if (
+            event.eventType === "approval.requested" &&
+            !handle.startupFailed &&
+            !handle.disconnectFailed &&
+            handle.targetStatus !== "disconnected" &&
+            handle.targetStatus !== "failed"
+          ) {
+            handle.pendingApprovals.set(event.payload.requestId, event);
           }
-          handle.sessions.clear();
-          handle.pendingApprovals.clear();
+          if (event.eventType === "connection.changed" && event.payload.status === "disconnected") {
+            handle.connectionEstablished = false;
+            if (!handle.startupFailed && !handle.disconnectFailed) {
+              handle.targetStatus = "disconnected";
+              if (handle.status !== "disconnecting") handle.status = "disconnected";
+            }
+            handle.sessions.clear();
+            handle.pendingApprovals.clear();
+          }
         }
         if (result.inserted) this.#publish(event);
       }
