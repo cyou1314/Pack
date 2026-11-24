@@ -181,6 +181,34 @@ test("A failed acknowledgement directory sync leaves Pending intact and retries 
   await store.close();
 });
 
+test("A failed Pending directory sync is retried before duplicate append succeeds", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const store = await DurableEventStore.open({directory});
+  const event = makeEvent("event-pending-sync-failure");
+
+  const handle = await open(directory, "r");
+  const prototype = Object.getPrototypeOf(handle);
+  await handle.close();
+  const originalSync = prototype.sync;
+  let syncCalls = 0;
+  prototype.sync = async function(...args) {
+    syncCalls += 1;
+    if (syncCalls === 2) throw new Error("injected_pending_sync_failure");
+    return originalSync.apply(this, args);
+  };
+
+  try {
+    await assert.rejects(() => store.append(event), /injected_pending_sync_failure/);
+  } finally {
+    prototype.sync = originalSync;
+  }
+
+  assert.equal((await readdir(path.join(directory, "pending"))).length, 1);
+  assert.deepEqual(await store.append(event), {inserted: false, order: 1});
+  assert.equal((await store.listPending()).length, 1);
+  await store.close();
+});
+
 test("A failed record serialization removes its temp file and permits retry", async (t) => {
   const directory = await temporaryDirectory(t);
   const store = await DurableEventStore.open({directory});
