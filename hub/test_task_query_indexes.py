@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Task hot-path index migration and SQLite query-plan regression tests."""
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -137,8 +138,16 @@ class TaskQueryIndexTests(unittest.TestCase):
         self.assertEqual(repeated, versions)
 
     def test_v3_runs_after_legacy_task_and_transfer_columns_are_upgraded(self):
-        self.conn.close()
-        legacy = __import__("sqlite3").connect(self.context.db_path)
+        legacy_root = Path(self.context.base_dir) / "legacy"
+        legacy_root.mkdir()
+        legacy_context = HubContext(
+            base_dir=str(legacy_root),
+            db_path=str(legacy_root / "legacy.db"),
+            attachment_dir=str(legacy_root / "attachments"),
+            lock=threading.RLock(),
+            clock=lambda: 10000.0,
+        )
+        legacy = sqlite3.connect(legacy_context.db_path)
         legacy.executescript("""
             CREATE TABLE members(
                 id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, role TEXT NOT NULL,
@@ -172,26 +181,31 @@ class TaskQueryIndexTests(unittest.TestCase):
         legacy.commit()
         legacy.close()
 
-        hub.init(self.context)
-        self.conn = self.context.connect()
-        task_columns = {
-            row["name"] for row in self.conn.execute("PRAGMA table_info(tasks)")
-        }
-        transfer_columns = {
-            row["name"] for row in self.conn.execute("PRAGMA table_info(task_transfers)")
-        }
-        self.assertTrue({"sched_at", "urgent", "next_claim_at"} <= task_columns)
-        self.assertTrue({"status", "accepted_at", "expires_at"} <= transfer_columns)
-        indexes = {
-            row["name"] for row in self.conn.execute("PRAGMA index_list(tasks)")
-        }
-        self.assertTrue(
-            EXPECTED_INDEXES - {"idx_task_transfers_pending_expiry"} <= indexes
-        )
-        transfer_indexes = {
-            row["name"] for row in self.conn.execute("PRAGMA index_list(task_transfers)")
-        }
-        self.assertIn("idx_task_transfers_pending_expiry", transfer_indexes)
+        hub.init(legacy_context)
+        legacy_connection = legacy_context.connect()
+        try:
+            task_columns = {
+                row["name"] for row in legacy_connection.execute("PRAGMA table_info(tasks)")
+            }
+            transfer_columns = {
+                row["name"]
+                for row in legacy_connection.execute("PRAGMA table_info(task_transfers)")
+            }
+            self.assertTrue({"sched_at", "urgent", "next_claim_at"} <= task_columns)
+            self.assertTrue({"status", "accepted_at", "expires_at"} <= transfer_columns)
+            indexes = {
+                row["name"] for row in legacy_connection.execute("PRAGMA index_list(tasks)")
+            }
+            self.assertTrue(
+                EXPECTED_INDEXES - {"idx_task_transfers_pending_expiry"} <= indexes
+            )
+            transfer_indexes = {
+                row["name"]
+                for row in legacy_connection.execute("PRAGMA index_list(task_transfers)")
+            }
+            self.assertIn("idx_task_transfers_pending_expiry", transfer_indexes)
+        finally:
+            legacy_connection.close()
 
     def test_task_list_and_sweeper_query_plans_use_hotpath_indexes(self):
         task_select = """SELECT t.id,t.title,t.body,t.status,
