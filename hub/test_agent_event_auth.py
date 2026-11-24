@@ -292,6 +292,8 @@ class AgentEventGatewayTests(unittest.TestCase):
 
         dispatcher_token = "pk-mem-dispatcher-" + ("d" * 48)
         member_token = "pk-mem-member-" + ("m" * 48)
+        readonly_dispatcher_token = "pk-mem-readonly-" + ("r" * 48)
+        workspace_dispatcher_token = "pk-mem-workspace-" + ("w" * 48)
         db = self.connect()
         try:
             db.execute(
@@ -301,6 +303,14 @@ class AgentEventGatewayTests(unittest.TestCase):
             db.execute(
                 "INSERT INTO members(name,role,token_hash,created_at) VALUES(?,?,?,?)",
                 ("gateway-member", "member", hub.hash_token(member_token), 1.0),
+            )
+            db.execute(
+                "INSERT INTO members(name,role,token_hash,created_at,access_mode) VALUES(?,?,?,?,?)",
+                ("gateway-readonly-dispatcher", "dispatcher", hub.hash_token(readonly_dispatcher_token), 1.0, "readonly"),
+            )
+            db.execute(
+                "INSERT INTO members(name,role,token_hash,created_at,access_mode) VALUES(?,?,?,?,?)",
+                ("gateway-workspace-dispatcher", "dispatcher", hub.hash_token(workspace_dispatcher_token), 1.0, "workspace"),
             )
             db.commit()
         finally:
@@ -320,6 +330,20 @@ class AgentEventGatewayTests(unittest.TestCase):
                 json={"agent_id": "agent-1"},
             )
             self.assertEqual(forbidden.status_code, 403)
+
+            readonly_denied = client.post(
+                "/agent/pair/create",
+                headers={"Authorization": f"Bearer {readonly_dispatcher_token}"},
+                json={"agent_id": "agent-1"},
+            )
+            self.assertEqual(readonly_denied.status_code, 403)
+
+            workspace_denied = client.post(
+                "/agent/pair/create",
+                headers={"Authorization": f"Bearer {workspace_dispatcher_token}"},
+                json={"agent_id": "agent-1"},
+            )
+            self.assertEqual(workspace_denied.status_code, 403)
 
             created = client.post(
                 "/agent/pair/create",
