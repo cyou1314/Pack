@@ -14,6 +14,7 @@
 - M1C-AGENT-READ-API-DESIGN.md：Agent Registry 只读 Shadow preflight 门槛和 API 启用条件。
 - M2-RUNTIME-SUPERVISOR-DESIGN.md：Runtime Supervisor 生命周期、事件持久化与审批边界。
 - M2-AGENT-EVENT-GATEWAY.md：Agent 专属配对凭证、事件写入 HTTP 契约和安全限制。
+- M2-OUTBOX-DELIVERY-WORKER.md：本地 Outbox 到 Hub Event Gateway 的持久化投递、重试与 ACK 语义。
 - PIBOT-REFERENCE-ASSESSMENT.md：PiBot 源码级参考评估、可借鉴模式与不引入边界。
 
 文档优先级：
