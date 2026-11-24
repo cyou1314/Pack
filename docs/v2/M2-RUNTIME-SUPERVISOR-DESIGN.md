@@ -17,7 +17,7 @@
 - 只有 Event Store 成功确认后，才向下游订阅者发布事件；
 - 事件写入失败时进入 `degraded`，阻止新的消息/工具动作，允许显式重试；
 - `approval.requested` 必须经过注入的授权回调，授权完成后重新检查 Agent/Adapter/请求状态；缺少授权服务或授权不明确时拒绝，不自动 accept；
-- 同一审批请求只允许一个并发响应。
+- 同一审批请求只允许一个并发响应；进入 disconnect 后到达的审批事件不会进入可操作 pending 集合。
 
 ## 2. Event Store 契约
 
