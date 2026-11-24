@@ -137,10 +137,14 @@ export function createAgentEvent(input) {
     payload: Object.freeze({...payload}),
   };
 
-  for (const field of ["roomId", "sessionId", "runId"]) {
+  for (const field of ["roomId", "sessionId", "runId", "hubSessionId"]) {
     if (input[field] !== undefined && input[field] !== null) {
       event[field] = requiredText(input[field], field, 160);
     }
+  }
+
+  if (event.hubSessionId && !event.sessionId) {
+    throw new TypeError("hub_session_id_requires_session_id");
   }
 
   return Object.freeze(event);
