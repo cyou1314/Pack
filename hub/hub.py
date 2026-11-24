@@ -67,6 +67,7 @@ if __package__:
     from .services.tasks import inspect_unclaimed_tasks as _inspect_unclaimed_tasks
     from .core.schema import SCHEMA
     from .core.context import HubContext
+    from .core.task_refs import bounded_task_id
     from .core.migrations import apply_migrations as _apply_hub_migrations
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
@@ -82,6 +83,7 @@ else:
     from services.tasks import inspect_unclaimed_tasks as _inspect_unclaimed_tasks
     from core.schema import SCHEMA
     from core.context import HubContext
+    from core.task_refs import bounded_task_id
     from core.migrations import apply_migrations as _apply_hub_migrations
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
@@ -315,16 +317,24 @@ def _approval_state(conn, task_id):
     没有返回 None；decided_by 为其后已出现的决议来源
     （'message' = 调度员决议消息，kind='decision'（规则引擎/独立审查）或历史
     kind='chat' 决议均认；'review' = 先前审查留痕），未决议为 None。"""
-    req = None
-    rows = conn.execute(
-        "SELECT * FROM messages WHERE kind='approval_request' ORDER BY id DESC").fetchall()
-    for r in rows:
-        if r["task_id"] == task_id:
-            req = r
+    req = conn.execute(
+        """SELECT * FROM messages
+           WHERE kind='approval_request' AND task_id=?
+           ORDER BY id DESC LIMIT 1""",
+        (task_id,),
+    ).fetchone()
+    # Preserve newer legacy/direct-write requests whose task_id was not set.
+    # Normal room_post requests use the indexed lookup; this fallback scans
+    # only NULL task_id rows and stops once it reaches an older message.
+    for row in conn.execute(
+        """SELECT * FROM messages
+           WHERE kind='approval_request' AND task_id IS NULL
+           ORDER BY id DESC"""
+    ):
+        if req is not None and row["id"] <= req["id"]:
             break
-        m = TASK_REF_RE.search(r["body"] or "")
-        if m and int(m.group(1)) == task_id:
-            req = r
+        if bounded_task_id(TASK_REF_RE.search(row["body"] or "")) == task_id:
+            req = row
             break
     if not req:
         return None, None
@@ -685,6 +695,13 @@ def init(context: HubContext | None = None):
     # with concurrent readers/writers.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    # Existing databases keep their original audit definition after CREATE
+    # TABLE IF NOT EXISTS; add task_id before startup writes its first audit row.
+    audit_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(audit)")
+    }
+    if "task_id" not in audit_columns:
+        conn.execute("ALTER TABLE audit ADD COLUMN task_id INTEGER")
     conn.execute(
         "INSERT OR IGNORE INTO rooms(name,created_at) VALUES('pack-main',?)",
         (context.clock(),),
