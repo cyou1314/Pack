@@ -47,6 +47,7 @@ Supervisor 构造时必须注入 `eventStore.append(event)`。该实现必须：
 - 事件按单 Adapter 到达顺序串行 append，不允许后续事件越过失败事件；
 - 事件 append 成功前不通知 UI/下游消费者；
 - 断开时先停止 Adapter，再持久化最后的连接状态事件；
+- 收到并持久化意外的 `connection.changed:disconnected` 后转入 `disconnected`；下一次 connect 先释放旧 Adapter 监听，再创建新实例；
 - 错误状态只暴露安全错误码，不暴露凭证或任意底层错误文本。
 
 ## 4. 审批边界
@@ -86,6 +87,7 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 - 错误 Agent/Provider 身份事件被拒绝；
 - 审批没有授权服务时拒绝；
 - 并发 connect 只创建一个 Adapter；
+- 意外断开后可显式重新连接，旧 Adapter 监听被清理；
 - disconnect 结束前持久化最终状态事件。
 
 后续 M2 顺序：
