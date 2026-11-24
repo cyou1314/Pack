@@ -258,7 +258,7 @@ test("Context Package rejects credential and cookie aliases", () => {
     "sessionCookie", "cookieJar", "oauth_token", "idToken",
     "authToken", "bearer_token", "secret_key", "ssh_private_key",
     "credential", "x_api_key", "authorization_header", "secret_token",
-    "private_key_pem", "session_token", "\\uFF41\\uFF50\\uFF49\\uFF3F\\uFF4B\\uFF45\\uFF59",
+    "private_key_pem", "session_token", "ａｐｉ＿ｋｅｙ",
   ];
   for (const key of forbiddenKeys) {
     assert.throws(

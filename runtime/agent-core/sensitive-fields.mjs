@@ -3,7 +3,7 @@ const SENSITIVE_KEYS = new Set([
   "authorization", "authheader", "password", "cookie", "cookies", "cookiejar", "sessioncookie", "setcookie",
   "nativememory", "privatememory", "privatecontext", "credential", "credentials",
   "clientsecret", "secretkey", "signingkey", "sshprivatekey", "privatekey", "secret",
- ]);
+]);
 
 const SENSITIVE_KEY_MARKERS = [
   "apikey", "accesstoken", "refreshtoken", "oauthtoken", "idtoken",
