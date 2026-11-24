@@ -22,13 +22,14 @@ const descriptor = {
 };
 
 class FakeAdapter {
-  constructor(agentId, {connectGate, disconnectGate, connectError, sendGate, onCreate} = {}) {
+  constructor(agentId, {connectGate, disconnectGate, disconnectFailures = 0, connectError, sendGate, onCreate} = {}) {
     this.agentId = agentId;
     this.connected = false;
     this.sequence = 0;
     this.listeners = new Set();
     this.responses = [];
     this.disconnectCalls = 0;
+    this.disconnectFailuresRemaining = disconnectFailures;
     this.connectGate = connectGate;
     this.disconnectGate = disconnectGate;
     this.connectError = connectError;
@@ -69,6 +70,10 @@ class FakeAdapter {
   async disconnect() {
     this.disconnectCalls += 1;
     if (this.disconnectGate) await this.disconnectGate;
+    if (this.disconnectFailuresRemaining > 0) {
+      this.disconnectFailuresRemaining -= 1;
+      throw new Error("provider_stop_failed");
+    }
     this.connected = false;
     this.emit("connection.changed", {status: "disconnected"});
   }
@@ -117,9 +122,11 @@ class FakeEventStore {
     this.events = [];
     this.ids = new Set();
     this.failNext = false;
+    this.appendGate = null;
   }
 
   async append(event) {
+    if (this.appendGate) await this.appendGate;
     if (this.failNext) {
       this.failNext = false;
       throw new Error("disk_full");
@@ -131,7 +138,7 @@ class FakeEventStore {
   }
 }
 
-function createHarness({authorizeApproval, connectGate, disconnectGate, connectError, sendGate, onCreate} = {}) {
+function createHarness({authorizeApproval, connectGate, disconnectGate, disconnectFailures, connectError, sendGate, onCreate} = {}) {
   const registry = new AgentAdapterRegistry();
   const adapters = [];
   registry.register({
@@ -140,6 +147,7 @@ function createHarness({authorizeApproval, connectGate, disconnectGate, connectE
       const adapter = new FakeAdapter(agentId, {
         connectGate,
         disconnectGate,
+        disconnectFailures,
         connectError,
         sendGate,
         onCreate: (instance) => {
