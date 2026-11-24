@@ -501,7 +501,12 @@ export class RuntimeSupervisor {
 
   #requireReady(agentId) {
     const handle = this.#requireHandle(agentId);
-    if (handle.status !== "ready" || handle.eventQueue.length || handle.fatalEventError) {
+    if (
+      handle.status !== "ready" ||
+      handle.disconnectPromise ||
+      handle.eventQueue.length ||
+      handle.fatalEventError
+    ) {
       throw new Error("agent_not_ready");
     }
     return handle;
