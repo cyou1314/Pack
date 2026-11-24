@@ -15,6 +15,13 @@ function safeErrorCode(error) {
   return /^[a-z0-9_.:-]{1,80}$/i.test(message) ? message : "runtime_error";
 }
 
+function deepFreeze(value, seen = new Set()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) deepFreeze(child, seen);
+  return Object.freeze(value);
+}
+
 /**
  * Owns Provider Adapter instances and serializes their lifecycle and event flow.
  *
@@ -506,6 +513,7 @@ export class RuntimeSupervisor {
           (typeof event.payload.requestId !== "string" || !event.payload.requestId.trim())) {
         throw new Error("invalid_approval_event");
       }
+      deepFreeze(event.payload);
       handle.eventQueue.push(event);
       void this.#drainEvents(handle);
     } catch {
