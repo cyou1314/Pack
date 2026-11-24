@@ -368,6 +368,24 @@ class AgentEventGatewayTests(unittest.TestCase):
             self.assertEqual(accepted.status_code, 200, accepted.text)
             self.assertFalse(accepted.json()["duplicate"])
 
+            # Deeply nested JSON can exceed Python's parser recursion limit.
+            # The public route must return a bounded client error, not a 500.
+            nested_json = (
+                '{"eventId":"deep-event","eventType":"run.progress",'
+                '"sequence":1,"occurredAt":"2026-11-24T03:00:00.000Z",'
+                '"payload":' + ("[" * 1100) + "0" + ("]" * 1100) + "}"
+            )
+            deep_response = client.post(
+                "/agent/events",
+                headers={
+                    "Authorization": f"Bearer {agent_token}",
+                    "Content-Type": "application/json",
+                },
+                content=nested_json,
+            )
+            self.assertEqual(deep_response.status_code, 400, deep_response.text)
+            self.assertEqual(deep_response.json()["error"], "invalid_agent_event_json")
+
             duplicate = client.post(
                 "/agent/events",
                 headers={"Authorization": f"Bearer {agent_token}"},

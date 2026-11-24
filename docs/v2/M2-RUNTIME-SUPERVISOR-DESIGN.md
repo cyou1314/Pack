@@ -77,7 +77,9 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 - Runtime：`SqliteEventStore` 使用 Node `node:sqlite`，WAL + `synchronous=FULL`；事务提交后 append 才 resolve；eventId 幂等、冲突检测、pending replay、显式 delivered ack。
 - Hub：migration v4 新增 `agent_event_inbox`，唯一键为 `(agent_id,event_id)`，外键绑定 Agent/Provider；内部 `append_agent_event(connection,event,received_at=...)` 复核身份、事件类型、时间戳、序列号、payload 深度/大小与敏感字段，要求调用方负责事务提交。
 - 测试：Runtime 使用真实临时 SQLite 文件验证 close/reopen、pending replay、幂等、冲突与 ack；Hub 使用隔离数据库验证 migration、FK、幂等、回滚与恶意 payload 拒绝。
-- Agent Gateway：新增 migration v5（配对码、Agent 专属 Token、失败计数），由调度员现有成员 Token 创建配对码，Agent 使用一次性兑换得到的独立 events:write Token；新增 /agent/pair/create、/agent/pair/redeem、/agent/events、/agent/tokens/revoke HTTP 路由。Hub 只保存 Token 哈希；事件身份从 Token 派生，重复事件幂等，速率限制与 Inbox 写入同事务。详细契约见 M2-AGENT-EVENT-GATEWAY.md。\n- 边界：当前仍未实现 Outbox 网络投递 worker、远端 ack、消费租约、Session cursor/replay；不得把现有存储与入口描述为端到端可靠传输。
+- Agent Gateway：新增 migration v5（配对码、Agent 专属 Token、失败计数），由调度员现有成员 Token 创建配对码，Agent 使用一次性兑换得到的独立 events:write Token；新增 /agent/pair/create、/agent/pair/redeem、/agent/events、/agent/tokens/revoke HTTP 路由。Hub 只保存 Token 哈希；事件身份从 Token 派生，重复事件幂等，速率限制与 Inbox 写入同事务。详细契约见 M2-AGENT-EVENT-GATEWAY.md。
+- 传输回执：`POST /agent/events` 返回 `accepted/duplicate + inboxSeq`，只表示 Hub Inbox 事务已提交，是 Runtime Outbox 的传输级 ACK；不表示 Hub 下游消费者已处理。
+- 边界：当前仍未实现 Outbox 网络投递 Worker、下游消费 lease/ACK、Session cursor/replay；不得把现有存储与入口描述为端到端可靠传输。
 - Node 兼容：Node 22.13+ 才无需 `--experimental-sqlite` 启动参数；Node 22 的 `node:sqlite` 仍为 experimental API，需持续 CI 验证，未来可替换底层实现而不改变 Outbox 接口。
 
 ## 5. 非目标与当前限制
@@ -117,9 +119,9 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 
 后续 M2 顺序：
 
-1. 实现崩溃安全的本地 Outbox / Hub Inbox 存储与事件幂等键；
-2. 定义 Runtime ↔ Hub 的受限身份与 Event Gateway，不复用宽权限 dispatcher token；
-3. 加入 Session 游标、ack、断线补拉和重复事件 replay；
+1. 实现 Runtime Outbox 投递 Worker：按 Outbox 顺序发送，持久化失败次数与退避时间；只在 Hub 返回有效的 accepted/duplicate 持久化回执后标记本地事件 delivered。401/403 暂停并要求重新配对，429/5xx/网络错误按退避重试，协议/事件校验错误保持阻塞且不丢弃事件；
+2. 实现 Hub Inbox 下游消费租约与 ACK：按 consumer + Agent 维护游标，限制批量拉取，租约到期可重新领取，ACK 只能推进已领取范围内的连续游标；
+3. 加入崩溃、超时、重复投递、ACK 丢失、租约过期和重启故障注入，验证至少一次投递与消费语义；幂等键保持稳定；
 4. 以 feature flag 将 Supervisor 接入新的 Runtime 入口，旧 Muse Runtime 保持回退；
 5. 再接 Hub Permission/Approval Service 与 SwiftUI 人工审批闭环；
 6. 完成 mock 断线/重启测试后，才进行真实 Provider 和 Mac 验收。

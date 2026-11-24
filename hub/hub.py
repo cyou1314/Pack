@@ -2908,7 +2908,7 @@ def build_server(context: HubContext | None = None):
             body.extend(chunk)
         try:
             payload = _json.loads(body or b"{}")
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             payload = {}
         if not isinstance(payload, dict):
             return JSONResponse({"error": "invalid_agent_pair_request"}, status_code=400)
@@ -2943,7 +2943,7 @@ def build_server(context: HubContext | None = None):
             body.extend(chunk)
         try:
             payload = _json.loads(body or b"{}")
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             payload = {}
         if not isinstance(payload, dict):
             return JSONResponse({"error": "invalid_agent_token_revoke_request"}, status_code=400)
@@ -2977,7 +2977,7 @@ def build_server(context: HubContext | None = None):
             body.extend(chunk)
         try:
             payload = _json.loads(body or b"{}")
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             payload = {}
         code = payload.get("code") if isinstance(payload, dict) else None
         try:
@@ -3012,7 +3012,7 @@ def build_server(context: HubContext | None = None):
             body.extend(chunk)
         try:
             event = _json.loads(body)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
             return JSONResponse({"error": "invalid_agent_event_json"}, status_code=400)
         if not isinstance(event, dict):
             return JSONResponse({"error": "invalid_agent_event"}, status_code=400)

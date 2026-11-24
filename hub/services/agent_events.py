@@ -41,6 +41,15 @@ _SENSITIVE_KEYS = frozenset({
     "privatecontext", "credential", "credentials", "clientsecret",
     "secretkey", "signingkey", "sshprivatekey", "privatekey", "secret",
 })
+
+# Match sensitive terms inside compound field names as well as exact aliases.
+# Keep generic usage counters such as inputTokens/outputTokens available.
+_SENSITIVE_KEY_MARKERS = (
+    "apikey", "accesstoken", "refreshtoken", "oauthtoken", "idtoken",
+    "authtoken", "bearertoken", "sessiontoken", "authorization", "authheader",
+    "password", "cookie", "credential", "secret", "privatekey",
+    "nativememory", "privatememory", "privatecontext",
+)
 _MAX_EVENT_BYTES = 256 * 1024
 _MAX_EVENT_DEPTH = 24
 _MAX_TEXT = 160
@@ -59,8 +68,9 @@ def _safe_payload(value: Any, *, depth: int = 0) -> None:
         for key, nested in value.items():
             if not isinstance(key, str):
                 raise ValueError("invalid_event_payload_key")
-            normalized = re.sub(r"[^a-z0-9]", "", key.lower())
-            if normalized in _SENSITIVE_KEYS:
+            normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
+            if (normalized in _SENSITIVE_KEYS
+                    or any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)):
                 raise ValueError("sensitive_event_field_forbidden")
             _safe_payload(nested, depth=depth + 1)
     elif isinstance(value, list):
@@ -107,7 +117,10 @@ def _normalize_event(event: Any) -> dict[str, Any]:
         if field in event and event[field] is not None:
             normalized[field] = _text(event[field], field, 160)
 
-    _safe_payload(normalized["payload"])
+    try:
+        _safe_payload(normalized["payload"])
+    except RecursionError as error:
+        raise ValueError("event_payload_too_deep") from error
     try:
         encoded = json.dumps(
             normalized, ensure_ascii=False, sort_keys=True,
@@ -115,7 +128,11 @@ def _normalize_event(event: Any) -> dict[str, Any]:
         )
     except (TypeError, ValueError, RecursionError) as error:
         raise ValueError("invalid_agent_event_json") from error
-    if len(encoded.encode("utf-8")) > _MAX_EVENT_BYTES:
+    try:
+        encoded_bytes = encoded.encode("utf-8")
+    except UnicodeError as error:
+        raise ValueError("invalid_agent_event_json") from error
+    if len(encoded_bytes) > _MAX_EVENT_BYTES:
         raise ValueError("agent_event_too_large")
     return normalized
 

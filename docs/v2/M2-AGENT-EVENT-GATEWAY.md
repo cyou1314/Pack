@@ -138,7 +138,8 @@ Hub 递归拒绝 API Key、Token、Authorization、Cookie、Password、Credentia
 ## 5. 当前不承诺的能力
 
 - 没有 Outbox → Hub 网络投递 Worker。
-- 没有远端 ACK、批量 ACK、租约、消费游标或断线补拉。
+- `POST /agent/events` 返回的 `accepted/duplicate + inboxSeq` 只确认 Hub Inbox 已提交，是传输级持久化回执，不代表下游消费者已处理。
+- 尚无下游消费者的批量拉取、租约、消费 ACK、游标或断线补拉。
 - 没有端到端至少一次/恰好一次传输保证。
 - 没有把 Hub Inbox 事件自动转换为 UI 消息、任务、审批或 Provider Session 状态。
 - 没有接入 `runtime/runtime.mjs` 生产入口；旧 Muse Runtime 不受影响。
