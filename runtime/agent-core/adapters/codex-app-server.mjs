@@ -1,5 +1,5 @@
 import {spawn as nodeSpawn} from "node:child_process";
-import {randomUUID} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import {createInterface} from "node:readline";
 import {createAgentEvent, defineAdapterDescriptor} from "../contract.mjs";
 
@@ -30,11 +30,70 @@ function cleanString(value, maxLength = 2000) {
   return typeof value === "string" ? value.slice(0, maxLength) : "";
 }
 
+function requiredSessionText(value, field) {
+  if (typeof value !== "string" || !value.trim() || value.trim().length > 160) {
+    throw new TypeError("invalid_" + field);
+  }
+  return value.trim();
+}
+
+const MESSAGE_DELTA_CHUNK_CODE_UNITS = 4000;
+const INLINE_COMPLETION_TEXT_MAX_BYTES = 24 * 1024;
+
+function splitTextLosslessly(value, maxCodeUnits = MESSAGE_DELTA_CHUNK_CODE_UNITS) {
+  if (typeof value !== "string") return [];
+  if (!value.length) return [];
+  const chunks = [];
+  for (let offset = 0; offset < value.length;) {
+    let end = Math.min(value.length, offset + maxCodeUnits);
+    if (end < value.length) {
+      const last = value.charCodeAt(end - 1);
+      if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    }
+    if (end <= offset) end = Math.min(value.length, offset + maxCodeUnits + 1);
+    chunks.push(value.slice(offset, end));
+    offset = end;
+  }
+  return chunks;
+}
+
+function completionTextMetadata(value) {
+  if (typeof value !== "string") {
+    return {
+      textAvailable: false,
+      textIncluded: false,
+      textByteLength: null,
+      textSha256: null,
+    };
+  }
+  const textByteLength = Buffer.byteLength(value, "utf8");
+  const textSha256 = createHash("sha256").update(value, "utf8").digest("hex");
+  if (textByteLength <= INLINE_COMPLETION_TEXT_MAX_BYTES) {
+    return {
+      textAvailable: true,
+      textIncluded: true,
+      textByteLength,
+      textSha256,
+      text: value,
+    };
+  }
+  return {
+    textAvailable: true,
+    textIncluded: false,
+    textByteLength,
+    textSha256,
+  };
+}
+
 export class CodexAppServerAdapter {
   #child = null;
   #reader = null;
   #pendingRequests = new Map();
   #pendingApprovals = new Map();
+  #hubSessionIds = new Map();
+  #pendingSessionStart = null;
+  #bufferedSessionEvents = [];
+  #sessionCreateInFlight = false;
   #listeners = new Set();
   #nextRequestId = 0;
   #eventSequence = 0;
@@ -155,30 +214,87 @@ export class CodexAppServerAdapter {
 
   async createSession(options = {}) {
     this.#requireConnected();
+    if (this.#sessionCreateInFlight) throw new Error("codex_session_create_in_progress");
+    const hubSessionId = options.hubSessionId === undefined || options.hubSessionId === null
+      ? null
+      : requiredSessionText(options.hubSessionId, "hub_session_id");
+    if (hubSessionId && options.hubSessionCapabilities?.hubSessionIdField !== true) {
+      throw new Error("hub_session_binding_not_negotiated");
+    }
     const params = {};
     for (const key of ["model", "cwd", "approvalPolicy", "sandbox", "serviceName"]) {
       if (options[key] !== undefined) params[key] = options[key];
     }
-    const result = await this.#request("thread/start", params);
-    const sessionId = result?.thread?.id;
-    if (typeof sessionId !== "string" || !sessionId) {
-      throw new Error("codex_app_server_missing_thread_id");
+
+    this.#sessionCreateInFlight = true;
+    if (hubSessionId) {
+      this.#pendingSessionStart = hubSessionId;
+      this.#bufferedSessionEvents = [];
     }
-    return {sessionId, providerSessionId: sessionId, thread: result.thread};
+    try {
+      const result = await this.#request("thread/start", params);
+      const sessionId = result?.thread?.id;
+      if (typeof sessionId !== "string" || !sessionId) {
+        throw new Error("codex_app_server_missing_thread_id");
+      }
+      if (hubSessionId) {
+        this.#bindHubSession(sessionId, hubSessionId);
+        this.#publish(
+          "session.created",
+          {providerSessionId: sessionId, resumed: false},
+          {sessionId, hubSessionId},
+        );
+        this.#pendingSessionStart = null;
+        this.#flushBufferedSessionEvents();
+      }
+      return {sessionId, providerSessionId: sessionId, thread: result.thread};
+    } catch (error) {
+      if (hubSessionId) {
+        this.#pendingSessionStart = null;
+        this.#flushBufferedSessionEvents();
+      }
+      throw error;
+    } finally {
+      this.#pendingSessionStart = null;
+      this.#sessionCreateInFlight = false;
+    }
   }
 
-  async resumeSession({sessionId} = {}) {
+  async resumeSession({sessionId, hubSessionId, hubSessionCapabilities} = {}) {
     this.#requireConnected();
     if (typeof sessionId !== "string" || !sessionId) throw new TypeError("invalid_codex_session_id");
-    const result = await this.#request("thread/resume", {
-      threadId: sessionId,
-      excludeTurns: true,
-    });
-    const resumedId = result?.thread?.id;
-    if (typeof resumedId !== "string" || !resumedId) {
-      throw new Error("codex_app_server_missing_resumed_thread_id");
+    const hubId = hubSessionId === undefined || hubSessionId === null
+      ? null
+      : requiredSessionText(hubSessionId, "hub_session_id");
+    if (hubId && hubSessionCapabilities?.hubSessionIdField !== true) {
+      throw new Error("hub_session_binding_not_negotiated");
     }
-    return {sessionId: resumedId, providerSessionId: resumedId, thread: result.thread};
+    let addedBinding = false;
+    if (hubId) {
+      const existing = this.#hubSessionIds.get(sessionId);
+      if (existing && existing !== hubId) throw new Error("hub_session_binding_conflict");
+      if (!existing) {
+        this.#bindHubSession(sessionId, hubId);
+        addedBinding = true;
+      }
+    }
+    try {
+      const result = await this.#request("thread/resume", {
+        threadId: sessionId,
+        excludeTurns: true,
+      });
+      const resumedId = result?.thread?.id;
+      if (typeof resumedId !== "string" || !resumedId) {
+        throw new Error("codex_app_server_missing_resumed_thread_id");
+      }
+      if (resumedId !== sessionId) {
+        throw new Error("codex_app_server_resumed_session_id_mismatch");
+      }
+      return {sessionId: resumedId, providerSessionId: resumedId, thread: result.thread};
+    } catch (error) {
+      if (addedBinding) this.#hubSessionIds.delete(sessionId);
+      throw error;
+    }
   }
 
   async sendMessage({sessionId, text, model, cwd, approvalPolicy, sandbox} = {}) {
@@ -360,16 +476,30 @@ export class CodexAppServerAdapter {
       reason: cleanString(params.reason, 1000),
       availableDecisions,
     };
-    this.#publish("approval.requested", payload, {
+    const eventOptions = {
       sessionId: params.threadId,
       runId: params.turnId,
-    });
+    };
+    if (this.#pendingSessionStart && eventOptions.sessionId) {
+      this.#bufferedSessionEvents.push({
+        kind: "event",
+        eventType: "approval.requested",
+        payload,
+        options: eventOptions,
+      });
+    } else {
+      this.#publish("approval.requested", payload, eventOptions);
+    }
   }
 
   #handleNotification(message) {
     const params = message.params ?? {};
     const sessionId = params.threadId ?? params.turn?.threadId;
     const runId = params.turnId ?? params.turn?.id;
+    if (this.#pendingSessionStart && sessionId) {
+      this.#bufferedSessionEvents.push({kind: "notification", message});
+      return;
+    }
 
     switch (message.method) {
       case "turn/started":
@@ -383,17 +513,19 @@ export class CodexAppServerAdapter {
         this.#publish(eventType, {status}, {sessionId, runId});
         break;
       }
-      case "item/agentMessage/delta":
-        this.#publish("message.delta", {
-          itemId: cleanString(params.itemId, 160),
-          delta: cleanString(params.delta, 12000),
-        }, {sessionId, runId});
+      case "item/agentMessage/delta": {
+        if (typeof params.delta !== "string") break;
+        const itemId = cleanString(params.itemId, 160);
+        for (const delta of splitTextLosslessly(params.delta)) {
+          this.#publish("message.delta", {itemId, delta}, {sessionId, runId});
+        }
         break;
+      }
       case "item/completed":
         if (params.item?.type === "agentMessage") {
           this.#publish("message.completed", {
             itemId: cleanString(params.item.id, 160),
-            text: cleanString(params.item.text, 12000),
+            ...completionTextMetadata(params.item.text),
             phase: cleanString(params.item.phase, 64),
           }, {sessionId, runId});
         } else {
@@ -423,7 +555,31 @@ export class CodexAppServerAdapter {
     }
   }
 
-  #publish(eventType, payload, {sessionId, runId} = {}) {
+  #flushBufferedSessionEvents() {
+    const buffered = this.#bufferedSessionEvents;
+    this.#bufferedSessionEvents = [];
+    for (const item of buffered) {
+      if (item.kind === "notification") {
+        this.#handleNotification(item.message);
+      } else if (item.kind === "event") {
+        if (item.eventType === "approval.requested"
+            && !this.#pendingApprovals.has(String(item.payload?.requestId ?? ""))) {
+          continue;
+        }
+        this.#publish(item.eventType, item.payload, item.options);
+      }
+    }
+  }
+
+  #bindHubSession(sessionId, hubSessionId) {
+    const existing = this.#hubSessionIds.get(sessionId);
+    if (existing && existing !== hubSessionId) {
+      throw new Error("hub_session_binding_conflict");
+    }
+    this.#hubSessionIds.set(sessionId, hubSessionId);
+  }
+
+  #publish(eventType, payload, {sessionId, runId, hubSessionId} = {}) {
     const input = {
       eventId: randomUUID(),
       eventType,
@@ -436,6 +592,9 @@ export class CodexAppServerAdapter {
     if (this.roomId) input.roomId = this.roomId;
     if (sessionId) input.sessionId = sessionId;
     if (runId) input.runId = runId;
+    const resolvedHubSessionId = hubSessionId
+      ?? (sessionId ? this.#hubSessionIds.get(sessionId) : null);
+    if (resolvedHubSessionId) input.hubSessionId = resolvedHubSessionId;
 
     try {
       const event = createAgentEvent(input);
