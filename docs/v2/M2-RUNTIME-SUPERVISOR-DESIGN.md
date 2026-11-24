@@ -12,7 +12,7 @@
 - 连接、断开和状态查询；
 - Session create / resume / interrupt；
 - 发送消息前检查 Agent 状态和 Session 归属；
-- 验证 Adapter Event 的身份、类型与敏感字段；
+- 验证 Adapter Event 的身份、类型与敏感字段，并深度冻结嵌套 payload，避免下游订阅者篡改审计对象；
 - 按 Adapter 事件顺序调用注入的 Event Store；
 - 只有 Event Store 成功确认后，才向下游订阅者发布事件；
 - 事件写入失败时进入 `degraded`，阻止新的消息/工具动作，允许显式重试；
