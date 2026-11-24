@@ -76,6 +76,17 @@ PYTHONPATH="$SHADOW_ROOT/hub" \
   > "$REPORT"
 chmod 600 "$REPORT"
 cat "$REPORT"
+"$DMG_NEW/python/bin/python3" -c '
+import json,sys
+r=json.load(open(sys.argv[1],encoding="utf-8"))
+assert r.get("ok") is True and r.get("ready") is True
+assert r.get("migration_checksum_matches") is True
+assert r.get("database_integrity_ok") is True
+assert r.get("foreign_key_violation_count") == 0
+assert r.get("mismatch_count") == 0
+assert r.get("unmapped_member_count") == 0
+assert r.get("unexpected_legacy_mapping_count") == 0
+' "$REPORT"
 )
 ```
 
