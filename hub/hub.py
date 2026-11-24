@@ -2881,7 +2881,8 @@ def build_server(context: HubContext | None = None):
                 return None, 403
             member = dict(member)
             try:
-                _ext_check(member, tool_name)
+                if _is_external(member):
+                    _ext_check(member, tool_name)
                 _mode_check(member, tool_name)
             except ValueError:
                 return None, 403
