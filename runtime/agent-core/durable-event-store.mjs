@@ -286,7 +286,7 @@ async function atomicCreateJson(directory, target, record) {
   try {
     handle = await open(temporary, "wx", 0o600);
     createdTemporary = true;
-    await handle.writeFile(JSON.stringify(record) + "\n", "utf8");
+    await handle.writeFile(JSON.stringify(cloneJsonValue(record)) + "\n", "utf8");
     await handle.sync();
     await handle.close();
     handle = null;
