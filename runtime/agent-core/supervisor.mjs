@@ -143,7 +143,7 @@ export class RuntimeSupervisor {
       handle.adapter = null;
       handle.status = "failed";
       handle.lastError = safeErrorCode(error);
-      throw error;
+      throw new Error(handle.lastError);
     }
   }
 
@@ -218,12 +218,17 @@ export class RuntimeSupervisor {
     const approvalEvent = handle.pendingApprovals.get(requestId);
     if (!approvalEvent) throw new Error("approval_not_pending");
     if (!this.#authorizeApproval) throw new Error("approval_service_unavailable");
-    const authorized = await this.#authorizeApproval({
-      agentId: handle.agentId,
-      requestId,
-      decision,
-      event: approvalEvent,
-    });
+    let authorized = false;
+    try {
+      authorized = await this.#authorizeApproval({
+        agentId: handle.agentId,
+        requestId,
+        decision,
+        event: approvalEvent,
+      });
+    } catch {
+      throw new Error("approval_authorization_failed");
+    }
     if (authorized !== true) throw new Error("approval_not_authorized");
 
     const result = await handle.adapter.respondToApproval({requestId, decision});
