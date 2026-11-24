@@ -9,6 +9,7 @@ export {
 } from "./contract.mjs";
 
 export {AgentAdapterRegistry} from "./registry.mjs";
+export {RuntimeSupervisor} from "./supervisor.mjs";
 export {createContextPackage} from "./context-package.mjs";
 export {
   CodexAppServerAdapter,
