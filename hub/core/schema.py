@@ -1,7 +1,7 @@
 """Canonical SQLite base schema for the Pack Hub.
 
-Incremental upgrades remain in hub.init() until the migration sequence has
-explicit fixtures and a stable migration runner.
+The base schema creates fresh databases. Legacy compatibility columns remain
+in hub.init(); additive data backfills and query indexes use core.migrations.
 """
 
 SCHEMA = """
