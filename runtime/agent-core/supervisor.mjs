@@ -82,7 +82,9 @@ export class RuntimeSupervisor {
         targetStatus: "ready",
         connectionEstablished: false,
         startupFailed: false,
+        startupErrorCode: null,
         disconnectFailed: false,
+        disconnectErrorCode: null,
         lastError: null,
         fatalEventError: false,
         sessions: new Set(),
@@ -164,7 +166,9 @@ export class RuntimeSupervisor {
     handle.targetStatus = "connecting";
     handle.connectionEstablished = false;
     handle.startupFailed = false;
+    handle.startupErrorCode = null;
     handle.disconnectFailed = false;
+    handle.disconnectErrorCode = null;
     handle.lastError = null;
     handle.fatalEventError = false;
     handle.sessions.clear();
@@ -195,7 +199,9 @@ export class RuntimeSupervisor {
       if (health?.status !== "ready") throw new Error("adapter_not_ready");
       handle.connectionEstablished = true;
       handle.startupFailed = false;
+      handle.startupErrorCode = null;
       handle.disconnectFailed = false;
+      handle.disconnectErrorCode = null;
       handle.targetStatus = "ready";
 
       if (handle.status === "degraded") {
@@ -215,6 +221,7 @@ export class RuntimeSupervisor {
       }
 
       handle.startupFailed = true;
+      handle.startupErrorCode = safeErrorCode(error);
       handle.targetStatus = "failed";
       handle.sessions.clear();
       handle.pendingApprovals.clear();
@@ -225,17 +232,19 @@ export class RuntimeSupervisor {
 
       if (cleanupError) {
         handle.disconnectFailed = true;
+        handle.disconnectErrorCode = safeErrorCode(cleanupError);
         handle.targetStatus = "failed";
         handle.pendingApprovals.clear();
         handle.approvalInFlight.clear();
         const flushed = await this.#drainEvents(handle);
         if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
         handle.status = "failed";
-        handle.lastError = safeErrorCode(cleanupError);
+        handle.lastError = handle.disconnectErrorCode;
         throw new Error(handle.lastError);
       }
 
       handle.disconnectFailed = false;
+      handle.disconnectErrorCode = null;
       const flushed = await this.#drainEvents(handle);
       try { handle.unsubscribe?.(); } catch {}
       handle.unsubscribe = null;
@@ -388,6 +397,7 @@ export class RuntimeSupervisor {
     }
 
     handle.startupFailed = false;
+    handle.startupErrorCode = null;
     handle.targetStatus = "disconnected";
     if (!handle.adapter) {
       handle.disconnectFailed = false;
@@ -406,6 +416,7 @@ export class RuntimeSupervisor {
     const adapter = handle.adapter;
     const unsubscribe = handle.unsubscribe;
     handle.disconnectFailed = false;
+    handle.disconnectErrorCode = null;
 
     let disconnectError = null;
     try {
@@ -416,11 +427,12 @@ export class RuntimeSupervisor {
 
     if (disconnectError) {
       handle.disconnectFailed = true;
+      handle.disconnectErrorCode = safeErrorCode(disconnectError);
       handle.targetStatus = "failed";
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
       handle.status = "failed";
-      handle.lastError = safeErrorCode(disconnectError);
+      handle.lastError = handle.disconnectErrorCode;
       throw new Error(handle.lastError);
     }
 
@@ -440,6 +452,7 @@ export class RuntimeSupervisor {
     if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
 
     handle.disconnectFailed = false;
+    handle.disconnectErrorCode = null;
     handle.status = "disconnected";
     handle.lastError = null;
     return this.#snapshot(handle);
