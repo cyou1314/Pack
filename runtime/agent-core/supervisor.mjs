@@ -72,6 +72,17 @@ export class RuntimeSupervisor {
     if (handle?.status === "disconnecting" || handle?.status === "connecting") {
       throw new Error("agent_lifecycle_busy");
     }
+    if (handle?.status === "disconnected" && handle.adapter) {
+      handle.targetStatus = "disconnected";
+      handle.status = "disconnecting";
+      try { await handle.adapter.disconnect(); } catch {}
+      try { handle.unsubscribe?.(); } catch {}
+      handle.unsubscribe = null;
+      handle.adapter = null;
+      const flushed = await this.#drainEvents(handle);
+      if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+      handle.status = "disconnected";
+    }
 
     if (!handle) {
       handle = {
