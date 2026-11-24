@@ -67,7 +67,7 @@ if __package__:
     from .services.tasks import inspect_unclaimed_tasks as _inspect_unclaimed_tasks
     from .core.schema import SCHEMA
     from .core.context import HubContext
-    from .core.task_refs import bounded_task_id
+    from .core.task_refs import APPROVAL_TASK_RE, bounded_task_id
     from .core.migrations import apply_migrations as _apply_hub_migrations
     from .core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
@@ -83,7 +83,7 @@ else:
     from services.tasks import inspect_unclaimed_tasks as _inspect_unclaimed_tasks
     from core.schema import SCHEMA
     from core.context import HubContext
-    from core.task_refs import bounded_task_id
+    from core.task_refs import APPROVAL_TASK_RE, bounded_task_id
     from core.migrations import apply_migrations as _apply_hub_migrations
     from core.policy import (
         ACCESS_MODES, ACTION_TAG_RE, BACKOFF_BASE_SECONDS, EXECUTOR_MARKERS,
