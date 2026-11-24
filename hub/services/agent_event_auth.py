@@ -256,6 +256,20 @@ def authenticate_agent_event_token(context, token: str, *, hash_token) -> dict[s
         connection.close()
 
 
+def get_agent_event_capabilities(context, token: str, *, hash_token) -> dict[str, Any]:
+    """Return additive event-envelope capabilities for an authenticated Agent."""
+    identity = authenticate_agent_event_token(
+        context, token, hash_token=hash_token,
+    )
+    if identity is None:
+        raise PermissionError("agent_event_unauthorized")
+    return {
+        "event_envelope_version": 2,
+        "supported_fields": ["hubSessionId"],
+        "features": ["agent-session-binding-v1"],
+    }
+
+
 def revoke_agent_event_tokens(
     context,
     actor: dict[str, Any],
