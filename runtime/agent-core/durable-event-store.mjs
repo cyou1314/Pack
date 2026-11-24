@@ -79,6 +79,9 @@ function canonicalJson(value) {
 }
 
 function normalizeEvent(input, maxEventBytes) {
+  if (input && typeof input === "object" && input.payload !== undefined) {
+    assertJsonValue(input.payload);
+  }
   const event = createAgentEvent(input);
   assertJsonValue(event);
   const serialized = JSON.stringify(event);
