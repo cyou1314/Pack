@@ -280,6 +280,14 @@ class AgentEventConsumerTests(unittest.TestCase):
         self.assertNotEqual(first["lease_id"], second["lease_id"])
         self.assertEqual(first["events"][0]["inbox_seq"], second["events"][0]["inbox_seq"])
 
+    def test_claim_respects_limit_and_reports_lookahead(self):
+        self.append(sequence=1)
+        self.append(sequence=2)
+        self.append(sequence=3)
+        result = self.claim(limit=1)
+        self.assertEqual(len(result["events"]), 1)
+        self.assertTrue(result["has_more"])
+
     def test_claim_concurrency_creates_only_one_active_lease(self):
         self.append()
         barrier = threading.Barrier(2)
