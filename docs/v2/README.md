@@ -12,6 +12,8 @@
 - PHASE4-MODULE-BOUNDARIES.md：Hub 与 macOS App 的模块边界和拆分进度。
 - MAC-MINIMAL-CHANGE-DEPLOYMENT.md：Mac 既有安装保护、升级/回滚和隔离验收要求。
 - M1C-AGENT-READ-API-DESIGN.md：Agent Registry 只读 Shadow preflight 门槛和 API 启用条件。
+- M2-RUNTIME-SUPERVISOR-DESIGN.md：Runtime Supervisor 生命周期、事件持久化与审批边界。
+- M2-AGENT-EVENT-GATEWAY.md：Agent 专属配对凭证、事件写入 HTTP 契约和安全限制。
 - PIBOT-REFERENCE-ASSESSMENT.md：PiBot 源码级参考评估、可借鉴模式与不引入边界。
 
 文档优先级：

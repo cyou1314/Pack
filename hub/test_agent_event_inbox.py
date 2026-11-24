@@ -144,6 +144,13 @@ class AgentEventInboxTests(unittest.TestCase):
         invalid_events = [
             self.event(payload={"nested": {"private_memory": "do not store"}}),
             self.event(payload={"api-key": "secret"}),
+            self.event(payload={"api.key": "secret"}),
+            self.event(payload={"private memory": "private"}),
+            self.event(payload={"authorization_header": "Bearer secret"}),
+            self.event(payload={"secret_token": "do not store"}),
+            self.event(payload={"private_key_pem": "do not store"}),
+            self.event(payload={"session_token": "do not store"}),
+            self.event(payload={"ａｐｉ＿ｋｅｙ": "do not store"}),
             self.event(authorization="Bearer secret"),
             self.event(sequence=True),
             self.event(sequence=(1 << 63)),
@@ -156,6 +163,20 @@ class AgentEventInboxTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.append(event)
                 self.db.rollback()
+
+    def test_rejects_excessive_payload_depth_and_invalid_unicode(self):
+        payload = {}
+        current = payload
+        for _ in range(30):
+            current["child"] = {}
+            current = current["child"]
+        with self.assertRaisesRegex(ValueError, "event_payload_too_deep"):
+            self.append(self.event(payload=payload))
+        self.db.rollback()
+
+        with self.assertRaisesRegex(ValueError, "invalid_agent_event_json"):
+            self.append(self.event(payload={"value": chr(0xD800)}))
+        self.db.rollback()
 
     def test_rolled_back_transaction_leaves_no_inbox_receipt(self):
         self.append()

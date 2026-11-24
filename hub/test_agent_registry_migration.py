@@ -161,7 +161,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 self.assertEqual([tuple(row) for row in first], [tuple(row) for row in second])
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    4,
+                    5,
                 )
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
@@ -228,7 +228,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 apply_migrations(connection, clock=lambda: 200.0)
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    4,
+                    5,
                 )
                 self.assertEqual(
                     [row["task_id"] for row in connection.execute(
@@ -303,7 +303,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     verify.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    4,
+                    5,
                 )
                 self.assertEqual(
                     verify.execute("SELECT COUNT(*) FROM agents").fetchone()[0],
