@@ -403,6 +403,7 @@ export class RuntimeSupervisor {
         }
         if (event.eventType === "connection.changed" && event.payload.status === "disconnected") {
           handle.targetStatus = "disconnected";
+          handle.connectionEstablished = false;
           if (handle.status !== "disconnecting") handle.status = "disconnected";
           handle.sessions.clear();
           handle.pendingApprovals.clear();
