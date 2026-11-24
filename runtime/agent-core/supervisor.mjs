@@ -143,6 +143,11 @@ export class RuntimeSupervisor {
     }
 
     if (handle.status === "disconnected" && handle.adapter) {
+      // A command may still be awaiting the old adapter (for example,
+      // createSession). Do not replace the adapter until its result has been
+      // observed and fenced off by clearing the old session set below.
+      await this.#waitForCommands(handle);
+      if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
       handle.targetStatus = "disconnected";
       handle.status = "disconnecting";
       const staleUnsubscribe = handle.unsubscribe;
