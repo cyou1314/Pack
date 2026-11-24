@@ -68,8 +68,8 @@ Pack 当前采用 SwiftUI/macOS App + Python/SQLite Hub + Node runtime。PiBot �
 
 1. Pack 调度员创建 external member，指定 `provider="generic"`、成员名和目标房间。
 2. 通过 Pack 的配对流程兑换一次性 Bearer token。
-3. 在 PiBot Desktop → Connections → Add MCP 中填写 Pack Hub MCP URL。
-4. 配置 HTTP Header：`Authorization: Bearer <token>`。
+3. 在 PiBot Desktop → Connections → Add MCP 中选择 HTTP，填写 Pack Hub MCP URL。
+4. 将 Auth 设为 Bearer，选择或创建一个本机 secret；PiBot 会将它解析为 `Authorization: Bearer <token>` 请求头，不需要把明文 token 写进连接 URL。
 5. 只给一个测试 Bot 开启该 MCP 工具权限。
 6. 手动触发 Bot：`inbox_pull` → `task_claim` → `task_update` → `inbox_send` → `task_complete`。
 7. 在 Pack 侧检查任务归属、审计记录、external whitelist、egress policy 和 token 撤销。
