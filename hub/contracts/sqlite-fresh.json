@@ -500,6 +500,17 @@
         {
           "columns": [
             "agent_id",
+            "inbox_seq"
+          ],
+          "name": "idx_agent_event_inbox_agent_inbox_seq",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_inbox_agent_inbox_seq ON agent_event_inbox(agent_id, inbox_seq)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "agent_id",
             "received_at",
             "inbox_seq"
           ],
