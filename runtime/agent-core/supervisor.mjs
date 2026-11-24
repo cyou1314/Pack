@@ -182,111 +182,116 @@ export class RuntimeSupervisor {
   }
 
   async createSession(agentId, options = {}) {
-    const handle = this.#requireReady(agentId);
-    if (!handle.descriptor.capabilities.includes("session.create")) {
-      throw new Error("adapter_capability_unavailable:session.create");
-    }
-    const result = await handle.adapter.createSession(options);
-    const sessionId = requiredText(result?.sessionId, "session_id");
-    handle.sessions.add(sessionId);
-    await this.#flushOrThrow(handle);
-    return {...result, sessionId};
+    return this.#withReadyAgent(agentId, async (handle) => {
+      if (!handle.descriptor.capabilities.includes("session.create")) {
+        throw new Error("adapter_capability_unavailable:session.create");
+      }
+      const result = await handle.adapter.createSession(options);
+      const sessionId = requiredText(result?.sessionId, "session_id");
+      handle.sessions.add(sessionId);
+      await this.#flushOrThrow(handle);
+      return {...result, sessionId};
+    });
   }
 
   async resumeSession(agentId, options = {}) {
-    const handle = this.#requireReady(agentId);
-    if (!handle.descriptor.capabilities.includes("session.resume")) {
-      throw new Error("adapter_capability_unavailable:session.resume");
-    }
-    const result = await handle.adapter.resumeSession(options);
-    const sessionId = requiredText(result?.sessionId, "session_id");
-    handle.sessions.add(sessionId);
-    await this.#flushOrThrow(handle);
-    return {...result, sessionId};
+    return this.#withReadyAgent(agentId, async (handle) => {
+      if (!handle.descriptor.capabilities.includes("session.resume")) {
+        throw new Error("adapter_capability_unavailable:session.resume");
+      }
+      const result = await handle.adapter.resumeSession(options);
+      const sessionId = requiredText(result?.sessionId, "session_id");
+      handle.sessions.add(sessionId);
+      await this.#flushOrThrow(handle);
+      return {...result, sessionId};
+    });
   }
 
   async sendMessage({agentId, sessionId, text, ...options} = {}) {
-    const handle = this.#requireReady(agentId);
-    if (typeof text !== "string" || !text.trim()) throw new TypeError("invalid_message_text");
-    const managedSession = sessionId === undefined || sessionId === null
-      ? ""
-      : requiredText(sessionId, "session_id");
-    if (handle.descriptor.capabilities.some((item) => SESSION_CAPABILITIES.has(item))) {
-      if (!managedSession || !handle.sessions.has(managedSession)) {
-        throw new Error("session_not_managed");
+    return this.#withReadyAgent(agentId, async (handle) => {
+      if (typeof text !== "string" || !text.trim()) throw new TypeError("invalid_message_text");
+      const managedSession = sessionId === undefined || sessionId === null
+        ? ""
+        : requiredText(sessionId, "session_id");
+      if (handle.descriptor.capabilities.some((item) => SESSION_CAPABILITIES.has(item))) {
+        if (!managedSession || !handle.sessions.has(managedSession)) {
+          throw new Error("session_not_managed");
+        }
       }
-    }
-    const result = await handle.adapter.sendMessage({
-      ...options,
-      ...(managedSession ? {sessionId: managedSession} : {}),
-      text,
+      const result = await handle.adapter.sendMessage({
+        ...options,
+        ...(managedSession ? {sessionId: managedSession} : {}),
+        text,
+      });
+      await this.#flushOrThrow(handle);
+      return result;
     });
-    await this.#flushOrThrow(handle);
-    return result;
   }
 
   async interruptSession({agentId, sessionId, runId} = {}) {
-    const handle = this.#requireReady(agentId);
-    if (!handle.descriptor.capabilities.includes("session.interrupt")) {
-      throw new Error("adapter_capability_unavailable:session.interrupt");
-    }
-    sessionId = requiredText(sessionId, "session_id");
-    if (!handle.sessions.has(sessionId)) throw new Error("session_not_managed");
-    const result = await handle.adapter.interruptSession({
-      sessionId,
-      ...(runId ? {runId: requiredText(runId, "run_id")} : {}),
+    return this.#withReadyAgent(agentId, async (handle) => {
+      if (!handle.descriptor.capabilities.includes("session.interrupt")) {
+        throw new Error("adapter_capability_unavailable:session.interrupt");
+      }
+      const managedSession = requiredText(sessionId, "session_id");
+      if (!handle.sessions.has(managedSession)) throw new Error("session_not_managed");
+      const result = await handle.adapter.interruptSession({
+        sessionId: managedSession,
+        ...(runId ? {runId: requiredText(runId, "run_id")} : {}),
+      });
+      await this.#flushOrThrow(handle);
+      return result;
     });
-    await this.#flushOrThrow(handle);
-    return result;
   }
 
   async respondToApproval({agentId, requestId, decision} = {}) {
-    const handle = this.#requireReady(agentId);
-    if (!handle.descriptor.capabilities.includes("approvals.request")) {
-      throw new Error("adapter_capability_unavailable:approvals.request");
-    }
-    requestId = requiredText(requestId, "approval_request_id");
-    decision = requiredText(decision, "approval_decision", 32);
-    if (!APPROVAL_DECISIONS.has(decision)) throw new Error("unsupported_approval_decision");
-    if (handle.approvalInFlight.has(requestId)) throw new Error("approval_response_in_progress");
+    return this.#withReadyAgent(agentId, async (handle) => {
+      if (!handle.descriptor.capabilities.includes("approvals.request")) {
+        throw new Error("adapter_capability_unavailable:approvals.request");
+      }
+      requestId = requiredText(requestId, "approval_request_id");
+      decision = requiredText(decision, "approval_decision", 32);
+      if (!APPROVAL_DECISIONS.has(decision)) throw new Error("unsupported_approval_decision");
+      if (handle.approvalInFlight.has(requestId)) throw new Error("approval_response_in_progress");
 
-    const approvalEvent = handle.pendingApprovals.get(requestId);
-    if (!approvalEvent) throw new Error("approval_not_pending");
-    if (!this.#authorizeApproval) throw new Error("approval_service_unavailable");
+      const approvalEvent = handle.pendingApprovals.get(requestId);
+      if (!approvalEvent) throw new Error("approval_not_pending");
+      if (!this.#authorizeApproval) throw new Error("approval_service_unavailable");
 
-    const adapter = handle.adapter;
-    handle.approvalInFlight.add(requestId);
-    try {
-      let authorized = false;
+      const adapter = handle.adapter;
+      handle.approvalInFlight.add(requestId);
       try {
-        authorized = await this.#authorizeApproval({
-          agentId: handle.agentId,
-          requestId,
-          decision,
-          event: approvalEvent,
-        });
-      } catch {
-        throw new Error("approval_authorization_failed");
-      }
-      if (authorized !== true) throw new Error("approval_not_authorized");
+        let authorized = false;
+        try {
+          authorized = await this.#authorizeApproval({
+            agentId: handle.agentId,
+            requestId,
+            decision,
+            event: approvalEvent,
+          });
+        } catch {
+          throw new Error("approval_authorization_failed");
+        }
+        if (authorized !== true) throw new Error("approval_not_authorized");
 
-      if (
-        this.#agents.get(handle.agentId) !== handle ||
-        handle.adapter !== adapter ||
-        handle.status !== "ready" ||
-        handle.eventQueue.length ||
-        handle.pendingApprovals.get(requestId) !== approvalEvent
-      ) {
-        throw new Error("agent_not_ready");
-      }
+        if (
+          this.#agents.get(handle.agentId) !== handle ||
+          handle.adapter !== adapter ||
+          handle.status !== "ready" ||
+          handle.eventQueue.length ||
+          handle.pendingApprovals.get(requestId) !== approvalEvent
+        ) {
+          throw new Error("agent_not_ready");
+        }
 
-      const result = await adapter.respondToApproval({requestId, decision});
-      handle.pendingApprovals.delete(requestId);
-      await this.#flushOrThrow(handle);
-      return result;
-    } finally {
-      handle.approvalInFlight.delete(requestId);
-    }
+        const result = await adapter.respondToApproval({requestId, decision});
+        handle.pendingApprovals.delete(requestId);
+        await this.#flushOrThrow(handle);
+        return result;
+      } finally {
+        handle.approvalInFlight.delete(requestId);
+      }
+    });
   }
 
   async disconnectAgent(agentId) {
@@ -318,6 +323,7 @@ export class RuntimeSupervisor {
     }
 
     handle.status = "disconnecting";
+    await this.#waitForCommands(handle);
     const adapter = handle.adapter;
     const unsubscribe = handle.unsubscribe;
     let disconnectError = null;
@@ -387,10 +393,27 @@ export class RuntimeSupervisor {
     return this.listAgents();
   }
 
+  async #withReadyAgent(agentId, operation) {
+    const handle = this.#requireReady(agentId);
+    handle.inFlightCommands += 1;
+    try {
+      return await operation(handle);
+    } finally {
+      handle.inFlightCommands -= 1;
+      if (handle.inFlightCommands === 0) {
+        for (const resolve of handle.commandWaiters.splice(0)) resolve();
+      }
+    }
+  }
+
+  #waitForCommands(handle) {
+    if (handle.inFlightCommands === 0) return Promise.resolve();
+    return new Promise((resolve) => handle.commandWaiters.push(resolve));
+  }
+
   async #flushOrThrow(handle) {
     const flushed = await this.#drainEvents(handle);
     if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
-    if (handle.status !== "ready") throw new Error("agent_not_ready");
   }
 
   #enqueueEvent(handle, input) {
