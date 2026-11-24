@@ -61,23 +61,6 @@ export class RuntimeSupervisor {
     if (handle?.connectPromise) return handle.connectPromise;
     if (handle?.status === "ready") return this.#snapshot(handle);
 
-    if (handle?.status === "degraded") {
-      const recovered = await this.#drainEvents(handle);
-      if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
-      if (handle.status === "ready") return this.#snapshot(handle);
-    }
-    if (handle?.eventQueue.length || handle?.fatalEventError) {
-      const recovered = await this.#drainEvents(handle);
-      if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
-    }
-    if (handle?.status === "disconnecting" || handle?.status === "connecting") {
-      throw new Error("agent_lifecycle_busy");
-    }
-    if (handle?.status === "disconnected" && handle.adapter) {
-      await this.disconnectAgent(agentId);
-      handle = this.#agents.get(agentId);
-    }
-
     if (!handle) {
       handle = {
         agentId,
@@ -104,6 +87,55 @@ export class RuntimeSupervisor {
     }
 
     handle.adapterId = adapterId;
+    handle.connectPromise = this.#connectAgentInternal(handle, context);
+    try {
+      return await handle.connectPromise;
+    } finally {
+      handle.connectPromise = null;
+    }
+  }
+
+  async #connectAgentInternal(handle, context) {
+    if (handle.status === "degraded") {
+      const recovered = await this.#drainEvents(handle);
+      if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
+      if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+      if (handle.status === "ready") return this.#snapshot(handle);
+    }
+    if (handle.eventQueue.length || handle.fatalEventError) {
+      const recovered = await this.#drainEvents(handle);
+      if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
+      if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+    }
+    if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+    if (handle.status === "disconnecting" || handle.status === "connecting") {
+      throw new Error("agent_lifecycle_busy");
+    }
+
+    if (handle.status === "disconnected" && handle.adapter) {
+      handle.targetStatus = "disconnected";
+      handle.status = "disconnecting";
+      const staleAdapter = handle.adapter;
+      const staleUnsubscribe = handle.unsubscribe;
+      try { await staleAdapter.disconnect(); } catch {}
+      if (handle.adapter === staleAdapter) {
+        handle.adapter = null;
+        handle.connectionEstablished = false;
+        handle.sessions.clear();
+        handle.pendingApprovals.clear();
+        handle.approvalInFlight.clear();
+      }
+      if (handle.unsubscribe === staleUnsubscribe) {
+        try { staleUnsubscribe?.(); } catch {}
+        handle.unsubscribe = null;
+      }
+      const flushed = await this.#drainEvents(handle);
+      if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+      handle.status = "disconnected";
+      if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+    }
+
+    if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
     handle.status = "connecting";
     handle.targetStatus = "ready";
     handle.connectionEstablished = false;
@@ -113,12 +145,9 @@ export class RuntimeSupervisor {
     handle.pendingApprovals.clear();
     handle.approvalInFlight.clear();
 
-    handle.connectPromise = this.#connectHandle(handle, context);
-    try {
-      return await handle.connectPromise;
-    } finally {
-      handle.connectPromise = null;
-    }
+    const snapshot = await this.#connectHandle(handle, context);
+    if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+    return snapshot;
   }
 
   async #connectHandle(handle, context) {
