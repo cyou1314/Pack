@@ -276,6 +276,39 @@ test("Supervisor requires an explicit approval authorization result", async () =
   assert.equal(supervisor.getAgentStatus("agent-1").pendingApprovalCount, 0);
 });
 
+test("Duplicate approval events cannot resurrect an answered approval", async () => {
+  const {supervisor, adapters} = createHarness({
+    authorizeApproval: async () => true,
+  });
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+
+  const approvalEvent = adapters[0].requestApproval();
+  await supervisor.retryEvents("agent-1");
+  assert.equal(supervisor.getAgentStatus("agent-1").pendingApprovalCount, 1);
+
+  await supervisor.respondToApproval({
+    agentId: "agent-1",
+    requestId: "approval-1",
+    decision: "accept",
+  });
+  assert.equal(supervisor.getAgentStatus("agent-1").pendingApprovalCount, 0);
+  assert.equal(adapters[0].responses.length, 1);
+
+  for (const listener of adapters[0].listeners) listener(approvalEvent);
+  await supervisor.retryEvents("agent-1");
+
+  assert.equal(supervisor.getAgentStatus("agent-1").pendingApprovalCount, 0);
+  await assert.rejects(
+    () => supervisor.respondToApproval({
+      agentId: "agent-1",
+      requestId: "approval-1",
+      decision: "accept",
+    }),
+    /approval_not_pending/,
+  );
+  assert.equal(adapters[0].responses.length, 1);
+});
+
 test("Supervisor fails closed when the approval service errors", async () => {
   const {supervisor, adapters} = createHarness({
     authorizeApproval: async () => { throw new Error("private approval backend detail"); },
@@ -394,6 +427,38 @@ test("Event persistence failure degrades the agent and can be retried", async ()
   assert.equal(recovered.status, "ready");
   assert.equal(recovered.pendingEventCount, 0);
   assert.equal(eventStore.events.length, 1);
+});
+
+test("Validation failure latch clears after storage recovery and adapter cleanup", async () => {
+  const {supervisor, eventStore, adapters} = createHarness();
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+
+  eventStore.failNext = true;
+  adapters[0].emit("run.started", {text: "pending event"});
+  adapters[0].emit("run.started", {text: "invalid identity"}, {agentId: "agent-2"});
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const degraded = supervisor.getAgentStatus("agent-1");
+  assert.equal(degraded.status, "degraded");
+  assert.equal(degraded.lastError, "event_persistence_failed");
+  assert.equal(degraded.pendingEventCount, 1);
+
+  await assert.rejects(() => supervisor.retryEvents("agent-1"), /event_persistence_failed/);
+  assert.equal(supervisor.getAgentStatus("agent-1").pendingEventCount, 0);
+
+  const disconnected = await supervisor.disconnectAgent("agent-1");
+  assert.equal(disconnected.status, "disconnected");
+  assert.equal(disconnected.connectionEstablished, false);
+  assert.equal(disconnected.lastError, null);
+  assert.equal(adapters[0].connected, false);
+  assert.equal(adapters[0].listeners.size, 0);
+
+  const reconnected = await supervisor.connectAgent({
+    agentId: "agent-1",
+    adapterId: "test.adapter",
+  });
+  assert.equal(reconnected.status, "ready");
+  assert.equal(reconnected.connectionEstablished, true);
 });
 
 test("Supervisor rejects events whose identity does not match the managed adapter", async () => {
@@ -596,7 +661,7 @@ test("Successful cleanup resets a fatal event validation latch for reconnect", a
 
   const disconnected = await supervisor.disconnectAgent("agent-1");
   assert.equal(disconnected.status, "disconnected");
-  assert.equal(disconnected.lastError, "agent_event_invalid");
+  assert.equal(disconnected.lastError, null);
 
   const reconnected = await supervisor.connectAgent({
     agentId: "agent-1",
