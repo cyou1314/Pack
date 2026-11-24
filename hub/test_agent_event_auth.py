@@ -109,7 +109,7 @@ class AgentEventGatewayTests(unittest.TestCase):
             )
             actions = [
                 row["action"] for row in db.execute(
-                    "SELECT action FROM audit_log ORDER BY id"
+                    "SELECT action FROM audit ORDER BY rowid"
                 )
             ]
             self.assertIn("agent_event_pair_code_create", actions)
