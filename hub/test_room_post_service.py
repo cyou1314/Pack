@@ -170,6 +170,11 @@ class RoomPostServiceTests(unittest.TestCase):
             "SELECT task_id FROM messages WHERE id=?", (out["message_id"],),
         ).fetchone()[0], tid)
 
+    def test_approval_request_rejects_ids_outside_sqlite_integer_range(self):
+        with self.assertRaisesRegex(ValueError, "approval_request must reference an existing task"):
+            self.post(actor=self.worker, kind="approval_request",
+                      body="申请批准 任务#9223372036854775808：越界")
+
     def test_approval_gate_result_shares_transaction(self):
         tid = self.make_task()
         attachment = self.make_attachment()
