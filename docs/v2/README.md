@@ -10,6 +10,7 @@
 - MAINLINE-RECONCILIATION-AUDIT.md：main 与 v2 Foundation 的基线差异、冲突风险和分批移植队列。
 - PHASE4-MODULE-BOUNDARIES.md：Hub 与 macOS App 的模块边界和拆分进度。
 - MAC-MINIMAL-CHANGE-DEPLOYMENT.md：Mac 既有安装保护、升级/回滚和隔离验收要求。
+- M1C-AGENT-READ-API-DESIGN.md：Agent Registry 只读 Shadow preflight 门槛和 API 启用条件。
 - PIBOT-REFERENCE-ASSESSMENT.md：PiBot 源码级参考评估、可借鉴模式与不引入边界。
 
 文档优先级：
