@@ -244,7 +244,7 @@ test("Startup treats a durable acknowledgement as authoritative after an interru
   await store.append(event);
   await store.close();
 
-  const hash = createHash("sha256").update(event.eventId).digest("hex");
+  const hash = createHash("sha256").update(JSON.stringify(event.eventId)).digest("hex");
   const pendingPath = path.join(directory, "pending", hash + ".json");
   const acknowledgedPath = path.join(directory, "acknowledged", hash + ".json");
   const pendingRecord = JSON.parse(await readFile(pendingPath, "utf8"));
