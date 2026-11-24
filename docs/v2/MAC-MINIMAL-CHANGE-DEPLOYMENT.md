@@ -156,7 +156,6 @@ ditto "$DMG_OLD/Pack.app" "$PACK_INSTALL_TEST_ROOT/Applications/Pack.app"
 
 ## 5. 当前部署状态
 
-- Foundation 仓库整改与 PR #25/#26/#28/#29/#34 已合并，CI 已验证对应代码和 macOS Release App Bundle 构建。
-- PR #35 / #36 等后续文档与查询边界修正仍需各自完成 review / CI。
+- Foundation 仓库整改与 PR #25/#26/#28/#29/#34/#35/#36 已合并，CI 已验证对应代码和 macOS Release App Bundle 构建。
 - 用户 Mac 当前远程设备离线；尚未执行真实 inventory、数据库备份、shadow report、Keychain 检查或安装升级。
 - 不部署生产 Mac，不在真实数据库上运行 `hub.py init`，直到 3.1–3.3 全部完成并得到明确验收记录。
