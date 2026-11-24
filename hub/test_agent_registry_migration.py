@@ -42,7 +42,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
             );
             CREATE TABLE messages(
                 id INTEGER PRIMARY KEY, author_id INTEGER NOT NULL,
-                kind TEXT NOT NULL, task_id INTEGER
+                kind TEXT NOT NULL, body TEXT NOT NULL, task_id INTEGER
             );
             CREATE TABLE review_log(
                 id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, created_at REAL NOT NULL
@@ -120,7 +120,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     connection.execute(
-                        "SELECT version,name FROM hub_schema_migrations"
+                        "SELECT version,name FROM hub_schema_migrations WHERE version=1"
                     ).fetchone()["name"],
                     "additive_agent_registry",
                 )
@@ -171,6 +171,11 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     "INSERT INTO audit(ts,actor,action,detail) VALUES(1,'legacy','test',?)",
                     [(detail,) for detail in details],
                 )
+                connection.executemany(
+                    "INSERT INTO messages(author_id,kind,body,task_id) "
+                    "VALUES(1,'approval_request',?,NULL)",
+                    [("申请批准 任务#1：旧请求",), ("申请批准 任务#9223372036854775808：越界",)],
+                )
                 connection.commit()
 
                 apply_migrations(connection, clock=lambda: 100.0)
@@ -194,6 +199,12 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     row["name"] for row in connection.execute("PRAGMA index_list(audit)")
                 }
                 self.assertIn("idx_audit_task", indexes)
+                approval_ids = [
+                    row["task_id"] for row in connection.execute(
+                        "SELECT task_id FROM messages ORDER BY id"
+                    )
+                ]
+                self.assertEqual(approval_ids, [1, None])
 
                 apply_migrations(connection, clock=lambda: 200.0)
                 self.assertEqual(
@@ -258,7 +269,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     verify.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    1,
+                    2,
                 )
                 self.assertEqual(
                     verify.execute("SELECT COUNT(*) FROM agents").fetchone()[0],
