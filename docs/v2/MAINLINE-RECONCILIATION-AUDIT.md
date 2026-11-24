@@ -11,10 +11,11 @@
 |---|---|
 | 共同祖先（merge base） | `3c11de6cf8365c4de9098260ebfea519055f9800` |
 | main 当前基线 | `b72203cbbf23c05718316774a77a2c6a05d96422` |
-| v2 Foundation 当前基线（本审计时） | `db6a9d75d6a4efab80fcb7c7e353b3d195af73c7` |
-| Foundation 相对 merge base | ahead 14 commits，约 300 个变更文件 |
+| v2 Foundation 当前基线（PR #37 合并后） | `2179177dbca0f7491a22e63d3fa2e004f3209722` |
+| Foundation 相对 merge base | ahead 24 commits |
 | main 相对 merge base | ahead 9 commits，12 个变更文件 |
-| PR #6 | 346 个变更文件，仍为 draft，GitHub 报告 dirty；不能整包合并 |
+| main 与 Foundation 当前比较 | diverged；Foundation ahead 24、behind 9 |
+| PR #6 | 348 个变更文件（34,234 additions / 6,916 deletions），仍为 Draft，GitHub 报告 mergeable=false / dirty；不能整包合并 |
 
 两个分支并非简单的单向领先关系。PR #6 的 dirty 状态不是通过强行 merge 或关闭冲突检查可以解决的问题；它反映了两个分支在同一批核心文件上继续独立演进。
 
@@ -29,7 +30,7 @@
 | `4d7c767d59` | PiBot 成员 token / task 权限说明 | 已由 PR #35 的源码级评估补充 MCP / ACP 接入边界 |
 | `cffef379d7` | task 热路径索引、审计 task_id 结构化关联 | 结构化审计已由 Foundation migration v2 实现；热路径索引由 PR #34 以 migration v3 移植 |
 | `f13dd29edd` | Hub SQLite migration/query-plan CI smoke | PR #34 增加 Foundation 原生 HubContext / EXPLAIN QUERY PLAN 回归 |
-| `988823a4b8` | clean-clone macOS installer build、App bundle 测试 | Foundation 已有 release bundle 构建，但缺少完整的 no-clobber 路径回归 |
+| `988823a4b8` | clean-clone macOS installer build、App bundle 测试 | 已由 PR #28 移植显式输出路径校验、no-clobber 原子发布与 App Bundle 回归测试 |
 | `b72203cbbf` | 隔离 installer 测试 LaunchAgents | 已在 PR #26 移植 |
 
 ## 3. 关键重叠文件与风险
@@ -132,13 +133,14 @@ M1c API 不因本审计完成而自动解锁。仍需对真实 Mac 数据库的�
 
 ## 6. 合并策略
 
-- 不合并 PR #6 作为一个 346 文件的大包。
-- 不以 merge main 覆盖 Foundation 的模块化 Hub。
-- 每个 mainline 修复按上表独立移植到 Foundation，独立 PR、独立 CI、独立 Codex review。
+- 不合并 PR #6 作为一个 348 文件的大包；它仍是 Draft/dirty，不作为集成入口。
+- 不以 main 的整文件版本覆盖 Foundation 的模块化 Hub，也不直接把 Foundation 分支强行合入 main。
+- 已识别的 mainline 代码修复已通过 PR #25、#26、#28、#29、#34、#36 分批移植；PiBot 评估由 PR #35 补齐，Mac/M1c 部署门槛由 PR #37 补齐。以上 PR 均已合并到 Foundation。
+- 当前已满足“Foundation 增量 PR 验收完成”的前置条件。下一步应从最新 main 创建专门的 integration branch，逐项核对 main 的 12 个文件差异（其中 6 个与 Foundation 核心文件直接重叠），再把经过验证的 Foundation 状态集成进去。
+- 集成 branch 必须独立运行 Hub、staging56、Runtime、Swift Release/App Bundle 与 SQLite contract CI；未解决差异或 CI 不完整时，不合并 main。
 - 所有迁移变更使用新增 migration version；旧版本 checksum 冻结。
-- Foundation 与 main 完成对账、冲突清单关闭、全套 CI 通过、Mac 备份/恢复与 shadow preflight 完成前，不部署 Mac。
-- 只有当 Foundation 的增量 PR 全部验收后，才创建专门的 mainline integration branch 处理最终合并；该 branch 仍需独立 CI，不直接推动 main。
+- 真实 Mac 备份/恢复与 shadow preflight 仍是部署门槛；代码集成完成不代表可以部署。
 
 ## 7. 本次审计结论
 
-当前已将 WAL、installer test-mode isolation、App Bundle 原子发布、staging56 专项回归、task hot-path migration v3、room/member 查询过滤语义保护和 PiBot MCP/ACP 评估分批移植并合并。Foundation 原有 migration v2 已覆盖结构化 task audit；migration v3 补齐 task queue / lease / unclaimed / transfer 索引及查询计划验证。真实 Mac 数据库 shadow preflight 仍是独立门槛，Mac 设备离线期间不读取或迁移生产数据库。
+截至 2026-11-24，Foundation 最新 HEAD 为 `2179177dbca0f7491a22e63d3fa2e004f3209722`（PR #37 已合并），main 最新 HEAD 为 `b72203cbbf23c05718316774a77a2c6a05d96422`。当前两条分支仍 diverged（Foundation ahead 24 / behind 9），PR #6 仍为 348 文件 Draft/dirty。已识别的 mainline 修复已通过独立 PR 移植，但最终 mainline integration 尚未执行；必须先建立独立 integration branch 并完成文件级核对与全套 CI。真实 Mac 数据库 shadow preflight 仍是独立门槛，Mac 设备离线期间不读取或迁移生产数据库。
