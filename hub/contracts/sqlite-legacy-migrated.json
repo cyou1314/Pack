@@ -405,7 +405,7 @@
           "name": "idx_agent_event_pair_one_active",
           "origin": "c",
           "partial": true,
-          "sql": "CREATE UNIQUE INDEX idx_agent_event_pair_one_active ON agent_event_pair_codes(agent_id) WHERE redeemed_at IS NULL AND revoked_at IS NULL AND locked_at IS NULL",
+          "sql": "CREATE UNIQUE INDEX idx_agent_event_pair_one_active\n           ON agent_event_pair_codes(agent_id)\n           WHERE redeemed_at IS NULL AND revoked_at IS NULL AND locked_at IS NULL",
           "unique": true
         },
         {
