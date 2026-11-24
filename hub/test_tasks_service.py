@@ -165,6 +165,87 @@ class TaskHistoryTests(unittest.TestCase):
             [],
         )
 
+    def test_task_list_rechecks_room_and_assignee_names_after_id_lookup(self):
+        class LookupRaceContext:
+            def __init__(self, base, table, old_name, new_name):
+                self.base = base
+                self.table = table
+                self.old_name = old_name
+                self.new_name = new_name
+
+            def connect(self):
+                base = self.base
+                table = self.table
+                old_name = self.old_name
+                new_name = self.new_name
+                connection = base.connect()
+
+                class CursorOnce:
+                    def __init__(self, row):
+                        self.row = row
+
+                    def fetchone(self):
+                        return self.row
+
+                class ConnectionProxy:
+                    changed = False
+
+                    def execute(self, sql, args=()):
+                        cursor = connection.execute(sql, args)
+                        if (
+                            not self.changed
+                            and sql in (
+                                "SELECT id FROM rooms WHERE name=?",
+                                "SELECT id FROM members WHERE name=?",
+                            )
+                        ):
+                            row = cursor.fetchone()
+                            if row is not None:
+                                updater = base.connect()
+                                try:
+                                    updater.execute(
+                                        f"UPDATE {table} SET name=? WHERE id=?",
+                                        (new_name, row["id"]),
+                                    )
+                                    updater.commit()
+                                finally:
+                                    updater.close()
+                            self.changed = True
+                            return CursorOnce(row)
+                        return cursor
+
+                    def close(self):
+                        connection.close()
+
+                    def __getattr__(self, name):
+                        return getattr(connection, name)
+
+                return ConnectionProxy()
+
+        room_context = LookupRaceContext(
+            self.context, "rooms", "pack-main", "pack-main-renamed"
+        )
+        self.assertEqual(
+            list_tasks(room_context, {"kind": "internal"}, room="pack-main")["tasks"],
+            [],
+        )
+        restore = self.context.connect()
+        restore.execute(
+            "UPDATE rooms SET name='pack-main' WHERE name='pack-main-renamed'"
+        )
+        restore.commit()
+        restore.close()
+
+        member_context = LookupRaceContext(
+            self.context, "members", "dispatcher", "dispatcher-renamed"
+        )
+        self.assertEqual(
+            list_tasks(
+                member_context, {"kind": "internal"}, assignee_name="dispatcher"
+            )["tasks"],
+            [],
+        )
+
     def test_task_list_envelope_backoff_and_negative_offset(self):
         self.conn.execute(
             "UPDATE tasks SET envelope=?,next_claim_at=? WHERE id=1",

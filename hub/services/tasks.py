@@ -96,8 +96,8 @@ def list_tasks(context, me, status: str = "", assignee_name: str = "",
             if assignee_row:
                 # Resolve the name once so the assignee/priority index can
                 # satisfy both filtering and the stable queue ordering.
-                q += " AND t.assignee=?"
-                args.append(assignee_row["id"])
+                q += " AND t.assignee=? AND mb.name=?"
+                args.extend((assignee_row["id"], assignee_name))
             else:
                 q += " AND mb.name=?"
                 args.append(assignee_name)
@@ -109,8 +109,8 @@ def list_tasks(context, me, status: str = "", assignee_name: str = "",
                 # Resolve the human-readable room filter once, then constrain
                 # the task table directly so idx_tasks_room_urgent_id can serve
                 # both filtering and stable priority ordering.
-                q += " AND t.room_id=?"
-                args.append(room_row["id"])
+                q += " AND t.room_id=? AND rm.name=?"
+                args.extend((room_row["id"], room))
             else:
                 q += " AND rm.name=?"
                 args.append(room)
