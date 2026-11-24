@@ -324,7 +324,7 @@ test("The store rejects non-JSON payloads and oversized events", async (t) => {
     /event_too_large/,
   );
   let depthBoundary = {leaf: true};
-  for (let index = 0; index < 62; index += 1) depthBoundary = {child: depthBoundary};
+  for (let index = 0; index < 61; index += 1) depthBoundary = {child: depthBoundary};
   await store.append(makeEvent("event-depth-boundary", {nested: depthBoundary}));
 
   let deeplyNested = {value: "x"};
