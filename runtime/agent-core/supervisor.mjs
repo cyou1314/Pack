@@ -60,7 +60,8 @@ export class RuntimeSupervisor {
     if (handle?.disconnectFailed) throw new Error("agent_disconnect_failed");
     if (handle?.disconnectPromise) throw new Error("agent_lifecycle_busy");
     if (handle?.connectPromise) return handle.connectPromise;
-    if (handle?.status === "ready" && !handle.eventQueue.length && !handle.fatalEventError) {
+    if (handle?.status === "ready" && handle.connectionEstablished &&
+        !handle.eventQueue.length && !handle.fatalEventError) {
       return this.#snapshot(handle);
     }
 
@@ -201,6 +202,9 @@ export class RuntimeSupervisor {
 
       handle.startupFailed = true;
       handle.targetStatus = "failed";
+      handle.sessions.clear();
+      handle.pendingApprovals.clear();
+      handle.approvalInFlight.clear();
       let cleanupError = null;
       try { await handle.adapter?.disconnect?.(); }
       catch (disconnectError) { cleanupError = disconnectError; }
@@ -208,6 +212,8 @@ export class RuntimeSupervisor {
       if (cleanupError) {
         handle.disconnectFailed = true;
         handle.targetStatus = "failed";
+        handle.pendingApprovals.clear();
+        handle.approvalInFlight.clear();
         const flushed = await this.#drainEvents(handle);
         if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
         handle.status = "failed";
@@ -521,7 +527,13 @@ export class RuntimeSupervisor {
           return false;
         }
         handle.eventQueue.shift();
-        if (event.eventType === "approval.requested" && handle.targetStatus !== "disconnected") {
+        if (
+          event.eventType === "approval.requested" &&
+          !handle.startupFailed &&
+          !handle.disconnectFailed &&
+          handle.targetStatus !== "disconnected" &&
+          handle.targetStatus !== "failed"
+        ) {
           handle.pendingApprovals.set(event.payload.requestId, event);
         }
         if (event.eventType === "connection.changed" && event.payload.status === "disconnected") {
@@ -572,6 +584,8 @@ export class RuntimeSupervisor {
     const handle = this.#requireHandle(agentId);
     if (
       handle.status !== "ready" ||
+      !handle.connectionEstablished ||
+      handle.disconnectFailed ||
       handle.disconnectPromise ||
       handle.eventQueue.length ||
       handle.fatalEventError
