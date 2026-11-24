@@ -245,6 +245,23 @@ test("The store rejects non-JSON payloads and oversized events", async (t) => {
   await store.close();
 });
 
+test("The store rejects non-enumerable serialization hooks before writing", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const store = await DurableEventStore.open({directory});
+  const nested = {visible: "safe"};
+  Object.defineProperty(nested, "toJSON", {
+    enumerable: false,
+    value() { return {apiKey: "must-not-be-persisted"}; },
+  });
+
+  await assert.rejects(
+    () => store.append(makeEvent("event-to-json-hook", {nested})),
+    /event_not_json_serializable/,
+  );
+  assert.deepEqual(await store.listPending(), []);
+  await store.close();
+});
+
 test("The store uses private directory and event-file permissions", async (t) => {
   const directory = await temporaryDirectory(t);
   const store = await DurableEventStore.open({directory});
