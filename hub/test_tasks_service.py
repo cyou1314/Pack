@@ -129,6 +129,29 @@ class TaskHistoryTests(unittest.TestCase):
             [],
         )
 
+    def test_task_list_resolves_room_name_to_indexed_room_id(self):
+        self.conn.execute(
+            "INSERT INTO rooms(name,created_at) VALUES('other-room',8000)"
+        )
+        other_room = self.conn.execute(
+            "SELECT id FROM rooms WHERE name='other-room'"
+        ).fetchone()["id"]
+        self.conn.execute(
+            "INSERT INTO tasks(id,room_id,title,body,created_by,assignee,status,"
+            "created_at,updated_at) VALUES(20,?,'other-room-task','',?,?,'open',8000,8000)",
+            (other_room, self.dispatcher, self.dispatcher),
+        )
+        self.conn.commit()
+
+        main_room = list_tasks(
+            self.context, {"kind": "internal"}, room="pack-main"
+        )["tasks"]
+        other_tasks = list_tasks(
+            self.context, {"kind": "internal"}, room="other-room"
+        )["tasks"]
+        self.assertEqual([row["id"] for row in main_room], [1, 12])
+        self.assertEqual([row["id"] for row in other_tasks], [20])
+
     def test_task_list_envelope_backoff_and_negative_offset(self):
         self.conn.execute(
             "UPDATE tasks SET envelope=?,next_claim_at=? WHERE id=1",
