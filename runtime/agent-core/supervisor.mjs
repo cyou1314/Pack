@@ -65,6 +65,10 @@ export class RuntimeSupervisor {
       if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
       if (handle.status === "ready") return this.#snapshot(handle);
     }
+    if (handle?.eventQueue.length || handle?.fatalEventError) {
+      const recovered = await this.#drainEvents(handle);
+      if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
+    }
     if (handle?.status === "disconnecting" || handle?.status === "connecting") {
       throw new Error("agent_lifecycle_busy");
     }
@@ -173,7 +177,7 @@ export class RuntimeSupervisor {
     const managedSession = sessionId === undefined || sessionId === null
       ? ""
       : requiredText(sessionId, "session_id");
-    if (SESSION_CAPABILITIES.size && handle.descriptor.capabilities.some((item) => SESSION_CAPABILITIES.has(item))) {
+    if (handle.descriptor.capabilities.some((item) => SESSION_CAPABILITIES.has(item))) {
       if (!managedSession || !handle.sessions.has(managedSession)) {
         throw new Error("session_not_managed");
       }
@@ -356,7 +360,11 @@ export class RuntimeSupervisor {
         if (result.inserted) this.#publish(event);
       }
 
-      if (handle.fatalEventError) return false;
+      if (handle.fatalEventError) {
+        handle.status = "degraded";
+        handle.lastError = handle.lastError || "agent_event_invalid";
+        return false;
+      }
       if (handle.status === "degraded") {
         handle.status = handle.targetStatus || (handle.adapter ? "ready" : "disconnected");
         handle.lastError = null;
