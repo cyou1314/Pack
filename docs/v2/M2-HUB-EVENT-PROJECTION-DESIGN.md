@@ -17,6 +17,18 @@
 - Hub 的 `messages` 是现有房间聊天协议，`tasks/runs` 是现有任务执行状态机。二者不能被复用来承载 Agent Session 的原始输出或 Provider Turn。
 - 当前 Consumer ACK 服务独立创建连接并拥有事务；因此不能在调用现有 ACK 函数之后再提交投影，否则会产生“游标已推进、投影未提交”的丢事件窗口。投影实现必须先提供同连接事务 API，再启用业务 Consumer。
 
+## 3.1 当前 Codex Adapter 的真实事件形态（实现前约束）
+
+已核对当前 `runtime/agent-core/adapters/codex-app-server.mjs`：
+- Codex 的 `sessionId` 实际来自 App Server `threadId`；`runId` 来自 `turn.id`。它们是 Provider ID，不是 Hub 自增 ID，也不是 Pack `agent_sessions.session_id`。
+- `message.delta` payload 当前包含 `itemId` 与 `delta`；`message.completed` 包含 `itemId`、最终 `text` 和 `phase`。因此投影消息自然键应优先使用 `(agent_id, provider_session_id, itemId)`，但仍需验证 App Server 在同一 Thread 内 itemId 的稳定性与复用规则。
+- `run.started/completed/interrupted/failed` 的 runId 是 Provider Turn ID；`approval.requested` 当前带 `requestId`、`approvalKind`、`itemId`、`reason`、`availableDecisions`。
+- 当前 Codex Adapter 的通知映射未发布 `session.created`、`tool.started/tool.completed` 或 `usage.updated`；不能仅因 Hub Gateway 枚举允许这些类型就假设 Provider 已提供。
+- Supervisor 的 `createSession/resumeSession` 会把 Adapter 返回的 sessionId 加入进程内集合并 flush pending events，但当前方法本身没有合成并持久化 `session.created` 事件。真实 Hub Session 行的创建必须由后续明确的 Hub command/registration 边界负责，不能依赖不存在的事件。
+- Adapter 的 `sequence` 是进程内计数，重启后可能重置；只能作为诊断字段，不能用作持久化排序、去重或 Session cursor。
+
+因此首个 Codex 投影必须把 Provider Thread/Turn/Item ID 存在独立 provider ID 字段中，并以 Hub 的 Agent 作用域做映射；不得把这些 ID 写入 Hub 主键字段。对暂未支持的事件类型保持“不可投影/隔离”，不得制造虚假的 Tool 或 Usage 记录。
+
 ## 3. 设计原则
 
 1. Inbox 是不可变事实源；投影表是可丢弃并可重建的读模型。
