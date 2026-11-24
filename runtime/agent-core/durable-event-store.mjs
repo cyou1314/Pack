@@ -16,6 +16,7 @@ const FORMAT_VERSION = 1;
 const DEFAULT_MAX_EVENT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 1000;
+const MAX_EVENT_DEPTH = 64;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const STORE_MARKER = ".pack-event-store";
 const STORE_MARKER_CONTENT = "pack-runtime-event-store-v1\n";
@@ -37,7 +38,8 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function assertJsonValue(value, seen = new Set()) {
+function assertJsonValue(value, seen = new Set(), depth = 0) {
+  if (depth > MAX_EVENT_DEPTH) throw new TypeError("event_payload_too_deep");
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number" && Number.isFinite(value)) return;
   if (typeof value !== "object" || seen.has(value)) {
@@ -56,7 +58,7 @@ function assertJsonValue(value, seen = new Set()) {
       if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
         throw new TypeError("event_not_json_serializable");
       }
-      assertJsonValue(descriptor.value, seen);
+      assertJsonValue(descriptor.value, seen, depth + 1);
     }
   } else {
     if (!isPlainObject(value) || Object.getOwnPropertySymbols(value).length) {
@@ -211,6 +213,7 @@ async function readJsonRecord(filePath, kind, expectedHash, maxBytes) {
   if (kind === "event") {
     let event;
     try {
+      assertJsonValue(record.event?.payload ?? {});
       event = createAgentEvent(record.event);
       assertJsonValue(event);
     } catch {
