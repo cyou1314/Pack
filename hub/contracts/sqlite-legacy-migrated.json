@@ -17,7 +17,21 @@
       "columns": [
         {
           "default": null,
+          "name": "connection_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
           "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "mode",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -31,43 +45,8 @@
         },
         {
           "default": null,
-          "name": "connection_id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
           "name": "credential_ref",
           "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "mode",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "revoked_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": "'{}'",
-          "name": "safe_metadata_json",
-          "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
         },
@@ -79,9 +58,30 @@
           "type": "TEXT"
         },
         {
+          "default": "'{}'",
+          "name": "safe_metadata_json",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
           "default": null,
           "name": "updated_at",
           "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "revoked_at",
+          "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
         }
@@ -122,13 +122,6 @@
     {
       "columns": [
         {
-          "default": "0",
-          "name": "acked_inbox_seq",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
           "default": null,
           "name": "consumer_id",
           "notnull": true,
@@ -141,6 +134,13 @@
           "notnull": true,
           "primary_key_position": 2,
           "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "acked_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
         },
         {
           "default": null,
@@ -178,13 +178,6 @@
       "columns": [
         {
           "default": null,
-          "name": "acked_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
           "name": "lease_id",
           "notnull": true,
           "primary_key_position": 1,
@@ -196,6 +189,13 @@
           "notnull": true,
           "primary_key_position": 2,
           "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "acked_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [
@@ -254,17 +254,17 @@
       "columns": [
         {
           "default": null,
-          "name": "ack_retry_until",
+          "name": "lease_id",
           "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
+          "primary_key_position": 1,
+          "type": "TEXT"
         },
         {
-          "default": "0",
-          "name": "acked_through_inbox_seq",
+          "default": null,
+          "name": "consumer_id",
           "notnull": true,
           "primary_key_position": 0,
-          "type": "INTEGER"
+          "type": "TEXT"
         },
         {
           "default": null,
@@ -275,24 +275,31 @@
         },
         {
           "default": null,
-          "name": "closed_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "completed_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "consumer_id",
+          "name": "lease_token_hash",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "from_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "through_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": "0",
+          "name": "acked_through_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
         },
         {
           "default": null,
@@ -310,24 +317,24 @@
         },
         {
           "default": null,
-          "name": "from_inbox_seq",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "lease_id",
+          "name": "completed_at",
           "notnull": false,
-          "primary_key_position": 1,
-          "type": "TEXT"
+          "primary_key_position": 0,
+          "type": "REAL"
         },
         {
           "default": null,
-          "name": "lease_token_hash",
-          "notnull": true,
+          "name": "ack_retry_until",
+          "notnull": false,
           "primary_key_position": 0,
-          "type": "TEXT"
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "closed_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
         },
         {
           "default": null,
@@ -335,13 +342,6 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "through_inbox_seq",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
         }
       ],
       "foreign_keys": [
@@ -404,6 +404,13 @@
       "columns": [
         {
           "default": null,
+          "name": "inbox_seq",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
           "name": "agent_id",
           "notnull": true,
           "primary_key_position": 0,
@@ -418,7 +425,14 @@
         },
         {
           "default": null,
-          "name": "event_json",
+          "name": "provider_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "event_type",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -432,20 +446,6 @@
         },
         {
           "default": null,
-          "name": "event_type",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "inbox_seq",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
           "name": "occurred_at",
           "notnull": true,
           "primary_key_position": 0,
@@ -453,21 +453,7 @@
         },
         {
           "default": null,
-          "name": "process_error_code",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "processed_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "provider_id",
+          "name": "event_json",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -478,6 +464,20 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "processed_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "process_error_code",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
         }
       ],
       "foreign_keys": [
@@ -556,18 +556,18 @@
           "type": "INTEGER"
         },
         {
-          "default": "0",
-          "name": "success",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
           "default": null,
           "name": "ts",
           "notnull": true,
           "primary_key_position": 0,
           "type": "REAL"
+        },
+        {
+          "default": "0",
+          "name": "success",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
         }
       ],
       "foreign_keys": [],
@@ -589,6 +589,13 @@
       "columns": [
         {
           "default": null,
+          "name": "code_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
           "name": "agent_id",
           "notnull": true,
           "primary_key_position": 0,
@@ -603,10 +610,10 @@
         },
         {
           "default": null,
-          "name": "code_id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
+          "name": "created_by",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
         },
         {
           "default": null,
@@ -617,29 +624,8 @@
         },
         {
           "default": null,
-          "name": "created_by",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
           "name": "expires_at",
           "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": "0",
-          "name": "fail_count",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "locked_at",
-          "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
         },
@@ -653,6 +639,20 @@
         {
           "default": null,
           "name": "revoked_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": "0",
+          "name": "fail_count",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "locked_at",
           "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
@@ -706,49 +706,14 @@
       "columns": [
         {
           "default": null,
+          "name": "token_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
           "name": "agent_id",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "created_by",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "expires_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "last_used_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "revoked_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "scope",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -762,10 +727,45 @@
         },
         {
           "default": null,
-          "name": "token_id",
+          "name": "scope",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_by",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "expires_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "revoked_at",
           "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "last_used_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [
@@ -807,36 +807,15 @@
       "columns": [
         {
           "default": null,
-          "name": "agent_id",
-          "notnull": true,
-          "primary_key_position": 0,
+          "name": "session_id",
+          "notnull": false,
+          "primary_key_position": 1,
           "type": "TEXT"
         },
         {
           "default": null,
-          "name": "created_at",
+          "name": "agent_id",
           "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": "0",
-          "name": "last_event_sequence",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "last_used_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "provider_session_id",
-          "notnull": false,
           "primary_key_position": 0,
           "type": "TEXT"
         },
@@ -849,9 +828,9 @@
         },
         {
           "default": null,
-          "name": "session_id",
+          "name": "provider_session_id",
           "notnull": false,
-          "primary_key_position": 1,
+          "primary_key_position": 0,
           "type": "TEXT"
         },
         {
@@ -862,9 +841,30 @@
           "type": "TEXT"
         },
         {
+          "default": "0",
+          "name": "last_event_sequence",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
           "default": null,
           "name": "updated_at",
           "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "last_used_at",
+          "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
         }
@@ -921,21 +921,7 @@
         },
         {
           "default": null,
-          "name": "connection_mode",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "display_name",
+          "name": "provider_id",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -949,15 +935,15 @@
         },
         {
           "default": null,
-          "name": "legacy_provider_label",
-          "notnull": false,
+          "name": "display_name",
+          "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
         },
         {
           "default": null,
-          "name": "provider_id",
-          "notnull": true,
+          "name": "connection_mode",
+          "notnull": false,
           "primary_key_position": 0,
           "type": "TEXT"
         },
@@ -967,6 +953,20 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "legacy_provider_label",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         },
         {
           "default": null,
@@ -1030,6 +1030,13 @@
     {
       "columns": [
         {
+          "default": null,
+          "name": "id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
           "default": "''",
           "name": "action",
           "notnull": true,
@@ -1037,15 +1044,8 @@
           "type": "TEXT"
         },
         {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "created_by",
+          "default": "''",
+          "name": "target",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -1053,6 +1053,13 @@
         {
           "default": null,
           "name": "effect",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "''",
+          "name": "source",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -1066,24 +1073,17 @@
         },
         {
           "default": null,
-          "name": "id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": "''",
-          "name": "source",
+          "name": "created_by",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
         },
         {
-          "default": "''",
-          "name": "target",
+          "default": null,
+          "name": "created_at",
           "notnull": true,
           "primary_key_position": 0,
-          "type": "TEXT"
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1106,13 +1106,6 @@
       "columns": [
         {
           "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
           "name": "id",
           "notnull": false,
           "primary_key_position": 1,
@@ -1120,35 +1113,14 @@
         },
         {
           "default": null,
-          "name": "message_id",
-          "notnull": false,
+          "name": "sha256",
+          "notnull": true,
           "primary_key_position": 0,
-          "type": "INTEGER"
+          "type": "TEXT"
         },
         {
           "default": null,
           "name": "mime",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": "''",
-          "name": "original_name",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "room_id",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "sha256",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -1161,11 +1133,39 @@
           "type": "INTEGER"
         },
         {
+          "default": "''",
+          "name": "original_name",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
           "default": null,
           "name": "uploader_id",
           "notnull": true,
           "primary_key_position": 0,
           "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "room_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "message_id",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1198,14 +1198,28 @@
       "columns": [
         {
           "default": null,
-          "name": "action",
+          "name": "id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "ts",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "actor",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
         },
         {
           "default": null,
-          "name": "actor",
+          "name": "action",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -1219,24 +1233,10 @@
         },
         {
           "default": null,
-          "name": "id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
           "name": "task_id",
           "notnull": false,
           "primary_key_position": 0,
           "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "ts",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1259,10 +1259,10 @@
       "columns": [
         {
           "default": null,
-          "name": "acquired_at",
+          "name": "id",
           "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
+          "primary_key_position": 1,
+          "type": "INTEGER"
         },
         {
           "default": null,
@@ -1273,17 +1273,17 @@
         },
         {
           "default": null,
-          "name": "id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
           "name": "task_id",
           "notnull": false,
           "primary_key_position": 0,
           "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "acquired_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1292,34 +1292,6 @@
     },
     {
       "columns": [
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "created_by",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "effect",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": "1",
-          "name": "enabled",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
         {
           "default": null,
           "name": "id",
@@ -1335,11 +1307,39 @@
           "type": "TEXT"
         },
         {
+          "default": null,
+          "name": "effect",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
           "default": "''",
           "name": "source",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": "1",
+          "name": "enabled",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "created_by",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1361,17 +1361,10 @@
       "columns": [
         {
           "default": null,
-          "name": "applied_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "checksum",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
+          "name": "version",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
         },
         {
           "default": null,
@@ -1382,10 +1375,17 @@
         },
         {
           "default": null,
-          "name": "version",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
+          "name": "checksum",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "applied_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1456,17 +1456,17 @@
         },
         {
           "default": null,
-          "name": "updated_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
           "name": "version_id",
           "notnull": true,
           "primary_key_position": 0,
           "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1490,42 +1490,14 @@
       "columns": [
         {
           "default": null,
-          "name": "author",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
           "name": "id",
           "notnull": false,
           "primary_key_position": 1,
           "type": "INTEGER"
         },
         {
-          "default": "''",
-          "name": "key",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
           "default": null,
           "name": "member",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "origin",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -1538,15 +1510,8 @@
           "type": "TEXT"
         },
         {
-          "default": null,
-          "name": "size",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": "'[]'",
-          "name": "source_refs",
+          "default": "''",
+          "name": "key",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -1557,6 +1522,41 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "author",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "origin",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'[]'",
+          "name": "source_refs",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "size",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1580,13 +1580,6 @@
     {
       "columns": [
         {
-          "default": "0",
-          "name": "cursor_id",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
           "default": null,
           "name": "member_id",
           "notnull": true,
@@ -1598,6 +1591,13 @@
           "name": "room_id",
           "notnull": true,
           "primary_key_position": 2,
+          "type": "INTEGER"
+        },
+        {
+          "default": "0",
+          "name": "cursor_id",
+          "notnull": true,
+          "primary_key_position": 0,
           "type": "INTEGER"
         }
       ],
@@ -1620,13 +1620,6 @@
     {
       "columns": [
         {
-          "default": "1",
-          "name": "enabled",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
           "default": null,
           "name": "member_id",
           "notnull": true,
@@ -1638,6 +1631,13 @@
           "name": "skill_id",
           "notnull": true,
           "primary_key_position": 2,
+          "type": "INTEGER"
+        },
+        {
+          "default": "1",
+          "name": "enabled",
+          "notnull": true,
+          "primary_key_position": 0,
           "type": "INTEGER"
         }
       ],
@@ -1661,41 +1661,6 @@
       "columns": [
         {
           "default": null,
-          "name": "access_mode",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "avatar",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "bound_room_id",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "display_name",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
           "name": "id",
           "notnull": false,
           "primary_key_position": 1,
@@ -1703,35 +1668,21 @@
         },
         {
           "default": null,
-          "name": "joined_msg_id",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "kind",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "last_heartbeat",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "login_state",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
           "name": "name",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "role",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "token_hash",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -1745,28 +1696,28 @@
         },
         {
           "default": null,
-          "name": "provider",
+          "name": "last_heartbeat",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "avatar",
           "notnull": false,
           "primary_key_position": 0,
           "type": "TEXT"
         },
         {
           "default": null,
-          "name": "quota_extra_left",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "quota_source",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "quota_updated_at",
+          "name": "quota_week_used_pct",
           "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
@@ -1780,7 +1731,14 @@
         },
         {
           "default": null,
-          "name": "quota_week_used_pct",
+          "name": "quota_extra_left",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "quota_updated_at",
           "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
@@ -1794,15 +1752,57 @@
         },
         {
           "default": null,
-          "name": "role",
-          "notnull": true,
+          "name": "provider",
+          "notnull": false,
           "primary_key_position": 0,
           "type": "TEXT"
         },
         {
           "default": null,
-          "name": "token_hash",
-          "notnull": true,
+          "name": "login_state",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "quota_source",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "kind",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "display_name",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "bound_room_id",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "joined_msg_id",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "access_mode",
+          "notnull": false,
           "primary_key_position": 0,
           "type": "TEXT"
         }
@@ -1826,17 +1826,17 @@
       "columns": [
         {
           "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
           "name": "member_id",
           "notnull": true,
           "primary_key_position": 1,
           "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "op_key",
+          "notnull": true,
+          "primary_key_position": 2,
+          "type": "TEXT"
         },
         {
           "default": null,
@@ -1847,10 +1847,10 @@
         },
         {
           "default": null,
-          "name": "op_key",
+          "name": "created_at",
           "notnull": true,
-          "primary_key_position": 2,
-          "type": "TEXT"
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -1873,6 +1873,20 @@
       "columns": [
         {
           "default": null,
+          "name": "id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "room_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
           "name": "author_id",
           "notnull": true,
           "primary_key_position": 0,
@@ -1880,10 +1894,24 @@
         },
         {
           "default": null,
+          "name": "kind",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
           "name": "body",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "INTEGER"
         },
         {
           "default": null,
@@ -1908,27 +1936,6 @@
         },
         {
           "default": null,
-          "name": "id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "kind",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "payload",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
           "name": "reply_to_id",
           "notnull": false,
           "primary_key_position": 0,
@@ -1936,17 +1943,10 @@
         },
         {
           "default": null,
-          "name": "room_id",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "task_id",
+          "name": "payload",
           "notnull": false,
           "primary_key_position": 0,
-          "type": "INTEGER"
+          "type": "TEXT"
         }
       ],
       "foreign_keys": [],
@@ -1997,18 +1997,18 @@
           "type": "INTEGER"
         },
         {
-          "default": "0",
-          "name": "success",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
           "default": null,
           "name": "ts",
           "notnull": true,
           "primary_key_position": 0,
           "type": "REAL"
+        },
+        {
+          "default": "0",
+          "name": "success",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
         }
       ],
       "foreign_keys": [],
@@ -2030,9 +2030,9 @@
       "columns": [
         {
           "default": null,
-          "name": "bound_room_id",
-          "notnull": true,
-          "primary_key_position": 0,
+          "name": "id",
+          "notnull": false,
+          "primary_key_position": 1,
           "type": "INTEGER"
         },
         {
@@ -2041,55 +2041,6 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "created_by",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "display_name",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "expires_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": "0",
-          "name": "fail_count",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "locked_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
         },
         {
           "default": null,
@@ -2106,6 +2057,20 @@
           "type": "TEXT"
         },
         {
+          "default": null,
+          "name": "bound_room_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "display_name",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
           "default": "0",
           "name": "reclaim",
           "notnull": true,
@@ -2114,8 +2079,22 @@
         },
         {
           "default": null,
-          "name": "redeemed_at",
-          "notnull": false,
+          "name": "created_by",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "expires_at",
+          "notnull": true,
           "primary_key_position": 0,
           "type": "REAL"
         },
@@ -2128,7 +2107,28 @@
         },
         {
           "default": null,
+          "name": "redeemed_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
           "name": "revoked_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": "0",
+          "name": "fail_count",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "locked_at",
           "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
@@ -2153,10 +2153,10 @@
       "columns": [
         {
           "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
+          "name": "provider_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
         },
         {
           "default": null,
@@ -2167,17 +2167,17 @@
         },
         {
           "default": null,
-          "name": "provider_id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
           "name": "status",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         },
         {
           "default": null,
@@ -2206,13 +2206,6 @@
       "columns": [
         {
           "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
           "name": "id",
           "notnull": false,
           "primary_key_position": 1,
@@ -2220,7 +2213,14 @@
         },
         {
           "default": null,
-          "name": "member_desc",
+          "name": "task_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "target_url",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -2234,24 +2234,10 @@
         },
         {
           "default": null,
-          "name": "reviewer",
+          "name": "member_desc",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "target_url",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "task_id",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
         },
         {
           "default": null,
@@ -2259,6 +2245,20 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "reviewer",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -2281,17 +2281,17 @@
       "columns": [
         {
           "default": null,
-          "name": "data",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
           "name": "room_id",
           "notnull": false,
           "primary_key_position": 1,
           "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "data",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
         },
         {
           "default": null,
@@ -2316,20 +2316,6 @@
       "columns": [
         {
           "default": null,
-          "name": "archived_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
           "name": "id",
           "notnull": false,
           "primary_key_position": 1,
@@ -2341,6 +2327,20 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "archived_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -2362,7 +2362,49 @@
       "columns": [
         {
           "default": null,
+          "name": "id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "member_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "fence",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
           "name": "claim_token",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'running'",
+          "name": "status",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "outcome",
           "notnull": false,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -2376,59 +2418,17 @@
         },
         {
           "default": null,
-          "name": "ended_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "fence",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "member_id",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "outcome",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
           "name": "started_at",
           "notnull": true,
           "primary_key_position": 0,
           "type": "REAL"
         },
         {
-          "default": "'running'",
-          "name": "status",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
           "default": null,
-          "name": "task_id",
-          "notnull": true,
+          "name": "ended_at",
+          "notnull": false,
           "primary_key_position": 0,
-          "type": "INTEGER"
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -2461,27 +2461,6 @@
       "columns": [
         {
           "default": null,
-          "name": "body",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "created_by",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
           "name": "id",
           "notnull": false,
           "primary_key_position": 1,
@@ -2500,6 +2479,27 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "body",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_by",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -2532,20 +2532,6 @@
     {
       "columns": [
         {
-          "default": "0",
-          "name": "current_version",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": "''",
-          "name": "description",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
           "default": null,
           "name": "id",
           "notnull": false,
@@ -2558,6 +2544,20 @@
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
+        },
+        {
+          "default": "''",
+          "name": "description",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "current_version",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
         },
         {
           "default": null,
@@ -2585,20 +2585,6 @@
     {
       "columns": [
         {
-          "default": "''",
-          "name": "assignee",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "body_tpl",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
           "default": null,
           "name": "id",
           "notnull": false,
@@ -2615,6 +2601,20 @@
         {
           "default": null,
           "name": "title_tpl",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "body_tpl",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "''",
+          "name": "assignee",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -2653,10 +2653,38 @@
       "columns": [
         {
           "default": null,
-          "name": "accepted_at",
+          "name": "id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "task_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "from_member",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "to_member",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "reason",
           "notnull": false,
           "primary_key_position": 0,
-          "type": "REAL"
+          "type": "TEXT"
         },
         {
           "default": null,
@@ -2673,34 +2701,6 @@
           "type": "REAL"
         },
         {
-          "default": null,
-          "name": "expires_at",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "from_member",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "reason",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
           "default": "'pending'",
           "name": "status",
           "notnull": true,
@@ -2709,17 +2709,17 @@
         },
         {
           "default": null,
-          "name": "task_id",
-          "notnull": true,
+          "name": "accepted_at",
+          "notnull": false,
           "primary_key_position": 0,
-          "type": "INTEGER"
+          "type": "REAL"
         },
         {
           "default": null,
-          "name": "to_member",
-          "notnull": true,
+          "name": "expires_at",
+          "notnull": false,
           "primary_key_position": 0,
-          "type": "TEXT"
+          "type": "REAL"
         }
       ],
       "foreign_keys": [],
@@ -2753,21 +2753,49 @@
       "columns": [
         {
           "default": null,
-          "name": "assignee",
+          "name": "id",
           "notnull": false,
-          "primary_key_position": 0,
+          "primary_key_position": 1,
           "type": "INTEGER"
         },
         {
-          "default": "0",
-          "name": "attempts",
+          "default": null,
+          "name": "room_id",
           "notnull": true,
           "primary_key_position": 0,
           "type": "INTEGER"
         },
         {
           "default": null,
+          "name": "title",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
           "name": "body",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_by",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "assignee",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "status",
           "notnull": true,
           "primary_key_position": 0,
           "type": "TEXT"
@@ -2781,52 +2809,17 @@
         },
         {
           "default": null,
-          "name": "created_at",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "REAL"
-        },
-        {
-          "default": null,
-          "name": "created_by",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
-          "name": "envelope",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "fail_class",
-          "notnull": false,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "id",
-          "notnull": false,
-          "primary_key_position": 1,
-          "type": "INTEGER"
-        },
-        {
-          "default": null,
           "name": "lease_expires",
           "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
         },
         {
-          "default": null,
-          "name": "next_claim_at",
-          "notnull": false,
+          "default": "0",
+          "name": "attempts",
+          "notnull": true,
           "primary_key_position": 0,
-          "type": "REAL"
+          "type": "INTEGER"
         },
         {
           "default": null,
@@ -2844,36 +2837,43 @@
         },
         {
           "default": null,
-          "name": "room_id",
+          "name": "created_at",
           "notnull": true,
           "primary_key_position": 0,
-          "type": "INTEGER"
+          "type": "REAL"
         },
         {
           "default": null,
-          "name": "sched_at",
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "envelope",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "fail_class",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "next_claim_at",
           "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
         },
         {
           "default": null,
-          "name": "status",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "title",
-          "notnull": true,
-          "primary_key_position": 0,
-          "type": "TEXT"
-        },
-        {
-          "default": null,
-          "name": "updated_at",
-          "notnull": true,
+          "name": "sched_at",
+          "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
         },
