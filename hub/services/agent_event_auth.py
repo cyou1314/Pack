@@ -151,7 +151,6 @@ def redeem_agent_event_pair_code(
                 "INSERT INTO agent_event_pair_attempts(ts,success) VALUES(?,0)",
                 (now,),
             )
-            connection.audit if False else None
             context.audit(
                 connection, "agent-pair", "agent_event_pair_failed",
                 f"code_id={code_id} agent_id={agent_id} reason={reason}",
