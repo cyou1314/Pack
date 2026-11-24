@@ -191,14 +191,14 @@ class AgentRegistryShadowTests(unittest.TestCase):
             try:
                 connection.execute(
                     "INSERT INTO hub_schema_migrations(version,name,checksum,applied_at) "
-                    "VALUES(2,'future_migration','future-checksum',200)"
+                    "VALUES(999,'future_migration','future-checksum',200)"
                 )
                 connection.commit()
                 report = build_shadow_report(connection)
                 self.assertFalse(report["ok"])
                 self.assertFalse(report["ready"])
                 self.assertEqual(report["reason"], "unsupported_migration_versions")
-                self.assertEqual(report["unsupported_migration_versions"], [2])
+                self.assertEqual(report["unsupported_migration_versions"], [999])
             finally:
                 connection.close()
 
