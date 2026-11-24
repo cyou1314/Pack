@@ -59,7 +59,9 @@ export class RuntimeSupervisor {
     }
     if (handle?.disconnectPromise) throw new Error("agent_lifecycle_busy");
     if (handle?.connectPromise) return handle.connectPromise;
-    if (handle?.status === "ready") return this.#snapshot(handle);
+    if (handle?.status === "ready" && !handle.eventQueue.length && !handle.fatalEventError) {
+      return this.#snapshot(handle);
+    }
 
     if (!handle) {
       handle = {
@@ -96,6 +98,12 @@ export class RuntimeSupervisor {
   }
 
   async #connectAgentInternal(handle, context) {
+    if (handle.status === "ready") {
+      const flushed = await this.#drainEvents(handle);
+      if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+      if (handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
+      if (handle.status === "ready") return this.#snapshot(handle);
+    }
     if (handle.status === "degraded") {
       const recovered = await this.#drainEvents(handle);
       if (!recovered) throw new Error(handle.lastError || "event_persistence_failed");
