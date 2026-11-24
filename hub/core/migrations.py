@@ -397,22 +397,25 @@ _AGENT_EVENT_CONSUMER_V6 = Migration(
             PRIMARY KEY(consumer_id, agent_id)
         )""",
         """CREATE TABLE agent_event_consumer_leases (
-            lease_id TEXT PRIMARY KEY,
+            lease_id TEXT NOT NULL PRIMARY KEY CHECK(length(trim(lease_id)) BETWEEN 16 AND 128),
             consumer_id TEXT NOT NULL CHECK(length(trim(consumer_id)) BETWEEN 1 AND 80),
             agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
-            lease_token_hash TEXT NOT NULL UNIQUE,
+            lease_token_hash TEXT NOT NULL UNIQUE CHECK(length(lease_token_hash)=64),
             from_inbox_seq INTEGER NOT NULL CHECK(from_inbox_seq > 0),
             through_inbox_seq INTEGER NOT NULL CHECK(through_inbox_seq >= from_inbox_seq),
             acked_through_inbox_seq INTEGER NOT NULL DEFAULT 0
-                CHECK(acked_through_inbox_seq >= 0),
+                CHECK(acked_through_inbox_seq >= 0 AND acked_through_inbox_seq <= through_inbox_seq),
             created_at REAL NOT NULL,
             expires_at REAL NOT NULL CHECK(expires_at >= created_at),
             completed_at REAL,
             ack_retry_until REAL,
             closed_at REAL,
             status TEXT NOT NULL CHECK(status IN ('active','completed','expired','released')),
-            CHECK(ack_retry_until IS NULL OR completed_at IS NOT NULL),
-            UNIQUE(lease_id, agent_id)
+            CHECK(ack_retry_until IS NULL OR (completed_at IS NOT NULL AND ack_retry_until >= completed_at)),
+            CHECK((status='completed' AND completed_at IS NOT NULL AND ack_retry_until IS NOT NULL)
+                OR (status!='completed' AND completed_at IS NULL AND ack_retry_until IS NULL)),
+            CHECK((status='active' AND closed_at IS NULL)
+                OR (status!='active' AND closed_at IS NOT NULL))
         )""",
         """CREATE UNIQUE INDEX idx_agent_event_consumer_one_active_lease
             ON agent_event_consumer_leases(consumer_id, agent_id)
