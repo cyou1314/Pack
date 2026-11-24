@@ -54,6 +54,7 @@ Supervisor 构造时必须注入 `eventStore.append(event)`。该实现必须：
 - 事件 append 成功前不通知 UI/下游消费者；
 - 断开时先停止 Adapter，再持久化最后的连接状态事件；
 - 收到并持久化意外的 `connection.changed:disconnected` 后转入 `disconnected`；下一次 connect 先释放旧 Adapter 监听，再创建新实例；
+- 成功停止 Adapter 并完成所有有效事件写入后，可清除该实例的 fatal validation latch，允许创建新实例；保留 `agent_event_invalid` 诊断信息；
 - 错误状态只暴露安全错误码，不暴露凭证或任意底层错误文本。
 
 ## 4. 审批边界
@@ -99,6 +100,8 @@ Supervisor 只接收 Provider 的审批请求，不负责决定是否允许。
 - 启动尚未完成时恢复事件只能保持 connecting；启动失败与事件存储失败同时发生时，重试写入不会错误恢复为 ready；
 - shutdown 与 reconnect cleanup 重叠时，不会创建未被 shutdown 管理的新 Adapter；
 - 审批授权等待期间 Agent 降级时，不向 Provider 发送审批决定；
+- startup event drain 期间 Provider 意外退出时，connect 不会返回 ready；
+- 成功清理无效事件来源后可重新连接，不会被旧 validation latch 永久锁死；
 - 意外断开后可显式重新连接，旧 Adapter 监听被清理；
 - disconnect 结束前持久化最终状态事件。
 
