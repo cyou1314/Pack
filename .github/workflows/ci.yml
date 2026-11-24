@@ -101,15 +101,6 @@ jobs:
           python hub/test_packaging.py
           bash app/test-make-bundle.sh
           python hub/test_policy_helpers.py
-      - name: Generate exact SQLite contract snapshots for review
-        run: python hub/export_contracts.py --write
-      - name: Upload generated SQLite contract snapshots
-        uses: actions/upload-artifact@v4
-        with:
-          name: pack-agent-gateway-sqlite-contracts
-          path: |
-            hub/contracts/sqlite-fresh.json
-            hub/contracts/sqlite-legacy-migrated.json
       - name: Verify MCP and SQLite contract snapshots
         run: python hub/export_contracts.py --check
       - name: Default staging regression
