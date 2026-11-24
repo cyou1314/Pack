@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import datetime
 from typing import Any
 
@@ -58,7 +59,7 @@ def _safe_payload(value: Any, *, depth: int = 0) -> None:
         for key, nested in value.items():
             if not isinstance(key, str):
                 raise ValueError("invalid_event_payload_key")
-            normalized = key.replace("-", "").replace("_", "").lower()
+            normalized = re.sub(r"[^a-z0-9]", "", key.lower())
             if normalized in _SENSITIVE_KEYS:
                 raise ValueError("sensitive_event_field_forbidden")
             _safe_payload(nested, depth=depth + 1)
