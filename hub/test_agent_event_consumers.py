@@ -155,6 +155,7 @@ class AgentEventConsumerTests(unittest.TestCase):
                             agent_id,token_hash,scope,created_by,created_at,expires_at
                         ) VALUES('legacy-agent','existing-hash','events:write','dispatcher',1,9999999999)"""
                     )
+                    connection.commit()
                     event = {
                         "eventId": "pre-v6-event",
                         "eventType": "run.progress",
