@@ -141,28 +141,38 @@ export class RuntimeSupervisor {
       handle.unsubscribe = handle.adapter.subscribe((event) => this.#enqueueEvent(handle, event));
       await handle.adapter.connect();
 
+      const health = handle.adapter.getHealth();
+      if (health?.status !== "ready") throw new Error("adapter_not_ready");
+      handle.connectionEstablished = true;
+
       if (handle.status === "degraded") {
+        handle.targetStatus = "ready";
         throw new Error(handle.lastError || "event_persistence_failed");
       }
       const flushed = await this.#drainEvents(handle);
-      if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+      if (!flushed) {
+        handle.targetStatus = "ready";
+        throw new Error(handle.lastError || "event_persistence_failed");
+      }
 
-      const health = handle.adapter.getHealth();
-      if (health?.status !== "ready") throw new Error("adapter_not_ready");
       handle.status = "ready";
       handle.targetStatus = "ready";
       handle.lastError = null;
       return this.#snapshot(handle);
     } catch (error) {
-      if (handle.status === "degraded") {
+      if (handle.connectionEstablished && handle.status === "degraded") {
+        handle.targetStatus = "ready";
         throw new Error(handle.lastError || "event_persistence_failed");
       }
-      handle.targetStatus = "disconnected";
+
       try { await handle.adapter?.disconnect?.(); } catch {}
+      handle.targetStatus = "failed";
       const flushed = await this.#drainEvents(handle);
       try { handle.unsubscribe?.(); } catch {}
       handle.unsubscribe = null;
       handle.adapter = null;
+      handle.connectionEstablished = false;
+
       if (!flushed || handle.status === "degraded") {
         if (handle.status !== "degraded") {
           handle.status = "degraded";
