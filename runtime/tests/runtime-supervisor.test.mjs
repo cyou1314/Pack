@@ -297,6 +297,24 @@ test("Supervisor drains the final connection event before disconnect completes",
   ));
 });
 
+test("Unexpected adapter disconnect updates state and permits a clean reconnect", async () => {
+  const {supervisor, adapters} = createHarness();
+  await supervisor.connectAgent({agentId: "agent-1", adapterId: "test.adapter"});
+
+  adapters[0].connected = false;
+  adapters[0].emit("connection.changed", {status: "disconnected"});
+  await supervisor.retryEvents("agent-1");
+  assert.equal(supervisor.getAgentStatus("agent-1").status, "disconnected");
+
+  const reconnected = await supervisor.connectAgent({
+    agentId: "agent-1",
+    adapterId: "test.adapter",
+  });
+  assert.equal(reconnected.status, "ready");
+  assert.equal(adapters.length, 2);
+  assert.equal(adapters[0].listeners.size, 0);
+});
+
 test("Concurrent connect calls share one adapter instance", async () => {
   let releaseConnect;
   const connectGate = new Promise((resolve) => { releaseConnect = resolve; });
