@@ -5,6 +5,7 @@ import re
 
 
 SQLITE_INT_MAX = (1 << 63) - 1
+APPROVAL_TASK_RE = re.compile(r"任务#([0-9]+)")
 AUDIT_TASK_RE = re.compile(r"^task ([0-9]+)(?:\Z|[: ])")
 
 
