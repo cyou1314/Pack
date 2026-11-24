@@ -209,6 +209,14 @@ export class RuntimeSupervisor {
       }
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+      const finalHealth = handle.adapter.getHealth();
+      if (
+        !handle.connectionEstablished ||
+        handle.status === "disconnected" ||
+        finalHealth?.status !== "ready"
+      ) {
+        throw new Error("adapter_disconnected_during_connect");
+      }
 
       handle.status = "ready";
       handle.targetStatus = "ready";
@@ -402,7 +410,9 @@ export class RuntimeSupervisor {
     if (!handle.adapter) {
       handle.disconnectFailed = false;
       const flushed = await this.#drainEvents(handle);
-      if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+      if (!flushed && !this.#clearValidationFailureAfterCleanup(handle)) {
+        throw new Error(handle.lastError || "event_persistence_failed");
+      }
       handle.connectionEstablished = false;
       handle.sessions.clear();
       handle.pendingApprovals.clear();
@@ -449,12 +459,14 @@ export class RuntimeSupervisor {
     }
 
     const flushed = await this.#drainEvents(handle);
-    if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
+    if (!flushed && !this.#clearValidationFailureAfterCleanup(handle)) {
+      throw new Error(handle.lastError || "event_persistence_failed");
+    }
 
     handle.disconnectFailed = false;
     handle.disconnectErrorCode = null;
     handle.status = "disconnected";
-    handle.lastError = null;
+    if (flushed) handle.lastError = null;
     return this.#snapshot(handle);
   }
 
@@ -509,6 +521,24 @@ export class RuntimeSupervisor {
   #waitForCommands(handle) {
     if (handle.inFlightCommands === 0) return Promise.resolve();
     return new Promise((resolve) => handle.commandWaiters.push(resolve));
+  }
+
+  #clearValidationFailureAfterCleanup(handle) {
+    if (
+      !handle.fatalEventError ||
+      handle.eventQueue.length ||
+      handle.lastError !== "agent_event_invalid"
+    ) {
+      return false;
+    }
+    handle.fatalEventError = false;
+    handle.status = "disconnected";
+    handle.targetStatus = "disconnected";
+    handle.connectionEstablished = false;
+    handle.sessions.clear();
+    handle.pendingApprovals.clear();
+    handle.approvalInFlight.clear();
+    return true;
   }
 
   async #flushOrThrow(handle) {
