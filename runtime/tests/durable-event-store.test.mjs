@@ -174,7 +174,7 @@ test("A failed acknowledgement directory sync leaves Pending intact and retries 
     prototype.sync = originalSync;
   }
 
-  assert.equal((await store.listPending()).length, 1);
+  assert.equal((await readdir(path.join(directory, "pending"))).length, 1);
   assert.deepEqual(await store.acknowledge(event.eventId), {acknowledged: false});
   assert.deepEqual(await store.listPending(), []);
   assert.deepEqual(await store.append(event), {inserted: false, order: 1});
