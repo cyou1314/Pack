@@ -54,7 +54,9 @@ Room 归属只能来自 Hub 内部已授权的 Session 创建记录。事件中�
 
 Runtime Adapter 在创建/恢复 Provider Session 时，将 Hub 签发的 `hubSessionId` 与返回的 Provider `sessionId` 建立本地映射。之后该 Provider Session 的 `message.*`、`run.*`、`tool.*`、`approval.*` 事件都携带相同的 `hubSessionId`。Provider 原生 ID 仍放在 `sessionId`。
 
-**处理 Provider 通知早于创建响应的竞态：** Codex App Server 可能在 `thread/start` 响应返回前先发出带 `threadId` 的 `turn/started` 等通知。Adapter 不能等拿到响应后才建立映射并直接发布这些通知，否则首批 Run 事件会丢失 `hubSessionId`。创建请求期间应暂存通知并保留到达顺序；收到 `thread/start` 响应后先建立 Provider ID → Hub ID 的 write-once 映射、发出 `session.created`，再按原顺序发布暂存通知。创建失败时，按已有映射安全释放/发布暂存通知，不得把未知 Provider Session 绑定到 pending Hub ID。首版串行化同一 Adapter 的 `thread/start` 操作，避免多个 pending Hub ID 无法区分。恢复已有 Session 时 Provider ID 已知，可在发起 `thread/resume` 前验证并恢复映射。
+**处理 Provider 通知早于创建响应的竞态：** Codex App Server 可能在 `thread/start` 响应返回前先发出带 `threadId` 的 `turn/started` 等通知。Adapter 不能等拿到响应后才建立映射并直接发布这些通知，否则首批 Run 事件会丢失 `hubSessionId`。创建请求期间应暂存 session-scoped notifications 并保留到达顺序；收到 `thread/start` 响应后先建立 Provider ID → Hub ID 的 write-once 映射、发出 `session.created`，再按原顺序发布暂存通知。创建失败时，按已有映射安全释放/发布暂存通知，不得把未知 Provider Session 绑定到 pending Hub ID。首版串行化同一 Adapter 的 `thread/start` 操作，避免多个 pending Hub ID 无法区分。恢复已有 Session 时 Provider ID 已知，可在发起 `thread/resume` 前验证并恢复映射。
+
+Provider 的 JSON-RPC server request（例如审批请求）不是 notification，必须继续即时响应协议层请求，不能因等待 `thread/start` 而死锁。若它在创建期间到达，Adapter 可立即建立 pending approval 并发布带 pending `hubSessionId` 的 `approval.requested`；Hub Session 行此时已由 Hub 预先创建为 creating。审批事件仍必须由独立审批 Consumer 按 Hub Session 绑定校验，不能由本 Session projector 将其误当成 session.created。
 
 ## 4. Hub 可信 Session 绑定
 
