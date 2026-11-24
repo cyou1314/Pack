@@ -383,6 +383,19 @@ class AgentEventGatewayTests(unittest.TestCase):
             )
             self.assertEqual(member_token_denied.status_code, 401)
 
+            boolean_token_id = client.post(
+                "/agent/tokens/revoke",
+                headers={"Authorization": f"Bearer {dispatcher_token}"},
+                json={"agent_id": "agent-1", "token_id": False},
+            )
+            self.assertEqual(boolean_token_id.status_code, 400)
+            still_active = client.post(
+                "/agent/events",
+                headers={"Authorization": f"Bearer {agent_token}"},
+                json=self.event(eventId="after-boolean-token-id"),
+            )
+            self.assertEqual(still_active.status_code, 200, still_active.text)
+
             revoked = client.post(
                 "/agent/tokens/revoke",
                 headers={"Authorization": f"Bearer {dispatcher_token}"},
