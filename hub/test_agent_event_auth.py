@@ -11,6 +11,7 @@ from core.context import HubContext
 from services.agent_event_auth import (
     AgentPairRateLimited,
     authenticate_agent_event_token,
+    get_agent_event_capabilities,
     create_agent_event_pair_code,
     redeem_agent_event_pair_code,
     revoke_agent_event_tokens,
@@ -144,6 +145,31 @@ class AgentEventGatewayTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "invalid_agent_pair_code"):
             self.redeem(pair["pair_code"])
+
+    def test_capabilities_require_valid_agent_token_and_advertise_hub_session_field(self):
+        pair = self.create_code()
+        issued = self.redeem(pair["pair_code"])
+        capabilities = get_agent_event_capabilities(
+            self.context, issued["token"], hash_token=hub.hash_token,
+        )
+        self.assertEqual(capabilities["event_envelope_version"], 2)
+        self.assertIn("hubSessionId", capabilities["supported_fields"])
+        self.assertIn("agent-session-binding-v1", capabilities["features"])
+
+        with self.assertRaises(PermissionError):
+            get_agent_event_capabilities(
+                self.context, "not-a-valid-token", hash_token=hub.hash_token,
+            )
+        revoke_agent_event_tokens(
+            self.context,
+            {"name": "dispatcher"},
+            "agent-1",
+            issued["token_id"],
+        )
+        with self.assertRaises(PermissionError):
+            get_agent_event_capabilities(
+                self.context, issued["token"], hash_token=hub.hash_token,
+            )
 
     def test_pair_code_ttl_and_agent_state_are_enforced(self):
         with self.assertRaisesRegex(ValueError, "invalid_agent_pair_ttl"):
