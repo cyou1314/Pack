@@ -105,10 +105,11 @@ export class RuntimeSupervisor {
     if (this.#stopping) throw new Error("runtime_supervisor_stopping");
 
     if (handle.status === "ready") {
+      if (!handle.connectionEstablished) throw new Error("agent_connection_state_inconsistent");
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
       if (this.#stopping || handle.disconnectPromise) throw new Error("agent_lifecycle_busy");
-      if (handle.status === "ready") return this.#snapshot(handle);
+      if (handle.status === "ready" && handle.connectionEstablished) return this.#snapshot(handle);
     }
     if (handle.status === "degraded") {
       const recovered = await this.#drainEvents(handle);
