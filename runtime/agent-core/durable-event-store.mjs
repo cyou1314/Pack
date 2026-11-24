@@ -116,16 +116,6 @@ async function syncDirectory(directory) {
   }
 }
 
-async function exists(filePath) {
-  try {
-    await lstat(filePath);
-    return true;
-  } catch (error) {
-    if (isMissing(error)) return false;
-    throw error;
-  }
-}
-
 async function readJsonRecord(filePath, kind, expectedHash, maxBytes) {
   let stat;
   try {
@@ -272,6 +262,7 @@ export class DurableEventStore {
       await ensurePrivateDirectory(this.#directory);
       await ensurePrivateDirectory(this.#pendingDirectory);
       await ensurePrivateDirectory(this.#acknowledgedDirectory);
+      await syncDirectory(this.#directory);
       await cleanupTemporaryFiles(this.#pendingDirectory);
       await cleanupTemporaryFiles(this.#acknowledgedDirectory);
 
@@ -405,42 +396,41 @@ export class DurableEventStore {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) {
       throw new TypeError("invalid_event_store_limit");
     }
-    await this.#tail;
-    if (this.#closed) throw new Error("event_store_closed");
+    return this.#enqueue(async () => {
+      try {
+        const pending = await this.#scanDirectory(this.#pendingDirectory, "event");
+        const results = [];
+        let removedPending = false;
 
-    try {
-      const pending = await this.#scanDirectory(this.#pendingDirectory, "event");
-      const results = [];
-      let removedPending = false;
-
-      for (const [hash, record] of pending) {
-        const acknowledged = await readJsonRecord(
-          path.join(this.#acknowledgedDirectory, hash + ".json"),
-          "ack",
-          hash,
-          this.#maxEventBytes,
-        );
-        if (acknowledged) {
-          if (acknowledged.eventId !== record.eventId ||
-              acknowledged.eventHash !== record.eventHash ||
-              acknowledged.order !== record.order) {
-            throw new Error("event_store_corrupt");
+        for (const [hash, record] of pending) {
+          const acknowledged = await readJsonRecord(
+            path.join(this.#acknowledgedDirectory, hash + ".json"),
+            "ack",
+            hash,
+            this.#maxEventBytes,
+          );
+          if (acknowledged) {
+            if (acknowledged.eventId !== record.eventId ||
+                acknowledged.eventHash !== record.eventHash ||
+                acknowledged.order !== record.order) {
+              throw new Error("event_store_corrupt");
+            }
+            await unlink(path.join(this.#pendingDirectory, hash + ".json"));
+            removedPending = true;
+            continue;
           }
-          await unlink(path.join(this.#pendingDirectory, hash + ".json"));
-          removedPending = true;
-          continue;
+          results.push({order: record.order, event: deepFreeze(record.event)});
         }
-        results.push({order: record.order, event: deepFreeze(record.event)});
-      }
 
-      if (removedPending) await syncDirectory(this.#pendingDirectory);
-      results.sort((left, right) =>
-        left.order - right.order || left.event.eventId.localeCompare(right.event.eventId)
-      );
-      return results.slice(0, limit);
-    } catch (error) {
-      throw storeError(error);
-    }
+        if (removedPending) await syncDirectory(this.#pendingDirectory);
+        results.sort((left, right) =>
+          left.order - right.order || left.event.eventId.localeCompare(right.event.eventId)
+        );
+        return results.slice(0, limit);
+      } catch (error) {
+        throw storeError(error);
+      }
+    });
   }
 
   async acknowledge(eventId) {
