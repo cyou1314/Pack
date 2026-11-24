@@ -144,6 +144,12 @@ jobs:
           python installer/test_launch_agent_safety.py
           python installer/test_upgrade_safety.py
           python installer/test_dmg_manifest.py
+      - name: Set up Node.js for Runtime tests
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Runtime unit tests on macOS
+        run: node --test runtime/tests/*.test.mjs runtime/l2-handoff/engine.test.cjs
       - name: Swift build
         run: swift build --package-path app
       - name: Swift release build
