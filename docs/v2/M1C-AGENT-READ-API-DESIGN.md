@@ -1,8 +1,8 @@
 # M1c：Agent Registry 只读 API 评估
 
 - 状态：接口评估草案；未注册 MCP 工具、未修改现有 member_list、未切换读路径。
-- 日期：2026-11-23
-- 前置：M1a/M1b 已合入 Foundation；M1b SQLite 完整性预检 PR #24 待验收。
+- 日期：2026-11-24
+- 前置：M1a/M1b 已合入 Foundation；PR #24 的 quick_check / foreign_key_check 预检已合并；PR #34 的 task index migration v3 已合并。
 - 发布约束：没有在用户 Mac/生产数据库完成 shadow report 前，不实施或启用 Agent Registry API。
 
 ## 1. 目标与非目标
