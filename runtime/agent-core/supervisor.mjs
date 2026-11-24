@@ -409,6 +409,7 @@ export class RuntimeSupervisor {
     handle.targetStatus = "disconnected";
     if (!handle.adapter) {
       handle.disconnectFailed = false;
+      handle.disconnectErrorCode = null;
       const flushed = await this.#drainEvents(handle);
       if (!flushed && !this.#clearValidationFailureAfterCleanup(handle)) {
         throw new Error(handle.lastError || "event_persistence_failed");
@@ -418,6 +419,7 @@ export class RuntimeSupervisor {
       handle.pendingApprovals.clear();
       handle.approvalInFlight.clear();
       handle.status = "disconnected";
+      if (flushed) handle.lastError = null;
       return this.#snapshot(handle);
     }
 
