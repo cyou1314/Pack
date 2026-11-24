@@ -18,7 +18,7 @@ const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 1000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const STORE_MARKER = ".pack-event-store";
-const STORE_MARKER_CONTENT = "pack-runtime-event-store-v1\\n";
+const STORE_MARKER_CONTENT = "pack-runtime-event-store-v1\n";
 
 function requiredText(value, field, maxLength = 160) {
   if (typeof value !== "string" || !value.trim() || value.trim().length > maxLength) {
