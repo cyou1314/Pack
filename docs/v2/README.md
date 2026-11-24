@@ -19,3 +19,4 @@
 4. SPEC.md 与历史 Brief 保留 v1 协议和兼容要求，不自动视为 v2 产品约束。
 
 所有未通过真实连接和端到端验收的 Provider 能力必须标记为待验证。
+- ../../PIBOT-EVALUATION.md：PiBot 作为 Pack external member 的 MCP/ACP 接入评估与 POC 安全边界。
