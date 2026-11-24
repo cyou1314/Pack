@@ -426,8 +426,8 @@ test("A retry re-syncs an existing marker after its first file sync fails", asyn
 test("Event ID hashing preserves distinct unpaired UTF-16 surrogates", async (t) => {
   const directory = await temporaryDirectory(t);
   const store = await DurableEventStore.open({directory});
-  const firstId = "event-\\uD800";
-  const secondId = "event-\\uD801";
+  const firstId = "event-\uD800";
+  const secondId = "event-\uD801";
   await store.append(makeEvent(firstId, {text: "first identity"}));
 
   assert.deepEqual(await store.acknowledge(secondId), {acknowledged: false});
