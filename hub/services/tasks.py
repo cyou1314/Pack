@@ -93,8 +93,18 @@ def list_tasks(context, me, status: str = "", assignee_name: str = "",
             q += " AND mb.name=?"
             args.append(assignee_name)
         if room:
-            q += " AND rm.name=?"
-            args.append(room)
+            room_row = conn.execute(
+                "SELECT id FROM rooms WHERE name=?", (room,)
+            ).fetchone()
+            if room_row:
+                # Resolve the human-readable room filter once, then constrain
+                # the task table directly so idx_tasks_room_urgent_id can serve
+                # both filtering and stable priority ordering.
+                q += " AND t.room_id=?"
+                args.append(room_row["id"])
+            else:
+                q += " AND rm.name=?"
+                args.append(room)
         # staging42 / P2：排序口径不变（urgent 置顶 + id 升序，定稿 §15.3），
         # 只加 offset 分页参数，调用方（如 App 任务板）可翻页拉全量
         offset = max(0, int(offset))
