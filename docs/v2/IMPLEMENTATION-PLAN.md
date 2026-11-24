@@ -205,3 +205,13 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 - Umbrella PR #6 仍是指向 main 的 draft，339 个文件变更；GitHub 当前报告 mergeable_state=dirty。因此 Foundation 上已完成的整改尚未全部进入 main，禁止把 PR #6 当作可直接合并的发布包。
 - 后续需单独做 main 基线差异/冲突审计和分批集成；在该审计完成前继续只在 Foundation 分支迭代，不部署 Mac。
 - 注意：M1a 由 hub.init() 在更新后首次 Hub 初始化时自动应用；DMG 安装器本身不执行迁移。真实 Mac 发布前必须完成数据库备份、恢复演练和 shadow preflight。
+
+
+## 9. 2026-11-24 状态更新
+
+- **Foundation mainline reconciliation：** PR #25（WAL init-only）、#26（Installer test path isolation）、#27（分支对账审计文档）、#28（App Bundle no-clobber）、#29（staging56 专项 CI）和 #31（structured task audit / approval indexes）均已合并。
+- **迁移版本边界：** Agent Registry v1 checksum 保持冻结；structured task audit / approval backfill 使用独立 v2 migration。下一项 task 热路径索引使用 v3，不修改 v1/v2。
+- **测试状态：** PR #31 的 Hub unit、MCP/SQLite snapshots、default staging、staging56、Runtime、macOS Swift Debug/Release 和 App Bundle verification 全绿。
+- **PiBot：** 已完成 external member / MCP 安全边界评估，文档移植 PR #33；PiBot 不是 Pack 内核替代品，也不能同步 ChatGPT/Doubao 原生 App/Web 账户记忆或私有工具。POC 等 Mac 本机验收完成后再执行。
+- **M1c / Mac：** Desktop Commander 目标 Mac 当前 Offline；尚未读取真实数据库、创建备份或生成 shadow report。M1c read API 不开放，Mac 不部署。
+- **下一步：** 先完成 task 热路径索引 migration v3 与 EXPLAIN QUERY PLAN 回归，再进行全仓库差异清单关闭和 Mac shadow preflight。
