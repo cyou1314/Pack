@@ -57,6 +57,7 @@ export class RuntimeSupervisor {
     if (handle?.adapterId && handle.adapterId !== adapterId) {
       throw new Error("agent_adapter_conflict");
     }
+    if (handle?.disconnectPromise) throw new Error("agent_lifecycle_busy");
     if (handle?.connectPromise) return handle.connectPromise;
     if (handle?.status === "ready") return this.#snapshot(handle);
 
@@ -92,14 +93,17 @@ export class RuntimeSupervisor {
         adapter: null,
         status: "disconnected",
         targetStatus: "ready",
+        connectionEstablished: false,
         lastError: null,
         fatalEventError: false,
         sessions: new Set(),
         pendingApprovals: new Map(),
+        approvalInFlight: new Set(),
         eventQueue: [],
         drainPromise: null,
         unsubscribe: null,
         connectPromise: null,
+        disconnectPromise: null,
       };
       this.#agents.set(agentId, handle);
     }
@@ -107,10 +111,12 @@ export class RuntimeSupervisor {
     handle.adapterId = adapterId;
     handle.status = "connecting";
     handle.targetStatus = "ready";
+    handle.connectionEstablished = false;
     handle.lastError = null;
     handle.fatalEventError = false;
     handle.sessions.clear();
     handle.pendingApprovals.clear();
+    handle.approvalInFlight.clear();
 
     handle.connectPromise = this.#connectHandle(handle, context);
     try {
