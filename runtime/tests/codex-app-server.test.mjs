@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {EventEmitter} from "node:events";
 import {PassThrough} from "node:stream";
+import {createHash} from "node:crypto";
 import {
   CodexAppServerAdapter,
   CODEX_APP_SERVER_DESCRIPTOR,
@@ -10,7 +11,16 @@ import {
 import {AgentAdapterRegistry} from "../agent-core/registry.mjs";
 
 class FakeCodexProcess extends EventEmitter {
-  constructor({approvalOnTurn = false, approvalDecisions = ["accept", "decline", "cancel"]} = {}) {
+  constructor({
+    approvalOnTurn = false,
+    approvalOnThreadStart = false,
+    approvalThreadId = "thr-new",
+    notificationOnThreadStart = false,
+    threadStartDelayMs = 0,
+    messageDeltaText = "Hello",
+    messageCompletedText = "Hello",
+    approvalDecisions = ["accept", "decline", "cancel"],
+  } = {}) {
     super();
     this.stdin = new PassThrough();
     this.stdout = new PassThrough();
@@ -18,6 +28,12 @@ class FakeCodexProcess extends EventEmitter {
     this.exitCode = null;
     this.killed = false;
     this.approvalOnTurn = approvalOnTurn;
+    this.approvalOnThreadStart = approvalOnThreadStart;
+    this.approvalThreadId = approvalThreadId;
+    this.notificationOnThreadStart = notificationOnThreadStart;
+    this.threadStartDelayMs = threadStartDelayMs;
+    this.messageDeltaText = messageDeltaText;
+    this.messageCompletedText = messageCompletedText;
     this.approvalDecisions = approvalDecisions;
     this.received = [];
     this.buffer = "";
@@ -47,7 +63,34 @@ class FakeCodexProcess extends EventEmitter {
       return;
     }
     if (message.method === "thread/start") {
-      this.#send({id: message.id, result: {thread: {id: "thr-new"}}});
+      if (this.approvalOnThreadStart) {
+        this.#send({
+          id: 899,
+          method: "item/commandExecution/requestApproval",
+          params: {
+            threadId: this.approvalThreadId,
+            turnId: "turn-create",
+            itemId: "item-create-approval",
+            reason: "Approval during session creation",
+            availableDecisions: this.approvalDecisions,
+          },
+        });
+      }
+      if (this.notificationOnThreadStart) {
+        this.#send({
+          method: "turn/started",
+          params: {threadId: "thr-new", turn: {id: "turn-before-start", status: "inProgress"}},
+        });
+      }
+      const sendResult = () => this.#send({
+        id: message.id,
+        result: {thread: {id: "thr-new"}},
+      });
+      if (this.threadStartDelayMs > 0) {
+        setTimeout(sendResult, this.threadStartDelayMs);
+      } else {
+        sendResult();
+      }
       return;
     }
     if (message.method === "thread/resume") {
@@ -73,11 +116,25 @@ class FakeCodexProcess extends EventEmitter {
       } else {
         this.#send({
           method: "item/agentMessage/delta",
-          params: {threadId, turnId: "turn-1", itemId: "item-1", delta: "Hello"},
+          params: {
+            threadId,
+            turnId: "turn-1",
+            itemId: "item-1",
+            delta: this.messageDeltaText,
+          },
         });
         this.#send({
           method: "item/completed",
-          params: {threadId, turnId: "turn-1", item: {id: "item-1", type: "agentMessage", text: "Hello", phase: "final_answer"}},
+          params: {
+            threadId,
+            turnId: "turn-1",
+            item: {
+              id: "item-1",
+              type: "agentMessage",
+              text: this.messageCompletedText,
+              phase: "final_answer",
+            },
+          },
         });
         this.#send({
           method: "turn/completed",
@@ -122,7 +179,7 @@ function waitForEvent(adapter, eventType, timeoutMs = 1000) {
 }
 
 test("Codex App Server initializes, creates/resumes sessions and streams turns", async () => {
-  const child = new FakeCodexProcess();
+  const child = new FakeCodexProcess({notificationOnThreadStart: true});
   const adapter = new CodexAppServerAdapter({
     spawnProcess: () => child,
     requestTimeoutMs: 1000,
@@ -133,9 +190,18 @@ test("Codex App Server initializes, creates/resumes sessions and streams turns",
   adapter.subscribe((event) => events.push(event));
 
   await adapter.connect();
-  const created = await adapter.createSession({cwd: "/tmp/project", model: "test-model"});
+  const created = await adapter.createSession({
+    cwd: "/tmp/project",
+    model: "test-model",
+    hubSessionId: "hub-session-1",
+    hubSessionCapabilities: {hubSessionIdField: true},
+  });
   assert.equal(created.sessionId, "thr-new");
-  const resumed = await adapter.resumeSession({sessionId: "thr-new"});
+  const resumed = await adapter.resumeSession({
+    sessionId: "thr-new",
+    hubSessionId: "hub-session-1",
+    hubSessionCapabilities: {hubSessionIdField: true},
+  });
   assert.equal(resumed.sessionId, "thr-new");
 
   const completed = waitForEvent(adapter, "run.completed");
@@ -145,15 +211,193 @@ test("Codex App Server initializes, creates/resumes sessions and streams turns",
 
   assert.ok(child.received.some((item) => item.method === "initialize"));
   assert.ok(child.received.some((item) => item.method === "initialized"));
-  assert.ok(child.received.some((item) => item.method === "thread/start"));
+  const startRequest = child.received.find((item) => item.method === "thread/start");
+  assert.ok(startRequest);
+  assert.equal(Object.hasOwn(startRequest.params, "hubSessionId"), false);
   assert.ok(child.received.some((item) => item.method === "thread/resume"));
   assert.ok(child.received.some((item) => item.method === "turn/start"));
+  const sessionCreatedIndex = events.findIndex(
+    (event) => event.eventType === "session.created",
+  );
+  const earlyRunIndex = events.findIndex(
+    (event) => event.eventType === "run.started" && event.runId === "turn-before-start",
+  );
+  assert.ok(sessionCreatedIndex >= 0);
+  assert.ok(earlyRunIndex > sessionCreatedIndex);
+  assert.equal(events[sessionCreatedIndex].hubSessionId, "hub-session-1");
+  assert.equal(events[earlyRunIndex].hubSessionId, "hub-session-1");
   assert.ok(events.some((event) => event.eventType === "message.delta" && event.payload.delta === "Hello"));
   assert.ok(events.some((event) => event.eventType === "message.completed" && event.payload.text === "Hello"));
+  assert.ok(events.some((event) => event.eventType === "run.completed" && event.hubSessionId === "hub-session-1"));
+  await assert.rejects(
+    () => adapter.resumeSession({
+      sessionId: "thr-new",
+      hubSessionId: "different-hub-session",
+      hubSessionCapabilities: {hubSessionIdField: true},
+    }),
+    /hub_session_binding_conflict/,
+  );
 
   await adapter.disconnect();
   assert.equal(child.killed, true);
   assert.equal(adapter.getHealth().status, "disconnected");
+});
+
+test("Codex preserves long message deltas and verifies oversized completion text losslessly", async () => {
+  const longText = "A".repeat(3999) + "😀" + "B".repeat(30000);
+  const child = new FakeCodexProcess({
+    messageDeltaText: longText,
+    messageCompletedText: longText,
+  });
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+  });
+  const events = [];
+  adapter.subscribe((event) => events.push(event));
+  await adapter.connect();
+  await adapter.createSession();
+  await adapter.sendMessage({sessionId: "thr-new", text: "write a long response"});
+
+  const deltas = events.filter((event) => event.eventType === "message.delta");
+  assert.ok(deltas.length > 1);
+  assert.equal(deltas.map((event) => event.payload.delta).join(""), longText);
+  const completed = events.find((event) => event.eventType === "message.completed");
+  assert.ok(completed);
+  assert.equal(completed.payload.textAvailable, true);
+  assert.equal(completed.payload.textIncluded, false);
+  assert.equal(completed.payload.textByteLength, Buffer.byteLength(longText, "utf8"));
+  assert.equal(
+    completed.payload.textSha256,
+    createHash("sha256").update(longText, "utf8").digest("hex"),
+  );
+  assert.equal(Object.hasOwn(completed.payload, "text"), false);
+  await adapter.disconnect();
+});
+
+test("Codex session binding requires negotiated Hub capability", async () => {
+  const child = new FakeCodexProcess();
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+  });
+  await adapter.connect();
+  await assert.rejects(
+    () => adapter.createSession({hubSessionId: "hub-session-1"}),
+    /hub_session_binding_not_negotiated/,
+  );
+  assert.equal(child.received.some((item) => item.method === "thread/start"), false);
+  await adapter.disconnect();
+});
+
+test("Codex does not publish a buffered approval after its timeout", async () => {
+  const child = new FakeCodexProcess({
+    approvalOnThreadStart: true,
+    threadStartDelayMs: 100,
+  });
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+    approvalTimeoutMs: 20,
+  });
+  const events = [];
+  adapter.subscribe((event) => events.push(event));
+  await adapter.connect();
+  await adapter.createSession({
+    hubSessionId: "hub-session-timeout",
+    hubSessionCapabilities: {hubSessionIdField: true},
+  });
+  assert.equal(
+    events.some((event) => event.eventType === "approval.requested"),
+    false,
+  );
+  await adapter.disconnect();
+});
+
+test("Codex early approval from an unknown Session is never assigned the pending Hub ID", async () => {
+  const child = new FakeCodexProcess({
+    approvalOnThreadStart: true,
+    approvalThreadId: "unknown-thread",
+  });
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+    approvalTimeoutMs: 5000,
+  });
+  const events = [];
+  adapter.subscribe((event) => events.push(event));
+  await adapter.connect();
+  await adapter.createSession({
+    hubSessionId: "hub-session-new",
+    hubSessionCapabilities: {hubSessionIdField: true},
+  });
+
+  const approval = events.find((event) => event.eventType === "approval.requested");
+  assert.ok(approval);
+  assert.equal(approval.sessionId, "unknown-thread");
+  assert.equal(approval.hubSessionId, undefined);
+  await adapter.disconnect();
+});
+
+test("Codex early approval from a different Session keeps its existing Hub binding", async () => {
+  const child = new FakeCodexProcess({
+    approvalOnThreadStart: true,
+    approvalThreadId: "legacy-thread",
+  });
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+    approvalTimeoutMs: 5000,
+  });
+  const events = [];
+  adapter.subscribe((event) => events.push(event));
+  await adapter.connect();
+  await adapter.resumeSession({
+    sessionId: "legacy-thread",
+    hubSessionId: "hub-session-legacy",
+    hubSessionCapabilities: {hubSessionIdField: true},
+  });
+
+  await adapter.createSession({
+    hubSessionId: "hub-session-new",
+    hubSessionCapabilities: {hubSessionIdField: true},
+  });
+
+  const approval = events.find((event) => event.eventType === "approval.requested");
+  const session = events.find((event) => event.eventType === "session.created");
+  assert.ok(approval);
+  assert.equal(approval.sessionId, "legacy-thread");
+  assert.equal(approval.hubSessionId, "hub-session-legacy");
+  assert.ok(session);
+  assert.equal(session.hubSessionId, "hub-session-new");
+  await adapter.disconnect();
+});
+
+test("Codex session creation does not deadlock on an early approval request", async () => {
+  const child = new FakeCodexProcess({approvalOnThreadStart: true});
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+    approvalTimeoutMs: 5000,
+  });
+  const events = [];
+  adapter.subscribe((event) => events.push(event));
+  await adapter.connect();
+
+  const created = await adapter.createSession({
+    hubSessionId: "hub-session-approval",
+    hubSessionCapabilities: {hubSessionIdField: true},
+  });
+  assert.equal(created.sessionId, "thr-new");
+  const approval = events.find((event) => event.eventType === "approval.requested");
+  const session = events.find((event) => event.eventType === "session.created");
+  assert.ok(approval);
+  assert.equal(approval.hubSessionId, "hub-session-approval");
+  assert.ok(session);
+  assert.equal(session.hubSessionId, "hub-session-approval");
+
+
+  await adapter.disconnect();
 });
 
 test("Codex approval requests fail closed and require an explicit decision", async () => {
