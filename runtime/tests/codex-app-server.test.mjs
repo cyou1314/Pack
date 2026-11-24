@@ -14,6 +14,7 @@ class FakeCodexProcess extends EventEmitter {
   constructor({
     approvalOnTurn = false,
     approvalOnThreadStart = false,
+    resolveApprovalOnThreadStart = false,
     approvalThreadId = "thr-new",
     notificationOnThreadStart = false,
     threadStartDelayMs = 0,
@@ -29,6 +30,7 @@ class FakeCodexProcess extends EventEmitter {
     this.killed = false;
     this.approvalOnTurn = approvalOnTurn;
     this.approvalOnThreadStart = approvalOnThreadStart;
+    this.resolveApprovalOnThreadStart = resolveApprovalOnThreadStart;
     this.approvalThreadId = approvalThreadId;
     this.notificationOnThreadStart = notificationOnThreadStart;
     this.threadStartDelayMs = threadStartDelayMs;
@@ -73,6 +75,15 @@ class FakeCodexProcess extends EventEmitter {
             itemId: "item-create-approval",
             reason: "Approval during session creation",
             availableDecisions: this.approvalDecisions,
+          },
+        });
+      }
+      if (this.resolveApprovalOnThreadStart) {
+        this.#send({
+          method: "serverRequest/resolved",
+          params: {
+            requestId: "899",
+            threadId: this.approvalThreadId,
           },
         });
       }
@@ -287,6 +298,30 @@ test("Codex session binding requires negotiated Hub capability", async () => {
     /hub_session_binding_not_negotiated/,
   );
   assert.equal(child.received.some((item) => item.method === "thread/start"), false);
+  await adapter.disconnect();
+});
+
+test("Codex processes early approval resolution before flushing the buffered request", async () => {
+  const child = new FakeCodexProcess({
+    approvalOnThreadStart: true,
+    resolveApprovalOnThreadStart: true,
+  });
+  const adapter = new CodexAppServerAdapter({
+    spawnProcess: () => child,
+    requestTimeoutMs: 1000,
+    approvalTimeoutMs: 5000,
+  });
+  const events = [];
+  adapter.subscribe((event) => events.push(event));
+  await adapter.connect();
+  await adapter.createSession({
+    hubSessionId: "hub-session-resolved",
+    hubSessionCapabilities: {hubSessionIdField: true},
+  });
+  assert.equal(
+    events.some((event) => event.eventType === "approval.requested"),
+    false,
+  );
   await adapter.disconnect();
 });
 
