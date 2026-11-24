@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -68,7 +69,7 @@ def _safe_payload(value: Any, *, depth: int = 0) -> None:
         for key, nested in value.items():
             if not isinstance(key, str):
                 raise ValueError("invalid_event_payload_key")
-            normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
+            normalized = re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", key).casefold())
             if (normalized in _SENSITIVE_KEYS
                     or any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)):
                 raise ValueError("sensitive_event_field_forbidden")

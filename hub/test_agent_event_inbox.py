@@ -150,6 +150,7 @@ class AgentEventInboxTests(unittest.TestCase):
             self.event(payload={"secret_token": "do not store"}),
             self.event(payload={"private_key_pem": "do not store"}),
             self.event(payload={"session_token": "do not store"}),
+            self.event(payload={"\\uff41\\uff50\\uff49\\uff3f\\uff4b\\uff45\\uff59": "do not store"}),
             self.event(authorization="Bearer secret"),
             self.event(sequence=True),
             self.event(sequence=(1 << 63)),
