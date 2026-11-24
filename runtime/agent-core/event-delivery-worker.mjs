@@ -10,6 +10,76 @@ function requiredText(value, field, maxLength = 160) {
   return value.trim();
 }
 
+/**
+ * Negotiate additive Agent Event fields before a Runtime creates Hub-bound
+ * Sessions. Unknown/old Hub versions fail closed and keep legacy event shape.
+ */
+export async function getAgentEventCapabilities({
+  endpoint,
+  token,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 15000,
+} = {}) {
+  const validatedEndpoint = validateHubURL(endpoint);
+  const url = new URL(validatedEndpoint);
+  if (!/\/agent\/events\/?$/.test(url.pathname)) {
+    throw new TypeError("invalid_agent_event_endpoint");
+  }
+  if (typeof token !== "string" || !/^[\x21-\x7E]{1,256}$/.test(token)) {
+    throw new TypeError("invalid_agent_event_token");
+  }
+  if (typeof fetchImpl !== "function") throw new TypeError("fetch_implementation_required");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120000) {
+    throw new TypeError("invalid_capability_timeout");
+  }
+
+  url.pathname = url.pathname.replace(/\/agent\/events\/?$/, "/agent/capabilities");
+  let response;
+  try {
+    response = await fetchImpl(url.toString(), {
+      method: "GET",
+      redirect: "error",
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {authorization: "Bearer " + token},
+    });
+  } catch {
+    return {supported: false, reason: "capability_unavailable"};
+  }
+  if (!response || !Number.isInteger(response.status)) {
+    return {supported: false, reason: "invalid_capability_response"};
+  }
+  if (response.status === 404 || response.status === 405) {
+    return {supported: false, reason: "capability_endpoint_unavailable"};
+  }
+  if (response.status === 401 || response.status === 403) {
+    return {supported: false, reason: "authorization_required"};
+  }
+  if (response.status < 200 || response.status >= 300 || typeof response.text !== "function") {
+    return {supported: false, reason: "capability_unavailable"};
+  }
+
+  let body;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    return {supported: false, reason: "invalid_capability_response"};
+  }
+  const supported = Number.isSafeInteger(body?.event_envelope_version)
+    && body.event_envelope_version >= 2
+    && Array.isArray(body?.supported_fields)
+    && body.supported_fields.includes("hubSessionId")
+    && Array.isArray(body?.features)
+    && body.features.includes("agent-session-binding-v1");
+  return supported
+    ? {
+        supported: true,
+        eventEnvelopeVersion: body.event_envelope_version,
+        hubSessionBinding: true,
+      }
+    : {supported: false, reason: "hub_session_binding_unsupported"};
+}
+
 function parseRetryAfter(response, now) {
   const raw = response?.headers?.get?.("retry-after");
   if (typeof raw !== "string" || !raw.trim()) return null;
