@@ -13,7 +13,10 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Callable
 
-from .task_refs import AUDIT_TASK_RE, SQLITE_INT_MAX, audit_task_id
+from .task_refs import (
+    APPROVAL_TASK_RE, AUDIT_TASK_RE, SQLITE_INT_MAX,
+    audit_task_id, bounded_task_id,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +133,9 @@ def _checksum(migration: Migration) -> str:
         # Freeze the structured audit parser and its backfill implementation.
         payload["data_migration"] = {
             "audit_task_pattern": AUDIT_TASK_RE.pattern,
+            "approval_task_pattern": APPROVAL_TASK_RE.pattern,
             "sqlite_int_max": SQLITE_INT_MAX,
+            "bounded_task_id_source": _normalized_function_source(bounded_task_id),
             "audit_task_id_source": _normalized_function_source(audit_task_id),
             "apply_task_audit_v2_source": _normalized_function_source(_apply_task_audit_v2),
         }
@@ -243,6 +248,18 @@ def _apply_task_audit_v2(connection: sqlite3.Connection) -> None:
         if task_id is not None:
             connection.execute(
                 "UPDATE audit SET task_id=? WHERE id=? AND task_id IS NULL",
+                (task_id, row["id"]),
+            )
+
+    # Backfill historical approval requests so normal reads use the partial index.
+    for row in connection.execute(
+        "SELECT id,body FROM messages "
+        "WHERE kind='approval_request' AND task_id IS NULL ORDER BY id"
+    ):
+        task_id = bounded_task_id(APPROVAL_TASK_RE.search(row["body"] or ""))
+        if task_id is not None:
+            connection.execute(
+                "UPDATE messages SET task_id=? WHERE id=? AND task_id IS NULL",
                 (task_id, row["id"]),
             )
 
