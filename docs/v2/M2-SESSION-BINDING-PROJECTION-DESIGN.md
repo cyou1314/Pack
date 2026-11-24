@@ -56,7 +56,7 @@ Runtime Adapter 在创建/恢复 Provider Session 时，将 Hub 签发的 `hubSe
 
 **处理 Provider 通知早于创建响应的竞态：** Codex App Server 可能在 `thread/start` 响应返回前先发出带 `threadId` 的 `turn/started` 等通知。Adapter 不能等拿到响应后才建立映射并直接发布这些通知，否则首批 Run 事件会丢失 `hubSessionId`。创建请求期间应暂存 session-scoped notifications 并保留到达顺序；收到 `thread/start` 响应后先建立 Provider ID → Hub ID 的 write-once 映射、发出 `session.created`，再按原顺序发布暂存通知。创建失败时，按已有映射安全释放/发布暂存通知，不得把未知 Provider Session 绑定到 pending Hub ID。首版串行化同一 Adapter 的 `thread/start` 操作，避免多个 pending Hub ID 无法区分。恢复已有 Session 时 Provider ID 已知，可在发起 `thread/resume` 前验证并恢复映射。
 
-Provider 的 JSON-RPC server request（例如审批请求）不是 notification，必须继续即时响应协议层请求，不能因等待 `thread/start` 而死锁。若它在创建期间到达，Adapter 可立即建立 pending approval 并发布带 pending `hubSessionId` 的 `approval.requested`；Hub Session 行此时已由 Hub 预先创建为 creating。审批事件仍必须由独立审批 Consumer 按 Hub Session 绑定校验，不能由本 Session projector 将其误当成 session.created。
+Provider 的 JSON-RPC server request（例如审批请求）不是 notification，必须在收到时立即登记 pending approval、启动现有审批超时并继续读取 RPC 响应；不能阻塞 line reader 或等待 UI 决策后才处理请求。**但不能仅因为某个未知 `threadId` 出现在 `thread/start` 期间，就把它绑定到 pending `hubSessionId`。** 创建期间到达的 session-scoped notification 与 approval event 都进入同一有序暂存队列；`thread/start` 成功返回后先写 Provider ID → Hub ID 映射、发出 `session.created`，再按到达顺序发布队列。每条暂存事件在 flush 时按自己的 Provider ID 查已有映射：新 Thread 使用新 Hub ID，旧 Thread 使用其原绑定，未知 Thread 不带 `hubSessionId`。若 `thread/start` 失败或超时，队列以无 pending Hub ID 的方式 flush；宁可成为 legacy_unbound event，也不得错绑 Room。若 approval request 在 flush 前已被自动取消、用户决策或超时清除，则不再发布过期的 `approval.requested` 事件。Approval JSON-RPC request 本身仍保持 pending 并由既有用户决策/超时完成；审批事件由独立审批 Consumer 校验，不能由 Session projector 将其误当成 session.created。
 
 ## 4. Hub 可信 Session 绑定
 
@@ -105,7 +105,7 @@ Provider 的 JSON-RPC server request（例如审批请求）不是 notification�
 - `first_inbox_seq` / `last_inbox_seq`：首次与最近投影事件的 Hub 序号。
 - `created_at` / `updated_at` / `completed_at`。
 
-唯一键：`(session_id, provider_message_id)`。消息查询按 `session_id, created_at, message_id` 建索引。内容长度必须有硬上限；超限事件进入阻塞/人工恢复路径，不截断后继续 ACK。
+唯一键：`(session_id, provider_message_id)`。消息查询按 `session_id, created_at, message_id` 建索引。累计内容长度必须有硬上限（首版建议 4 MiB）；超限时记录 blocked/incomplete 并进入人工恢复路径，不截断后继续 ACK。Runtime 不得静默截断 delta 或最终正文。
 
 ### 5.3 新增 `agent_session_runs`
 
@@ -152,8 +152,8 @@ Provider 的 JSON-RPC server request（例如审批请求）不是 notification�
 | `run.completed` | Agent Run 置 completed，写 ended_at；该 Run 下仍为 streaming 的消息置 incomplete，保留部分文本 |
 | `run.failed` | Agent Run 置 failed，写 ended_at；该 Run 下仍为 streaming 的消息置 failed，保留部分文本 |
 | `run.interrupted` | Agent Run 置 interrupted，写 ended_at；该 Run 下仍为 streaming 的消息置 interrupted，保留部分文本；Session 置 interrupted |
-| `message.delta` | 按 `provider_message_id` upsert，追加 delta；同一 Inbox 事件不可追加两次 |
-| `message.completed` | 用 Provider 完整正文覆盖 streaming 缓冲并置 completed，不能把完整正文再次 append 到 delta |
+| `message.delta` | Runtime 将任意长度 delta 无损切成有序小块（每块最多 4000 UTF-16 code units，不能拆开 surrogate pair）；按 `provider_message_id` upsert 并追加；同一 Inbox 事件不可追加两次 |
+| `message.completed` | 携带 `textAvailable`、`textIncluded`、UTF-8 `textByteLength` 和 `textSha256`。正文不超过 24 KiB 时包含完整 `text`，校验长度/hash 后覆盖 streaming 缓冲；更长正文不截断、不塞进单个事件，只携带长度/hash，投影器必须校验已累积 delta 的长度/hash 一致后才能置 completed，否则置 incomplete。不能把完整正文再次 append 到 delta |
 | `connection.changed` | 首版只记录 receipt，不批量改写所有 Session 状态 |
 | `run.progress`、`tool.*`、`approval.*`、`usage.updated` | 首版记录 ignored receipt；后续 Activity / Approval 独立切片处理 |
 
@@ -219,6 +219,8 @@ Session 绑定规则：
 ### 数据与幂等
 - migration v6→v7 保留 Inbox、Lease、cursor、Agent、旧 Session 行和 v1-v6 checksum。
 - 同一 message.delta 重放不能重复追加文本。
+- 大于 12,000 字符的 delta（含跨块 emoji）分块后拼接必须与原文逐字节一致，不得静默截断。
+- 小于 24 KiB 的 message.completed 包含完整正文和 SHA-256；大于 24 KiB 时只携带长度/hash，投影器仅在累计 delta 的长度/hash 匹配时标记 completed，否则 incomplete。
 - message.completed 用完整正文替换 delta 缓冲，重复完成事件幂等。
 - run.started / completed / failed / interrupted 状态转换正确；failed / interrupted 将未完成消息转为对应终态，run.completed 将遗留 streaming 消息转为 incomplete，均保留部分文本且不改写已 completed 消息。
 - session.created 的迟到事件不能复活 failed Session；Provider Session ID write-once，同 ID 重试幂等，不同 ID 不能覆盖。
