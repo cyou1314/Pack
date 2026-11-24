@@ -137,25 +137,28 @@ class TaskQueryIndexTests(unittest.TestCase):
         self.assertEqual(repeated, versions)
 
     def test_task_list_and_sweeper_query_plans_use_hotpath_indexes(self):
+        task_select = """SELECT t.id,t.title,t.body,t.status,
+                                mb.name AS assignee,cr.name AS created_by,rm.name AS room
+                         FROM tasks t LEFT JOIN members mb ON mb.id=t.assignee
+                         LEFT JOIN members cr ON cr.id=t.created_by
+                         JOIN rooms rm ON rm.id=t.room_id"""
         plans = (
             (
                 "default task ordering",
-                "SELECT id FROM tasks ORDER BY urgent DESC,id ASC LIMIT 100 OFFSET ?",
+                task_select + " WHERE 1=1 ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
                 (0,),
                 "idx_tasks_urgent_id",
             ),
             (
                 "assignee task ordering",
-                "SELECT id FROM tasks WHERE assignee=? "
-                "ORDER BY urgent DESC,id ASC LIMIT 100 OFFSET ?",
-                (self.member_ids[0], 0),
+                task_select + " WHERE mb.name=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
+                (f"index-member-0", 0),
                 "idx_tasks_assignee_urgent_id",
             ),
             (
                 "room task ordering",
-                "SELECT id FROM tasks WHERE room_id=? "
-                "ORDER BY urgent DESC,id ASC LIMIT 100 OFFSET ?",
-                (self.room_ids[0], 0),
+                task_select + " WHERE rm.name=? ORDER BY t.urgent DESC,t.id ASC LIMIT 100 OFFSET ?",
+                (f"index-room-0", 0),
                 "idx_tasks_room_urgent_id",
             ),
             (
