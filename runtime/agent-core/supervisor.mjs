@@ -80,6 +80,7 @@ export class RuntimeSupervisor {
       try { handle.unsubscribe?.(); } catch {}
       handle.unsubscribe = null;
       handle.adapter = null;
+      handle.connectionEstablished = false;
       const flushed = await this.#drainEvents(handle);
       if (!flushed) throw new Error(handle.lastError || "event_persistence_failed");
       handle.status = "disconnected";
@@ -319,6 +320,7 @@ export class RuntimeSupervisor {
       handle.connectionEstablished = false;
       handle.sessions.clear();
       handle.pendingApprovals.clear();
+      handle.approvalInFlight.clear();
     }
     if (handle.unsubscribe === unsubscribe) {
       try { unsubscribe?.(); } catch {}
