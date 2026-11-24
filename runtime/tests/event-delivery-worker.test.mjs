@@ -4,7 +4,10 @@ import {mkdtempSync, rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {SqliteEventStore} from "../agent-core/sqlite-event-store.mjs";
-import {AgentEventDeliveryWorker} from "../agent-core/event-delivery-worker.mjs";
+import {
+  AgentEventDeliveryWorker,
+  getAgentEventCapabilities,
+} from "../agent-core/event-delivery-worker.mjs";
 
 const ENDPOINT = "http://127.0.0.1:8794/agent/events";
 
@@ -60,6 +63,81 @@ function makeWorker(eventStore, options = {}) {
     maxRetryMs: options.maxRetryMs ?? 8000,
   });
 }
+
+test("Hub capability negotiation enables the new field only when explicitly advertised", async () => {
+  let request;
+  const supported = await getAgentEventCapabilities({
+    endpoint: ENDPOINT,
+    token: "agent-event-secret",
+    fetchImpl: async (url, options) => {
+      request = {url, options};
+      return fakeResponse(200, {
+        event_envelope_version: 2,
+        supported_fields: ["hubSessionId"],
+        features: ["agent-session-binding-v1"],
+      });
+    },
+  });
+  assert.deepEqual(supported, {
+    supported: true,
+    eventEnvelopeVersion: 2,
+    hubSessionBinding: true,
+  });
+  assert.equal(request.url, "http://127.0.0.1:8794/agent/capabilities");
+  assert.equal(request.options.method, "GET");
+  assert.equal(request.options.headers.authorization, "Bearer agent-event-secret");
+});
+
+test("old Hub versions and capability failures fail closed to legacy event shape", async () => {
+  const oldHub = await getAgentEventCapabilities({
+    endpoint: ENDPOINT,
+    token: "agent-event-secret",
+    fetchImpl: async () => fakeResponse(404, {error: "not_found"}),
+  });
+  assert.deepEqual(oldHub, {
+    supported: false,
+    reason: "capability_endpoint_unavailable",
+  });
+
+  const unavailable = await getAgentEventCapabilities({
+    endpoint: ENDPOINT,
+    token: "agent-event-secret",
+    fetchImpl: async () => { throw new Error("offline"); },
+  });
+  assert.deepEqual(unavailable, {
+    supported: false,
+    reason: "capability_unavailable",
+  });
+
+  const malformed = await getAgentEventCapabilities({
+    endpoint: ENDPOINT,
+    token: "agent-event-secret",
+    fetchImpl: async () => fakeResponse(200, "{invalid-json"),
+  });
+  assert.deepEqual(malformed, {
+    supported: false,
+    reason: "invalid_capability_response",
+  });
+});
+
+test("Hub capability negotiation validates endpoint and bearer token", async () => {
+  await assert.rejects(
+    () => getAgentEventCapabilities({
+      endpoint: ENDPOINT,
+      token: "bad token",
+      fetchImpl: async () => fakeResponse(200, {}),
+    }),
+    /invalid_agent_event_token/,
+  );
+  await assert.rejects(
+    () => getAgentEventCapabilities({
+      endpoint: "https://hub.example.com/mcp",
+      token: "agent-event-secret",
+      fetchImpl: async () => fakeResponse(200, {}),
+    }),
+    /invalid_agent_event_endpoint/,
+  );
+});
 
 test("delivery worker marks an event delivered only after a valid Hub receipt", async () => {
   await withDatabase(async (databasePath) => {
