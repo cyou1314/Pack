@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
+import {createHash} from "node:crypto";
 import {
   mkdtemp,
   mkdir,
+  readFile,
   readdir,
   rm,
   stat,
@@ -77,6 +79,33 @@ test("Acknowledgements survive reopen and preserve eventId deduplication", async
     /event_id_conflict/,
   );
   await reopened.close();
+});
+
+test("Startup treats a durable acknowledgement as authoritative after an interrupted cleanup", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const event = makeEvent("event-ack-crash", {text: "already delivered"}, 5);
+  const store = await DurableEventStore.open({directory});
+  await store.append(event);
+  await store.close();
+
+  const hash = createHash("sha256").update(event.eventId).digest("hex");
+  const pendingPath = path.join(directory, "pending", hash + ".json");
+  const acknowledgedPath = path.join(directory, "acknowledged", hash + ".json");
+  const pendingRecord = JSON.parse(await readFile(pendingPath, "utf8"));
+  await writeFile(acknowledgedPath, JSON.stringify({
+    version: 1,
+    kind: "ack",
+    eventId: event.eventId,
+    eventHash: pendingRecord.eventHash,
+    order: pendingRecord.order,
+    acknowledgedAt: "2026-11-24T03:05:00.000Z",
+  }) + "\\n", {mode: 0o600});
+
+  const recovered = await DurableEventStore.open({directory});
+  assert.deepEqual(await recovered.listPending(), []);
+  assert.deepEqual(await readdir(path.join(directory, "pending")), []);
+  assert.deepEqual(await recovered.append(event), {inserted: false, order: 1});
+  await recovered.close();
 });
 
 test("Concurrent duplicate appends commit exactly one event", async (t) => {
