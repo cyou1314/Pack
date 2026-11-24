@@ -45,7 +45,7 @@
 
 同一 eventId 且内容一致时返回 `inserted: false`。同一 eventId 对应不同内容时返回 `event_id_conflict`，不静默覆盖。
 
-默认单事件上限为 4 MiB，可在打开存储时调整，允许范围为 1 KiB 至 64 MiB。
+默认单事件上限为 4 MiB，可在打开存储时调整，允许范围为 1 KiB 至 64 MiB。Payload 最大嵌套深度为 64，避免恶意或异常深层对象造成递归栈溢出。
 
 ### listPending({ limit })
 
@@ -86,7 +86,7 @@
 - 尚未把 DurableEventStore 注入 RuntimeSupervisor；当前 Supervisor 仍使用测试 FakeEventStore。
 - 尚未实现 Hub Inbox / Outbox、Event Gateway、身份令牌或网络传输。
 - 尚未实现后台发送循环、退避、Hub ACK 协议和死信队列。
-- 尚未实现 Provider cursor、resume/replay 或消息 delta 补拉。
+- 尚未实现 Provider cursor、resume/replay 或消息 delta 补拉。当前 Codex Adapter 使用本地生成的随机 eventId；若 Provider 在重连后重新投递同一通知，只有后续引入稳定 Provider 事件标识/游标后才能跨重连去重。
 - 尚未制定确认 Tombstone 的保留/清理策略；当前 Tombstone 长期保留，避免过早失去幂等能力。
 - 尚未在真实 macOS 用户数据目录执行恢复、权限或磁盘故障演练。
 
@@ -100,5 +100,5 @@
 - [ ] 确认中途崩溃留下 Pending + Acknowledged 时，恢复以 Acknowledged 为准。
 - [ ] 临时文件可清理，正式损坏记录必须 fail closed。
 - [ ] 目录/文件权限正确，符号链接路径被拒绝。
-- [ ] 非 JSON、敏感字段和超限事件被拒绝。
+- [ ] 非 JSON、敏感字段、超限和过深嵌套事件被拒绝。
 - [ ] 运行时语法、单元测试、Hub 回归和 macOS 构建通过。
