@@ -71,8 +71,10 @@ Pack 当前采用 SwiftUI/macOS App + Python/SQLite Hub + Node runtime。PiBot �
 3. 在 PiBot Desktop → Connections → Add MCP 中选择 HTTP，填写 Pack Hub MCP URL。
 4. 将 Auth 设为 Bearer，选择或创建一个本机 secret；PiBot 会将它解析为 `Authorization: Bearer <token>` 请求头，不需要把明文 token 写进连接 URL。
 5. 只给一个测试 Bot 开启该 MCP 工具权限。
-6. 手动触发 Bot：`inbox_pull` → `task_claim` → `task_update` → `inbox_send` → `task_complete`。
-7. 在 Pack 侧检查任务归属、审计记录、external whitelist、egress policy 和 token 撤销。
+6. 手动触发 Bot，先调用 `inbox_pull` 读取消息；若 `has_more=true`，用上一页最后一条已读取消息的 ID 继续拉取，直到读完本轮要处理的消息。
+7. 只对实际读过的消息调用 `inbox_mark_read(up_to_id=<highest-consumed-message-id>)`，不要直接把游标推进到最新消息。随后执行 `task_claim` → `task_update`。
+8. 发送回报前再次 `inbox_pull` 检查新消息；读完并标记已读后再调用 `inbox_send`。如果返回 `blocked="new_messages"`，先读取返回的新消息、推进到实际读过的最高 ID，再重试；不要用 `ignore_new` 绕过盲发保护。
+9. 在 Pack 侧检查任务归属、审计记录、external whitelist、egress policy 和 token 撤销。
 
 ### POC 验收
 
@@ -83,7 +85,7 @@ Pack 当前采用 SwiftUI/macOS App + Python/SQLite Hub + Node runtime。PiBot �
 - external gate 关闭或 token 撤销后，调用立即失败；
 - 所有写入和对外发送遵守 Pack 现有审批与审计规则。
 
-第一轮只验证手动触发和任务闭环，不默认启用后台定时轮询。轮询频率、重试、重复消息、长任务心跳和掉线恢复需要单独验收。
+第一轮只验证手动触发和任务闭环，不默认启用后台定时轮询。必须遵守 Pack 的盲发保护：`inbox_pull` 本身不推进 read cursor，只有明确读过的消息才可通过 `inbox_mark_read` 标记；不能为了让 `inbox_send` 成功而跳过未读消息。轮询频率、重试、重复消息、长任务心跳和掉线恢复需要单独验收。
 
 ## 4. 第二优先级：ACP attach
 
