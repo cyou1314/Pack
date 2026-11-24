@@ -2947,6 +2947,10 @@ def build_server(context: HubContext | None = None):
         if not isinstance(payload, dict):
             return JSONResponse({"error": "invalid_agent_token_revoke_request"}, status_code=400)
         token_id = payload.get("token_id")
+        if token_id is not None and (
+            isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0
+        ):
+            return JSONResponse({"error": "invalid_agent_event_token_id"}, status_code=400)
         if token_id == 0:
             token_id = None
         try:
