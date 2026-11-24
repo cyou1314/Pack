@@ -72,6 +72,7 @@ export class RuntimeSupervisor {
         status: "disconnected",
         targetStatus: "ready",
         connectionEstablished: false,
+        startupFailed: false,
         lastError: null,
         fatalEventError: false,
         sessions: new Set(),
@@ -147,6 +148,7 @@ export class RuntimeSupervisor {
     handle.status = "connecting";
     handle.targetStatus = "ready";
     handle.connectionEstablished = false;
+    handle.startupFailed = false;
     handle.lastError = null;
     handle.fatalEventError = false;
     handle.sessions.clear();
@@ -176,6 +178,7 @@ export class RuntimeSupervisor {
       const health = handle.adapter.getHealth();
       if (health?.status !== "ready") throw new Error("adapter_not_ready");
       handle.connectionEstablished = true;
+      handle.startupFailed = false;
 
       if (handle.status === "degraded") {
         handle.targetStatus = "ready";
@@ -197,8 +200,9 @@ export class RuntimeSupervisor {
         throw new Error(handle.lastError || "event_persistence_failed");
       }
 
-      try { await handle.adapter?.disconnect?.(); } catch {}
+      handle.startupFailed = true;
       handle.targetStatus = "failed";
+      try { await handle.adapter?.disconnect?.(); } catch {}
       const flushed = await this.#drainEvents(handle);
       try { handle.unsubscribe?.(); } catch {}
       handle.unsubscribe = null;
@@ -495,9 +499,11 @@ export class RuntimeSupervisor {
           handle.pendingApprovals.set(event.payload.requestId, event);
         }
         if (event.eventType === "connection.changed" && event.payload.status === "disconnected") {
-          handle.targetStatus = "disconnected";
           handle.connectionEstablished = false;
-          if (handle.status !== "disconnecting") handle.status = "disconnected";
+          if (!handle.startupFailed) {
+            handle.targetStatus = "disconnected";
+            if (handle.status !== "disconnecting") handle.status = "disconnected";
+          }
           handle.sessions.clear();
           handle.pendingApprovals.clear();
         }
