@@ -69,13 +69,17 @@ chmod 600 "$SHADOW_ROOT/hub/pack.db" "$SHADOW_ROOT/hub/.dispatcher_token"
 
 "$DMG_NEW/python/bin/python3" "$SHADOW_ROOT/hub/hub.py" init
 
+set +e
 PYTHONPATH="$SHADOW_ROOT/hub" \
   "$DMG_NEW/python/bin/python3" \
   "$SHADOW_ROOT/hub/services/agent_registry_shadow.py" \
   --db "$SHADOW_ROOT/hub/pack.db" \
   > "$REPORT"
+SHADOW_RC=$?
+set -e
 chmod 600 "$REPORT"
 cat "$REPORT"
+[[ "$SHADOW_RC" -eq 0 ]]
 "$DMG_NEW/python/bin/python3" -c '
 import json,sys
 r=json.load(open(sys.argv[1],encoding="utf-8"))
