@@ -373,7 +373,7 @@ class AgentEventGatewayTests(unittest.TestCase):
             nested_json = (
                 '{"eventId":"deep-event","eventType":"run.progress",'
                 '"sequence":1,"occurredAt":"2026-11-24T03:00:00.000Z",'
-                '"payload":' + ("[" * 1100) + "0" + ("]" * 1100) + "}"
+                '"payload":' + ('{"x":' * 10000) + "0" + ("}" * 10000) + "}"
             )
             deep_response = client.post(
                 "/agent/events",
