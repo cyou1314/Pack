@@ -206,6 +206,7 @@ test("A failed Pending directory sync is retried before duplicate append succeed
   }
 
   assert.equal((await readdir(path.join(directory, "pending"))).length, 1);
+  assert.equal((await store.listPending()).length, 1);
   assert.deepEqual(await store.append(event), {inserted: false, order: 1});
   assert.equal((await store.listPending()).length, 1);
   await store.close();
