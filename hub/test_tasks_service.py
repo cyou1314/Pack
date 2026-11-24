@@ -152,6 +152,19 @@ class TaskHistoryTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in main_room], [1, 12])
         self.assertEqual([row["id"] for row in other_tasks], [20])
 
+    def test_task_list_resolves_assignee_name_to_indexed_member_id(self):
+        tasks = list_tasks(
+            self.context, {"kind": "internal"}, assignee_name="dispatcher"
+        )["tasks"]
+        self.assertEqual([row["id"] for row in tasks], [1, 12])
+        self.assertTrue(all(row["assignee"] == "dispatcher" for row in tasks))
+        self.assertEqual(
+            list_tasks(
+                self.context, {"kind": "internal"}, assignee_name="missing-member"
+            )["tasks"],
+            [],
+        )
+
     def test_task_list_envelope_backoff_and_negative_offset(self):
         self.conn.execute(
             "UPDATE tasks SET envelope=?,next_claim_at=? WHERE id=1",
