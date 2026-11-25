@@ -140,23 +140,28 @@ def is_managed_agent(path, label):
 
 
 def uninstall():
+    owned_install = False
     for label in labels.values():
         plist = agents/(label+'.plist')
         # Never unload or remove a same-named service unless its plist is
         # positively identified as Pack-owned.
         if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
+            owned_install = True
             ctl('bootout',f'gui/{uid}/{label}',check=False)
             plist.unlink()
-    # Program files only. Database, tokens, config, attachments and engine data stay.
-    for name in ('python','hub.py','room_watch.py','backup-db.sh','verify-backup.sh'):
-        p=hub/name
-        if p.is_symlink(): p.unlink()
-        elif p.is_dir(): shutil.rmtree(p)
-        elif p.is_file(): p.unlink()
-    for name in ('app','Electron.app'):
-        p=engine/name
-        if p.is_symlink(): p.unlink()
-        elif p.is_dir(): shutil.rmtree(p)
+    if owned_install:
+        # Program files only. Database, tokens, config, attachments and engine data stay.
+        for name in ('python','hub.py','room_watch.py','backup-db.sh','verify-backup.sh'):
+            p=hub/name
+            if p.is_symlink(): p.unlink()
+            elif p.is_dir(): shutil.rmtree(p)
+            elif p.is_file(): p.unlink()
+        for name in ('app','Electron.app'):
+            p=engine/name
+            if p.is_symlink(): p.unlink()
+            elif p.is_dir(): shutil.rmtree(p)
+    else:
+        print('No Pack-owned LaunchAgent found; preserving local program files.')
     if app_path.is_dir() and not app_path.is_symlink():
         try:
             with (app_path/'Contents/Info.plist').open('rb') as f: info=plistlib.load(f)
