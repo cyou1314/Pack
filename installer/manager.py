@@ -160,6 +160,43 @@ def is_managed_root(root, role):
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         return False
 
+def validate_reinstall_data():
+    """Allow an upgrade only into Pack-marked roots with intact credentials."""
+    if not is_managed_root(hub, 'hub') or not is_managed_root(engine, 'engine'):
+        raise SystemExit('Existing data roots are not verified Pack-owned roots; refusing reinstall.')
+    for path in (config, hub/'.dispatcher_token', hub/'.owner_token'):
+        if path.is_symlink() or not path.is_file():
+            raise SystemExit(f'Reinstall requires the preserved credential/config file: {path}')
+    try:
+        config_data = json.loads(config.read_text(encoding='utf-8'))
+        if not isinstance(config_data, dict) or not isinstance(config_data.get('hubUrl'), str):
+            raise ValueError('missing hubUrl')
+        dispatcher = (hub/'.dispatcher_token').read_text(encoding='utf-8').strip()
+        owner = (hub/'.owner_token').read_text(encoding='utf-8').strip()
+        if not dispatcher or not owner:
+            raise ValueError('empty credential file')
+        if config_data.get('token') and config_data['token'] != dispatcher:
+            raise ValueError('dispatcher credential mismatch')
+        if config_data.get('ownerToken') and config_data['ownerToken'] != owner:
+            raise ValueError('owner credential mismatch')
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        raise SystemExit('Preserved Pack credentials/config are invalid; refusing reinstall.')
+    program_paths = (
+        hub/'python', hub/'hub.py', hub/'room_watch.py',
+        hub/'backup-db.sh', hub/'verify-backup.sh',
+        engine/'app', engine/'Electron.app',
+    )
+    if any(path_exists(path) for path in program_paths):
+        raise SystemExit('Pack program files still exist; run uninstall.command before reinstalling.')
+    for path in (hub/'attachments', engine/'data', engine/'data'/'local'):
+        if path.is_symlink() or (path_exists(path) and not path.is_dir()):
+            raise SystemExit(f'Existing Pack data path is unsafe: {path}')
+    if path_exists(socket_dir):
+        raise SystemExit(f'Existing IPC path must be removed by uninstall before reinstall: {socket_dir}')
+    os.chmod(config, 0o600)
+    os.chmod(hub/'.dispatcher_token', 0o600)
+    os.chmod(hub/'.owner_token', 0o600)
+
 
 def rollback_managed_agents():
     for label in labels.values():
@@ -236,18 +273,24 @@ def install():
     lock_fd = acquire_install_lock()
     try:
         previous = load_install_state()
+        reinstall_mode = False
         if previous:
             phase = previous['phase']
             if phase in ('installing', 'failed'):
                 raise SystemExit('An interrupted Pack installation was found; run uninstall.command to remove Pack program files while preserving data, then inspect before reinstalling.')
-            if phase == 'uninstalled' and not any(path_exists(path) for path in (hub, engine, config, socket_dir)):
-                STATE_PATH.unlink()
+            if phase == 'uninstalled':
+                if not any(path_exists(path) for path in (hub, engine, config, socket_dir)):
+                    STATE_PATH.unlink()
+                else:
+                    validate_reinstall_data()
+                    reinstall_mode = True
             else:
                 raise SystemExit(f'Existing Pack installer state ({phase}); refusing to overwrite.')
 
-        for path in (hub, engine, config, socket_dir):
-            if path_exists(path):
-                raise SystemExit(f'Existing service data or App config found; refusing to overwrite: {path}')
+        if not reinstall_mode:
+            for path in (hub, engine, config, socket_dir):
+                if path_exists(path):
+                    raise SystemExit(f'Existing service data or App config found; refusing to overwrite: {path}')
         if agents.is_symlink() or (path_exists(agents) and not agents.is_dir()):
             raise SystemExit(f'LaunchAgents path must be a real directory: {agents}')
         if not available(hp) or not available(ep):
@@ -272,10 +315,14 @@ def install():
             # Ownership markers are written immediately after exclusive root
             # creation. They let uninstall recover a transaction interrupted
             # before the first LaunchAgent was installed.
-            hub.mkdir(mode=0o700)
-            write_root_marker(hub, 'hub', state['transaction_id'])
-            engine.mkdir(mode=0o700)
-            write_root_marker(engine, 'engine', state['transaction_id'])
+            if not reinstall_mode:
+                hub.mkdir(mode=0o700)
+                write_root_marker(hub, 'hub', state['transaction_id'])
+                engine.mkdir(mode=0o700)
+                write_root_marker(engine, 'engine', state['transaction_id'])
+            else:
+                os.chmod(hub, 0o700)
+                os.chmod(engine, 0o700)
 
             shutil.copytree(BUNDLE/'python', hub/'python', symlinks=True)
             for name in ('hub.py', 'room_watch.py', 'backup-db.sh', 'verify-backup.sh'):
@@ -283,8 +330,8 @@ def install():
             shutil.copytree(BUNDLE/'engine'/'app', engine/'app', symlinks=True)
             subprocess.run(['/usr/bin/ditto', str(BUNDLE/'engine'/'Electron.app'),
                             str(engine/'Electron.app')], check=True)
-            (hub/'attachments').mkdir(mode=0o700)
-            (engine/'data'/'local').mkdir(parents=True, mode=0o700)
+            (hub/'attachments').mkdir(mode=0o700, exist_ok=reinstall_mode)
+            (engine/'data'/'local').mkdir(parents=True, mode=0o700, exist_ok=reinstall_mode)
             socket_dir.mkdir(mode=0o700)
             write_root_marker(socket_dir, 'socket', state['transaction_id'])
             agents.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -306,8 +353,9 @@ def install():
             else:
                 raise RuntimeError('Local hub did not start')
 
-            os.environ['NO_PROXY'] = os.environ['no_proxy'] = '127.0.0.1,localhost'
-            asyncio.run(setup_owner())
+            if not reinstall_mode:
+                os.environ['NO_PROXY'] = os.environ['no_proxy'] = '127.0.0.1,localhost'
+                asyncio.run(setup_owner())
             write_agent('watch', [py, hub/'room_watch.py'],
                         {**common, 'PACK_WATCH_URL':f'http://127.0.0.1:{hp}/mcp'}, True)
             write_agent('backup', ['/bin/bash', hub/'backup-db.sh'], {}, calendar=True)
