@@ -320,7 +320,7 @@ def install():
         print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
         print('Open Pack to migrate the private local credentials into Keychain.')
     finally:
-        release_install_lock()
+        release_install_lock(lock_fd)
 
 def is_managed_agent(path, label):
     """Accept current marked plists and exact legacy Pack plists only."""
@@ -409,7 +409,7 @@ def uninstall():
                 print('Warning: could not update installer state after uninstall.', file=sys.stderr)
         print(f'Data preserved: {hub}, {engine}/data, {config}')
     finally:
-        release_install_lock()
+        release_install_lock(lock_fd)
 
 if __name__ == '__main__':
     if len(sys.argv)!=2 or sys.argv[1] not in ('install','uninstall'): raise SystemExit('Use install or uninstall')
