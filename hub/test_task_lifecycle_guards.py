@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Task lifecycle compare-and-swap regressions through the real MCP tool surface."""
 import asyncio
+import base64
 import importlib.util
 import json
 import os
@@ -114,6 +115,31 @@ async def run_checks(port, dispatcher_token, a_token, b_token):
     winners = [x for x in decisions if "error" not in x]
     losers = [x for x in decisions if "error" in x]
     assert len(winners) == 1 and len(losers) == 1, decisions
+
+    # Content-addressed attachments are verified on read and repaired on
+    # re-upload if the stored blob has been corrupted.
+    payload = b"\\x89PNG\\r\\n\\x1a\\npack-attachment-test"
+    encoded = base64.b64encode(payload).decode("ascii")
+    uploaded = await member_a("attachment_put", {
+        "room": "pack-main", "filename": "guard.png", "mime": "image/png",
+        "data_base64": encoded})
+    attachment_id = uploaded["attachment_id"]
+    fetched = await member_a("attachment_get", {"attachment_id": attachment_id})
+    assert fetched["data_base64"] == encoded, fetched
+    blob = hub._attach_path(uploaded["sha256"], "image/png")
+    with open(blob, "wb") as stream:
+        stream.write(b"corrupted")
+    corrupted = await member_a("attachment_get", {"attachment_id": attachment_id})
+    assert "error" in corrupted and "integrity" in corrupted["error"], corrupted
+    repaired = await member_a("attachment_put", {
+        "room": "pack-main", "filename": "guard.png", "mime": "image/png",
+        "data_base64": encoded})
+    repaired_result = await member_a("attachment_get", {
+        "attachment_id": repaired["attachment_id"]})
+    assert repaired_result["data_base64"] == encoded, repaired_result
+    assert os.stat(blob).st_mode & 0o777 == 0o600
+    assert os.stat(hub.ATTACH_DIR).st_mode & 0o777 == 0o700
+
     return {"accepted_transfer": transfer["transfer_id"],
             "cancelled_pending_transfer": pending["transfer_id"],
             "review_winner": winners[0]["status"]}
@@ -123,6 +149,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="pack-hub-lifecycle-") as temp:
         hub.BASE = temp
         hub.DB_PATH = os.path.join(temp, "pack.db")
+        hub.ATTACH_DIR = os.path.join(temp, "attachments")
         hub.init()
         dispatcher_token = open(os.path.join(temp, ".dispatcher_token"), encoding="utf-8").read().strip()
 
