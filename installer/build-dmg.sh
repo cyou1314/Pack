@@ -15,6 +15,8 @@ done
 [ -d "$PYROOT/lib/python3.12" ] || fail "missing Python 3.12 standard library: $PYROOT/lib/python3.12"
 [ -x "$VENV/bin/python" ] || fail "missing Hub build venv: $VENV/bin/python (set PACK_BUILD_VENV)"
 [ -d "$VENV/lib/python3.12/site-packages" ] || fail "missing Hub venv site-packages: $VENV/lib/python3.12/site-packages"
+"$PYROOT/bin/python3" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)' || fail "embedded Python runtime must be 3.12"
+"$VENV/bin/python" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)' || fail "Hub build venv must use Python 3.12"
 [ -f "$ROOT/installer/python-requirements.lock" ] || fail "missing Python dependency lock"
 [ -f "$ENGINE/app/headless.cjs" ] || fail "missing external Engine source: $ENGINE/app/headless.cjs (set PACK_BUILD_ENGINE)"
 [ -f "$ENGINE/app/gateway-page.js" ] || fail "missing external Engine source: $ENGINE/app/gateway-page.js (set PACK_BUILD_ENGINE)"
