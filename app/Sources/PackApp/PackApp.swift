@@ -1341,6 +1341,10 @@ final class AppState: ObservableObject {
 
 @main
 struct PackApp: App {
+    init() {
+        MemberHandoff.cleanupStaleTickets()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
