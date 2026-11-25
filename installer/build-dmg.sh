@@ -6,9 +6,34 @@ VENV="${PACK_BUILD_VENV:-$HOME/.pack/local-hub/.venv}"
 ENGINE="${PACK_BUILD_ENGINE:-$HOME/pack-headless-l2}"
 OUT="${1:-$HOME/commander-work/Pack-local-installer.dmg}"
 [ ! -e "$OUT" ] || { echo 'Output exists; choose a new path.' >&2; exit 1; }
+
+fail() { echo "Pack DMG preflight failed: $*" >&2; exit 1; }
+for cmd in rsync ditto codesign hdiutil swift git; do
+  command -v "$cmd" >/dev/null 2>&1 || fail "missing macOS build tool: $cmd"
+done
+[ -x "$PYROOT/bin/python3" ] || fail "missing embedded Python 3.12 runtime: $PYROOT/bin/python3 (set PACK_BUILD_PYTHON_ROOT)"
+[ -d "$PYROOT/lib/python3.12" ] || fail "missing Python 3.12 standard library: $PYROOT/lib/python3.12"
+[ -x "$VENV/bin/python" ] || fail "missing Hub build venv: $VENV/bin/python (set PACK_BUILD_VENV)"
+[ -d "$VENV/lib/python3.12/site-packages" ] || fail "missing Hub venv site-packages: $VENV/lib/python3.12/site-packages"
+[ -f "$ROOT/installer/python-requirements.lock" ] || fail "missing Python dependency lock"
+[ -f "$ENGINE/app/headless.cjs" ] || fail "missing external Engine source: $ENGINE/app/headless.cjs (set PACK_BUILD_ENGINE)"
+[ -f "$ENGINE/app/gateway-page.js" ] || fail "missing external Engine source: $ENGINE/app/gateway-page.js (set PACK_BUILD_ENGINE)"
+[ -f "$ENGINE/app/package.json" ] || fail "missing external Engine package manifest: $ENGINE/app/package.json"
+[ -x "$ENGINE/Electron.app/Contents/MacOS/Electron" ] || fail "missing executable Electron bundle: $ENGINE/Electron.app"
+[ -f /usr/libexec/PlistBuddy ] || fail "missing /usr/libexec/PlistBuddy"
 "$PYROOT/bin/python3" -c 'import sys; assert sys.version_info[:2] == (3,12)'
 "$VENV/bin/python" -m pip freeze | sort | diff -u "$ROOT/installer/python-requirements.lock" -
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-installer-stage.XXXXXX")"
+PACK_COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+ENGINE_COMMIT="$(git -C "$ENGINE" rev-parse HEAD 2>/dev/null || echo unpinned-external-source)"
+ENGINE_VERSION="$("$PYROOT/bin/python3" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version","unknown"))' "$ENGINE/app/package.json")"
+cat > "$STAGE/BUILD-INFO.txt" <<EOF
+Pack commit: $PACK_COMMIT
+Engine commit: $ENGINE_COMMIT
+Engine package version: $ENGINE_VERSION
+Python runtime: 3.12
+Built UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
 # Build the .app directly into the disposable staging directory. A clean
 # clone has no app/Pack.app yet, and we must not delete a developer's bundle.
 bash "$ROOT/app/make-bundle.sh" "$STAGE/Pack.app"
