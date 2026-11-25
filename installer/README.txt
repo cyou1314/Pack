@@ -13,3 +13,4 @@ Pack 本地版（Apple Silicon / macOS 14 或更新）
 保留此磁盘映像以便卸载：右键打开「uninstall.command」。它停止本包服务，移除经标记的 /Applications/Pack.app 与程序文件，保留数据库、成员数据、附件、凭证、配置与备份；路径会在终端显示。
 
 卸载后数据校验：不要直接以只读方式打开原数据库。先将保留的 pack.db、muse.sqlite 与各自目录中存在的 -wal、-shm 一并复制到独立临时目录，再对副本执行 SQLite PRAGMA integrity_check；需要核对任务时，在中枢副本查询 tasks 表。不得删除原件的 WAL/SHM，保留原数据以便恢复。
+备份范围：当前 backup-db.sh 备份 Hub 数据库与附件，不包含 ~/.pack/config.json、明文凭证文件或 macOS 钥匙串项目。因此它是数据备份，不是完整的跨 Mac 迁移包；在跨机器恢复流程和凭证安全导出完成前，不要把数据库备份单独当作可直接启动的完整恢复件。
