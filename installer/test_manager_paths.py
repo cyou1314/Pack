@@ -62,7 +62,7 @@ def check_hub_program_manifest():
 def main():
     hub_program_files = check_hub_program_manifest()
     with tempfile.TemporaryDirectory(prefix="pack-installer-path-test-") as tmp:
-        home = pathlib.Path(tmp)
+        home = pathlib.Path(tmp).resolve()
         test_root = home / "commander-work" / "isolated-installer-check"
         env = os.environ.copy()
         env["HOME"] = str(home)
@@ -181,6 +181,10 @@ def main():
         (bundle / "engine" / "Electron.app" / "Contents" / "MacOS").mkdir(parents=True)
         (bundle / "engine" / "Electron.app" / "Contents" / "MacOS" / "Electron").write_text("fixture\n")
         transaction_env = env.copy()
+        # Keep transaction assertions independent of the path/ownership fixtures
+        # above, which deliberately created directories under test_root.
+        transaction_env["PACK_INSTALL_TEST_ROOT"] = str(
+            home / "commander-work" / "isolated-installer-transaction")
         transaction_env["PACK_TEST_BUNDLE"] = str(bundle)
         transaction_script = r"""
 import asyncio, json, os, pathlib, shutil, types, manager
