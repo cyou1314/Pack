@@ -104,3 +104,9 @@ Swift `AgentLocalAccountResolver` 通过现有 `AgentRegistryStore.profile(id:)`
 新增 `runtime/browser-driver/native-account-adapter.mjs`，复用 BrowserSessions 与 Node Runner：ChatGPT/Gemini/豆包固定 origin 候选，单次验证/执行，可信宿主提供已登记的本地账号证明摘要、当前账号/model/memory/busy 检查、真实页面 driver 和准确发送授权。拒绝登录未完成、挑战、账号/模式/域不符；新建独立空会话（不清除原账号历史或强制临时聊天），按准确发送文本 SHA-256、会话及目标再授权；一次 sendOnce，按新 turnID 等待完成 assistant 文本，不回读旧会话、思维过程或私有记忆，不推算原生 token。取消或发送/回复不明确不重试。Runner 在明确未执行/完成时先关闭 adapter 再释放账号租约，close 失败保留租约，未知执行不强行关闭或重开。Node mock 回归覆盖身份、来源、拒绝授权、旧回复、部分输出及清理顺序。
 
 尚无真实 Provider 页面 driver、登录账号证明采集/登记 UI、会话稳定 ID 映射、实际消息 DOM 与完成检测。固定域只是导航范围，不是所有网络请求的隔离策略；不能承诺保留原生记忆、工具可用性或阻止 provider 原生后台调用。必须遵守各平台条款与授权范围，不绕过登录、验证码、风控和权限。原生执行器未启动、未打包、未连接真实账号；生产入口仍关闭。
+
+## 第十五阶段：API 执行宿主与 Hub 接线（未接生产）
+
+新增 `collaboration_executor_info`（仅 opt-in schema 注册，专用 token 查询自己的绑定，撤销后拒绝）与 Swift `AgentAPICollaborationHost`：采用 Swift 内进程 API lane，复用 registry/vault/official adapter；Node 保留 native lane，两者使用同一预建私有目录下 UUID.lease 的 mkdir/rmdir 协作锁。App `DedicatedCollaborationHub` 工厂显式提供专用成员 token，使用现有 HubClient 单次调用，不经过旧自动重连重试或日志，不读 dispatcher 配置。流程身份确认→本地 credential presence→租约→claim→context→run_start→精确 HTTP 请求授权→重验上下文→真实 transport→单次交付；未知结果保留租约。Swift 模拟 Hub+HTTP 端到端测试和 Python 真实 MCP 身份测试。API 429 不视为周额度100%，宿主 block 使用 task 类别。Token usage 暂仅返回宿主，未持久入账。
+
+这是可调用的 App 工厂而非已启动生产工作流。仍须提供安全的专用 token provisioning/存储、真实用户授权 UI、统一租约路径、Hub 创建/调度入口、原生真实页面 driver、签名 Keychain/真实 API 验收。无自动任务轮询、不传 API key 跨进程、不启用 schema，不新增 IPC 服务。Swift 与 Node 生命周期分别实现，后续需契约测试防漂移；现有 HubClient 底层 URLSession 不保证网络层 exactly-once，且现有响应读取并非流式限长。未知租约需显式人工恢复。

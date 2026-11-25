@@ -195,6 +195,19 @@ actor HubClient {
         return [:]
     }
 
+    // Dedicated execution never replays a mutation on session/transport error.
+    // Do not route through the legacy reconnect/retry and logging path.
+    func collaborationCallOnce(name: String, arguments: Data) async throws -> Data {
+        let allowed: Set<String> = ["collaboration_executor_info", "task_claim",
+            "collaboration_context_get", "run_start", "task_complete", "task_block"]
+        guard allowed.contains(name),
+              let args = try JSONSerialization.jsonObject(with: arguments) as? [String: Any] else {
+            throw HubError.badResponse("invalid collaboration call")
+        }
+        let result = try await callOnce(name: name, args: args)
+        return try JSONSerialization.data(withJSONObject: result)
+    }
+
     func call(name: String, args: [String: Any] = [:]) async throws -> [String: Any] {
         do {
             return try await callOnce(name: name, args: args)

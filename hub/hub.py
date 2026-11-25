@@ -1337,7 +1337,7 @@ def _collaboration_privileged(me):
 
 
 COLLABORATION_EXECUTOR_TOOLS = frozenset({
-    "heartbeat", "task_list", "task_claim", "collaboration_context_get",
+    "heartbeat", "task_list", "task_claim", "collaboration_context_get", "collaboration_executor_info",
     "run_start", "run_finish", "task_update", "task_complete", "task_block",
 })
 
@@ -4099,6 +4099,21 @@ def build_server():
         ).fetchone() is not None
     context_conn.close()
     if context_enabled:
+        @mcp.tool
+        def collaboration_executor_info() -> dict:
+            """Return the authenticated dedicated executor's opaque local binding."""
+            me = authenticate()
+            require(me, "member")
+            from collaboration_context import require_executor
+            conn = db()
+            try:
+                if _collaboration_executor_binding(conn,me["id"]) is None:
+                    raise ValueError("collaboration executor identity required")
+                binding = require_executor(conn,me["id"])
+                return {"provider":binding[1],"access_kind":binding[2],"account_ref":binding[3]}
+            finally:
+                conn.close()
+
         @mcp.tool
         def collaboration_context_get(task_id: int, claim_token: str) -> dict:
             """Read explicitly granted context for the current linked task holder."""

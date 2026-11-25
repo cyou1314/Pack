@@ -228,6 +228,9 @@ def main():
                 ("attachment_list",{"room":"pack-main"}),("egress_check",{"url":"https://example.com"}),
                 ("desktop_acquire",{"task_id":private_task,"claim_token":"no"})):
                 assert "error" in executor(tool,args),(tool,args)
+            assert executor("collaboration_executor_info",{})=={
+                "provider":"fixture-api","access_kind":"api","account_ref":account}
+            assert "error" in outsider("collaboration_executor_info",{})
             assert executor("heartbeat",{}).get("ok") is True
             assert executor("task_list",{}).get("tasks")==[]
             assert "error" in executor("task_claim",{"task_id":legacy_id})
@@ -253,6 +256,7 @@ def main():
             assert dispatch("task_review",{"task_id":dt,"approve":True}).get("status")=="done"
             with write_transaction(conn):
                 assert revoke_executor(conn,actor_id=real_owner,member_id=dm)
+            assert "error" in executor("collaboration_executor_info",{})
             assert "error" in executor("heartbeat",{})
             assert "error" in executor("room_read_new",{"room":"pack-main"})
             assert "error" in executor("task_list",{})
