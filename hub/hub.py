@@ -1282,169 +1282,170 @@ def _week_start_cst(now=None):
 
 
 def sweep_once():
-    now = _now()
     conn = db()
-    # 待接受转交过期回收（与租约回收同节律、同在 sweep_once 内，不另起定时器）：
-    # pending 转交超过 expires_at 仍未被接收方 task_accept_transfer 接受 →
-    # 转交行标 expired；任务若仍挂在接收方名下（claimed/working 且令牌为空，
-    # 即没人真接手）则放回 open。pending 未过期时任务 lease_expires 为 NULL，
-    # 下面的租约回收天然跳过，不会误回收等人接受的任务。
-    expired = conn.execute(
-        "SELECT * FROM task_transfers WHERE status='pending' AND expires_at IS NOT NULL AND expires_at<?",
-        (now,)).fetchall()
-    n_expired = 0
-    for x in expired:
-        # 守卫：标 expired 只对仍为 pending 的行生效——SELECT 之后接收方可能
-        # 已 task_accept_transfer 成功（其持 _lock，但 sweeper 不持），无守卫
-        # UPDATE 会把 accepted 改标 expired、账面自相矛盾（staging14 复检 SW1）。
-        cur = conn.execute(
-            "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
-            (x["id"],))
-        if cur.rowcount != 1:
-            continue
-        t = conn.execute("SELECT * FROM tasks WHERE id=?", (x["task_id"],)).fetchone()
-        requeued = False
-        if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
-            recv = conn.execute("SELECT id FROM members WHERE name=?",
-                                (x["to_member"],)).fetchone()
-            if recv and t["assignee"] == recv["id"]:
-                snd = conn.execute("SELECT id, removed_at FROM members WHERE name=?",
-                                   (x["from_member"],)).fetchone()
-                back_to = snd["id"] if (snd and not snd["removed_at"]) else None
-                cur = conn.execute(
-                    "UPDATE tasks SET status='open', assignee=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND claim_token IS NULL AND status IN ('claimed','working')",
-                    (back_to, now, t["id"]))
-                requeued = cur.rowcount == 1
-        audit(conn, "sweeper", "transfer_expired",
-              f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
-        n_expired += 1
-    rows = conn.execute(
-        "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
-        (now,)).fetchall()
-    for t in rows:
-        # 守卫：回收 UPDATE 复检租约仍过期——SELECT 之后持有人可能已
-        # task_update/heartbeat 续租，无守卫会按旧快照误回收活跃任务
-        # （staging14 复检 SW2）。rowcount=0 说明任务已变，整行跳过
-        # （run 不关、审计不写）。
-        # 租约超时 = 执行体失联，一律归 transient（合成清单第 3 项定死口径）。
-        if t["attempts"] >= MAX_ATTEMPTS:
-            cur = conn.execute("UPDATE tasks SET status='blocked', claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=NULL, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
-                               (now, t["id"], now))
+    try:
+        now = _now()
+        # 待接受转交过期回收（与租约回收同节律、同在 sweep_once 内，不另起定时器）：
+        # pending 转交超过 expires_at 仍未被接收方 task_accept_transfer 接受 →
+        # 转交行标 expired；任务若仍挂在接收方名下（claimed/working 且令牌为空，
+        # 即没人真接手）则放回 open。pending 未过期时任务 lease_expires 为 NULL，
+        # 下面的租约回收天然跳过，不会误回收等人接受的任务。
+        expired = conn.execute(
+            "SELECT * FROM task_transfers WHERE status='pending' AND expires_at IS NOT NULL AND expires_at<?",
+            (now,)).fetchall()
+        n_expired = 0
+        for x in expired:
+            # 守卫：标 expired 只对仍为 pending 的行生效——SELECT 之后接收方可能
+            # 已 task_accept_transfer 成功（其持 _lock，但 sweeper 不持），无守卫
+            # UPDATE 会把 accepted 改标 expired、账面自相矛盾（staging14 复检 SW1）。
+            cur = conn.execute(
+                "UPDATE task_transfers SET status='expired' WHERE id=? AND status='pending'",
+                (x["id"],))
             if cur.rowcount != 1:
                 continue
-            _close_run(conn, t["id"], "reaped", "sweeper")
-            _desktop_release_for_task(conn, t["id"], "sweeper", "max_attempts")
-            audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
-        else:
-            nca = now + _backoff_seconds("transient", t["attempts"])
-            # RT1（staging37）：回池保留原指派（成员已移除才解指派），
-            # 否则运行时按名轮询看不见、重试链断裂。
-            cur = conn.execute("UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=?, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
-                               (nca, now, t["id"], now))
-            if cur.rowcount != 1:
+            t = conn.execute("SELECT * FROM tasks WHERE id=?", (x["task_id"],)).fetchone()
+            requeued = False
+            if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
+                recv = conn.execute("SELECT id FROM members WHERE name=?",
+                                    (x["to_member"],)).fetchone()
+                if recv and t["assignee"] == recv["id"]:
+                    snd = conn.execute("SELECT id, removed_at FROM members WHERE name=?",
+                                       (x["from_member"],)).fetchone()
+                    back_to = snd["id"] if (snd and not snd["removed_at"]) else None
+                    cur = conn.execute(
+                        "UPDATE tasks SET status='open', assignee=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND claim_token IS NULL AND status IN ('claimed','working')",
+                        (back_to, now, t["id"]))
+                    requeued = cur.rowcount == 1
+            audit(conn, "sweeper", "transfer_expired",
+                  f"task {x['task_id']} transfer {x['id']} {x['from_member']}->{x['to_member']} requeued={requeued}")
+            n_expired += 1
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
+            (now,)).fetchall()
+        for t in rows:
+            # 守卫：回收 UPDATE 复检租约仍过期——SELECT 之后持有人可能已
+            # task_update/heartbeat 续租，无守卫会按旧快照误回收活跃任务
+            # （staging14 复检 SW2）。rowcount=0 说明任务已变，整行跳过
+            # （run 不关、审计不写）。
+            # 租约超时 = 执行体失联，一律归 transient（合成清单第 3 项定死口径）。
+            if t["attempts"] >= MAX_ATTEMPTS:
+                cur = conn.execute("UPDATE tasks SET status='blocked', claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=NULL, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
+                                   (now, t["id"], now))
+                if cur.rowcount != 1:
+                    continue
+                _close_run(conn, t["id"], "reaped", "sweeper")
+                _desktop_release_for_task(conn, t["id"], "sweeper", "max_attempts")
+                audit(conn, "sweeper", "task_blocked_max_attempts", f"task {t['id']} fail_class=transient")
+            else:
+                nca = now + _backoff_seconds("transient", t["attempts"])
+                # RT1（staging37）：回池保留原指派（成员已移除才解指派），
+                # 否则运行时按名轮询看不见、重试链断裂。
+                cur = conn.execute("UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, claim_token=NULL, lease_expires=NULL, fail_class='transient', next_claim_at=?, updated_at=? WHERE id=? AND lease_expires IS NOT NULL AND lease_expires<?",
+                                   (nca, now, t["id"], now))
+                if cur.rowcount != 1:
+                    continue
+                _close_run(conn, t["id"], "reaped", "sweeper")
+                _desktop_release_for_task(conn, t["id"], "sweeper", "lease_expired")
+                audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
+                # 自动接力（§14.3）：原持有人掉线失联——回池后试着直接接力给合格
+                # 成员。_auto_relay 的转交记账与 task_transfer 同账，为防与工具层
+                # 的转交/接受竞态，记账段走 _lock 并复检任务仍是刚回池的状态。
+                holder_row = conn.execute("SELECT name FROM members WHERE id=?",
+                                          (t["assignee"],)).fetchone()
+                holder_name = holder_row["name"] if holder_row else None
+                if holder_name:
+                    with _lock:
+                        t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
+                        if (t2 and t2["status"] == "open" and (t2["assignee"] is None or t2["assignee"] == t["assignee"])
+                                and t2["claim_token"] is None):
+                            try:
+                                _auto_relay(conn, t2, holder_name, "掉线失联")
+                            except Exception:
+                                pass  # 接力失败不连累本轮回收
+        # staging48 未认领指派卡巡检（「让卡别躺死」，口径见 UNCLAIMED_* 常量）：
+        # 只处理 next_claim_at 已到期/未设的卡；可认领时刻 eligible_at 取
+        # updated_at、next_claim_at、sched_at 三者最大值，过宽限期才判断。
+        # 钉死卡（标题开头或正文含执行体标记，沿用 _auto_relay 的不接力口径）
+        # 与已有 pending 转交（正在等人接受）的卡一律不碰。
+        unclaimed = conn.execute(
+            """SELECT t.*, m.name AS a_name, m.last_heartbeat AS a_hb,
+                      m.quota_week_used_pct AS a_pct, m.quota_updated_at AS a_quota_at,
+                      m.kind AS a_kind
+                 FROM tasks t JOIN members m ON m.id=t.assignee
+                WHERE t.status='open' AND t.assignee IS NOT NULL AND m.removed_at IS NULL
+                  AND (t.next_claim_at IS NULL OR t.next_claim_at<=?)""",
+            (now,)).fetchall()
+        for t in unclaimed:
+            if _is_executor_pinned(t["title"], t["body"]):
                 continue
-            _close_run(conn, t["id"], "reaped", "sweeper")
-            _desktop_release_for_task(conn, t["id"], "sweeper", "lease_expired")
-            audit(conn, "sweeper", "lease_expired_requeue", f"task {t['id']} attempts={t['attempts']} fail_class=transient next_claim_at={nca:.0f}")
-            # 自动接力（§14.3）：原持有人掉线失联——回池后试着直接接力给合格
-            # 成员。_auto_relay 的转交记账与 task_transfer 同账，为防与工具层
-            # 的转交/接受竞态，记账段走 _lock 并复检任务仍是刚回池的状态。
-            holder_row = conn.execute("SELECT name FROM members WHERE id=?",
-                                      (t["assignee"],)).fetchone()
-            holder_name = holder_row["name"] if holder_row else None
-            if holder_name:
-                with _lock:
-                    t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
-                    if (t2 and t2["status"] == "open" and (t2["assignee"] is None or t2["assignee"] == t["assignee"])
-                            and t2["claim_token"] is None):
-                        try:
-                            _auto_relay(conn, t2, holder_name, "掉线失联")
-                        except Exception:
-                            pass  # 接力失败不连累本轮回收
-    # staging48 未认领指派卡巡检（「让卡别躺死」，口径见 UNCLAIMED_* 常量）：
-    # 只处理 next_claim_at 已到期/未设的卡；可认领时刻 eligible_at 取
-    # updated_at、next_claim_at、sched_at 三者最大值，过宽限期才判断。
-    # 钉死卡（标题开头或正文含执行体标记，沿用 _auto_relay 的不接力口径）
-    # 与已有 pending 转交（正在等人接受）的卡一律不碰。
-    unclaimed = conn.execute(
-        """SELECT t.*, m.name AS a_name, m.last_heartbeat AS a_hb,
-                  m.quota_week_used_pct AS a_pct, m.quota_updated_at AS a_quota_at,
-                  m.kind AS a_kind
-             FROM tasks t JOIN members m ON m.id=t.assignee
-            WHERE t.status='open' AND t.assignee IS NOT NULL AND m.removed_at IS NULL
-              AND (t.next_claim_at IS NULL OR t.next_claim_at<=?)""",
-        (now,)).fetchall()
-    for t in unclaimed:
-        if _is_executor_pinned(t["title"], t["body"]):
-            continue
-        eligible_at = max(t["updated_at"] or 0, t["next_claim_at"] or 0,
-                          t["sched_at"] or 0)
-        # staging51：external 靠定时 check-in（默认 15 分钟）维持在线，
-        # 240s 宽限必误报——其指派卡宽限放宽到 UNCLAIMED_GRACE_EXTERNAL
-        # （45 分钟，覆盖 3 个签到周期）再升级；接力路径仍排除 external
-        # （_auto_relay 候选已排除），超限走既有升级提示兜底。
-        grace = UNCLAIMED_GRACE_EXTERNAL if (t["a_kind"] or "") == "external" \
-            else UNCLAIMED_GRACE
-        if eligible_at + grace > now:
-            continue
-        cond_a = t["a_hb"] is None or (now - t["a_hb"]) > UNCLAIMED_HEARTBEAT_STALE
-        cond_b = (t["a_quota_at"] is not None
-                  and (now - t["a_quota_at"]) <= RELAY_QUOTA_FRESH
-                  and t["a_pct"] is not None and t["a_pct"] >= RELAY_QUOTA_HEADROOM)
-        if not (cond_a or cond_b):
-            continue
-        pend = conn.execute(
-            "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=? AND status='pending'",
-            (t["id"],)).fetchone()["n"]
-        if pend:
-            continue
-        reason_label = "指派人失联未认领" if cond_a else "指派人额度见底未认领"
-        cond_tag = ("A" if cond_a else "") + ("B" if cond_b else "")
-        # 记账段走 _lock 并复检任务仍是扫描时的状态（与既有接力段同纪律），
-        # 防与工具层的认领/转交竞态。
-        with _lock:
-            t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
-            if (not t2 or t2["status"] != "open" or t2["assignee"] != t["assignee"]
-                    or t2["claim_token"] is not None):
+            eligible_at = max(t["updated_at"] or 0, t["next_claim_at"] or 0,
+                              t["sched_at"] or 0)
+            # staging51：external 靠定时 check-in（默认 15 分钟）维持在线，
+            # 240s 宽限必误报——其指派卡宽限放宽到 UNCLAIMED_GRACE_EXTERNAL
+            # （45 分钟，覆盖 3 个签到周期）再升级；接力路径仍排除 external
+            # （_auto_relay 候选已排除），超限走既有升级提示兜底。
+            grace = UNCLAIMED_GRACE_EXTERNAL if (t["a_kind"] or "") == "external" \
+                else UNCLAIMED_GRACE
+            if eligible_at + grace > now:
                 continue
-            relayed = None
-            try:
-                relayed = _auto_relay(conn, t2, t["a_name"], reason_label)
-            except Exception:
-                relayed = None  # 接力失败不连累本轮巡检，落到升级判断
-            if relayed:
+            cond_a = t["a_hb"] is None or (now - t["a_hb"]) > UNCLAIMED_HEARTBEAT_STALE
+            cond_b = (t["a_quota_at"] is not None
+                      and (now - t["a_quota_at"]) <= RELAY_QUOTA_FRESH
+                      and t["a_pct"] is not None and t["a_pct"] >= RELAY_QUOTA_HEADROOM)
+            if not (cond_a or cond_b):
                 continue
-            # 无合格候选：不清指派、只升级一次。去重按「任务+指派人」查
-            # 审计（detail 由本段写死格式，精确前缀匹配不会串到别的任务）；
-            # 指派人变更后可对新指派人再升级一次。
-            seen = conn.execute(
-                "SELECT 1 FROM audit WHERE task_id=? AND action='task_unclaimed_escalate'"
-                " AND detail LIKE ? LIMIT 1",
-                (t["id"], f"task {t['id']} assignee_id={t['assignee']} %")).fetchone()
-            if seen:
+            pend = conn.execute(
+                "SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=? AND status='pending'",
+                (t["id"],)).fetchone()["n"]
+            if pend:
                 continue
-            disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
-            if disp:
-                conn.execute(
-                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)"
-                    " VALUES(?,?,'chat',?,?,?)",
-                    (t2["room_id"], disp["id"],
-                     f"任务#{t['id']} 指派给 {t['a_name']} 已超过宽限期未认领"
-                     f"（{reason_label}），暂无可自动接力的成员，请调度员处理",
-                     t["id"], now))
-            audit(conn, "sweeper", "task_unclaimed_escalate",
-                  f"task {t['id']} assignee_id={t['assignee']} assignee={t['a_name']} cond={cond_tag} ")
-    conn.commit()
-    conn.close()
-    return len(rows) + n_expired
-
-
+            reason_label = "指派人失联未认领" if cond_a else "指派人额度见底未认领"
+            cond_tag = ("A" if cond_a else "") + ("B" if cond_b else "")
+            # 记账段走 _lock 并复检任务仍是扫描时的状态（与既有接力段同纪律），
+            # 防与工具层的认领/转交竞态。
+            with _lock:
+                t2 = conn.execute("SELECT * FROM tasks WHERE id=?", (t["id"],)).fetchone()
+                if (not t2 or t2["status"] != "open" or t2["assignee"] != t["assignee"]
+                        or t2["claim_token"] is not None):
+                    continue
+                relayed = None
+                try:
+                    relayed = _auto_relay(conn, t2, t["a_name"], reason_label)
+                except Exception:
+                    relayed = None  # 接力失败不连累本轮巡检，落到升级判断
+                if relayed:
+                    continue
+                # 无合格候选：不清指派、只升级一次。去重按「任务+指派人」查
+                # 审计（detail 由本段写死格式，精确前缀匹配不会串到别的任务）；
+                # 指派人变更后可对新指派人再升级一次。
+                seen = conn.execute(
+                    "SELECT 1 FROM audit WHERE task_id=? AND action='task_unclaimed_escalate'"
+                    " AND detail LIKE ? LIMIT 1",
+                    (t["id"], f"task {t['id']} assignee_id={t['assignee']} %")).fetchone()
+                if seen:
+                    continue
+                disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+                if disp:
+                    conn.execute(
+                        "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)"
+                        " VALUES(?,?,'chat',?,?,?)",
+                        (t2["room_id"], disp["id"],
+                         f"任务#{t['id']} 指派给 {t['a_name']} 已超过宽限期未认领"
+                         f"（{reason_label}），暂无可自动接力的成员，请调度员处理",
+                         t["id"], now))
+                audit(conn, "sweeper", "task_unclaimed_escalate",
+                      f"task {t['id']} assignee_id={t['assignee']} assignee={t['a_name']} cond={cond_tag} ")
+        conn.commit()
+        return len(rows) + n_expired
+    finally:
+        conn.close()
 def sweeper():
     while True:
         try:
             sweep_once()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[pack-hub-sweeper] {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
         time.sleep(60)
 
 
