@@ -470,6 +470,12 @@ def _apply_message_completed(
         reason_code = None if matches else "completion_text_mismatch"
 
     if existing is not None and existing["status"] == "completed":
+        if (
+            text_available
+            and not text_included
+            and final_status != "completed"
+        ):
+            _block("message_completion_conflict")
         if final_status == "completed" and final_content != prior_content:
             _block("message_completion_conflict")
         final_content = prior_content
@@ -624,13 +630,13 @@ def process_agent_event_lease(
 
             items = connection.execute(
                 """SELECT li.inbox_seq,i.event_id,i.event_type,i.agent_id,
-                          i.provider_id,i.event_json,i.received_at
+                          i.provider_id,i.event_sequence,i.occurred_at,
+                          i.event_json,i.received_at
                    FROM agent_event_consumer_lease_items li
                    JOIN agent_event_inbox i ON i.inbox_seq=li.inbox_seq
                    WHERE li.lease_id=? AND li.acked_at IS NULL
-                     AND i.agent_id=?
                    ORDER BY li.inbox_seq""",
-                (lease_id, agent_id),
+                (lease_id,),
             ).fetchall()
             if not items:
                 released = release_agent_event_lease_in_transaction(
@@ -648,7 +654,11 @@ def process_agent_event_lease(
             blocked: dict[str, Any] | None = None
             for item in items:
                 inbox_seq = int(item["inbox_seq"])
-                if inbox_seq > int(lease["through_inbox_seq"]):
+                if (
+                    item["agent_id"] != agent_id
+                    or inbox_seq < int(lease["from_inbox_seq"])
+                    or inbox_seq > int(lease["through_inbox_seq"])
+                ):
                     raise RuntimeError("agent_event_lease_item_out_of_range")
                 existing = connection.execute(
                     """SELECT event_id,event_type,outcome,attempt_count
@@ -676,6 +686,8 @@ def process_agent_event_lease(
                         or event.get("eventType") != item["event_type"]
                         or event.get("agentId") != agent_id
                         or event.get("providerId") != item["provider_id"]
+                        or event.get("sequence") != int(item["event_sequence"])
+                        or event.get("occurredAt") != item["occurred_at"]
                     ):
                         _block("inbox_event_envelope_mismatch")
                     received_at = _finite_timestamp(item["received_at"])
