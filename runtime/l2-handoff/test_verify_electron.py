@@ -23,6 +23,17 @@ def main():
         valid = make_app(root, b"prefix" + marker + bytes((1, 2, 0, ord("1"))) + b"suffix")
         verify_electron.verify(valid)
 
+        bad_version_root = pathlib.Path(tmp) / "Electron-old-version.app"
+        bad_version = make_app(
+            bad_version_root,
+            b"prefix" + marker + bytes((1, 1, 0, ord("1"))) + b"suffix")
+        try:
+            verify_electron.verify(bad_version)
+        except SystemExit as exc:
+            assert "not enabled" in str(exc)
+        else:
+            raise AssertionError("unsupported Electron fuse version was accepted")
+
         bad_root = pathlib.Path(tmp) / "Electron-bad.app"
         bad = make_app(bad_root, b"prefix" + marker + bytes((0, 2, 0, ord("1"))) + b"suffix")
         try:
