@@ -20,11 +20,13 @@ public protocol AgentSecretBackend: Sendable {
 
 /// Device-local Data Protection Keychain. Never fall back to a file or sync.
 public struct AgentKeychainBackend: AgentSecretBackend {
-    public init() {}
+    private let service: String
+    public init() { service = "com.cyou.pack.agent-api.v1" }
+    init(service: String) { self.service = service }
     private func query(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "com.cyou.pack.agent-api.v1",
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecUseDataProtectionKeychain as String: true,
             kSecAttrSynchronizable as String: false

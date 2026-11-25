@@ -409,11 +409,15 @@ def main():
             # Atomically provision an account from a client-held secret hash.
             import secrets
             provision_token="pk-mem-"+secrets.token_urlsafe(32)
-            provision_args={"provider":"gemini-api","access_kind":"api",
+            instance=owner_call("collaboration_instance_info",{})["instance_id"]
+            assert len(instance)==32
+            assert "error" in outsider("collaboration_instance_info",{})
+            provision_args={"provider":"gemini-api","access_kind":"api","instance_id":instance,
                 "account_ref":"87654321-1234-4234-8234-123456789abc",
                 "token_sha256":hub.hash_token(provision_token)}
             assert "error" in outsider("collaboration_executor_provision",provision_args)
             assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"access_kind":"native"})
+            assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"instance_id":"0"*32})
             provision=owner_call("collaboration_executor_provision",provision_args)
             assert provision.get("created") is True and "token" not in provision,provision
             pmid=provision["member_id"]
@@ -423,6 +427,7 @@ def main():
                 "account_ref":"87654321-1234-4234-8234-123456789abd"})
             def provisioned(name,args):
                 return asyncio.run(call(port,provision_token,name,args))
+            assert provisioned("collaboration_instance_info",{})=={"instance_id":instance}
             assert provisioned("collaboration_executor_info",{})=={
                 "provider":"gemini-api","access_kind":"api","account_ref":provision_args["account_ref"]}
             assert "error" in provisioned("room_read_new",{"room":"pack-main"})

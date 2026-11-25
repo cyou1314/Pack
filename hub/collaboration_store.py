@@ -15,6 +15,11 @@ from collaboration_policy import plan_collaboration
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS collaboration_instance (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    instance_id TEXT NOT NULL UNIQUE
+);
+INSERT OR IGNORE INTO collaboration_instance(singleton,instance_id) VALUES(1,lower(hex(randomblob(16))));
 CREATE TABLE IF NOT EXISTS collaboration_runs (
     id TEXT PRIMARY KEY,
     room_id INTEGER NOT NULL,

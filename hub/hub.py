@@ -1339,6 +1339,7 @@ def _collaboration_privileged(me):
 
 COLLABORATION_EXECUTOR_TOOLS = frozenset({
     "heartbeat", "task_list", "task_claim", "collaboration_context_get", "collaboration_executor_info",
+    "collaboration_instance_info",
     "run_start", "task_update", "task_complete", "task_block",
 })
 
@@ -4272,8 +4273,27 @@ def build_server():
     context_conn.close()
     if context_enabled:
         @mcp.tool
+        def collaboration_instance_info() -> dict:
+            """Stable opt-in database identity; owner or authenticated dedicated executor."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, require_executor
+            conn = db()
+            try:
+                if _collaboration_executor_binding(conn,me["id"]) is None:
+                    _owner(conn,me["id"])
+                else:
+                    require_executor(conn,me["id"])
+                row = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                if not row:
+                    raise ValueError("collaboration instance unavailable")
+                return {"instance_id":row[0]}
+            finally:
+                conn.close()
+
+        @mcp.tool
         def collaboration_executor_provision(provider: str, access_kind: str, account_ref: str,
-                                             token_sha256: str) -> dict:
+                                             token_sha256: str, instance_id: str) -> dict:
             """Atomically create a restricted executor; the client retains the random secret."""
             me = authenticate()
             require(me,"member")
@@ -4294,6 +4314,9 @@ def build_server():
             try:
                 with _lock, write_transaction(conn):
                     _owner(conn,me["id"])
+                    identity = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                    if not identity or identity[0]!=instance_id:
+                        raise ValueError("collaboration instance mismatch")
                     rows = conn.execute("""
                         SELECT e.member_id,e.owner_id,e.provider,e.access_kind,e.revoked,
                                m.name,m.token_hash,m.removed_at
@@ -4307,7 +4330,7 @@ def build_server():
                             raise ValueError("executor provision conflict")
                         require_executor(conn,row[0])
                         return {"member_id":row[0],"provider":provider,"access_kind":access_kind,
-                                "account_ref":account_ref,"created":False}
+                                "account_ref":account_ref,"instance_id":instance_id,"created":False}
                     if conn.execute("SELECT 1 FROM members WHERE token_hash=? OR name=?",
                                     (token_sha256,name)).fetchone():
                         raise ValueError("executor provision conflict")
@@ -4321,7 +4344,7 @@ def build_server():
                                       access_kind=access_kind,account_ref=account_ref)
                     audit(conn,me["name"],"collaboration_executor_provision",f"member {mid}")
                     return {"member_id":mid,"provider":provider,"access_kind":access_kind,
-                            "account_ref":account_ref,"created":True}
+                            "account_ref":account_ref,"instance_id":instance_id,"created":True}
             finally:
                 conn.close()
 

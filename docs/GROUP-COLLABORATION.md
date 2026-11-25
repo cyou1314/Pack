@@ -154,3 +154,7 @@ macOS 协作工作台添加新建入口：私有任务正文、Focus/Compare/Tea
 ## 第二十四阶段：专用执行身份原子 provision（Hub）
 
 新增 owner-only collaboration_executor_provision：固定六种 provider/mode、canonical UUID、客户端高熵令牌 SHA-256；同一事务插入成员与专用绑定，名称由 UUID 派生。原参数幂等返回身份，不回传明文或哈希；同 UUID/不同哈希、跨模式、占用 token hash、已撤销身份拒绝。客户端必须先持久保存随机令牌并通过专用身份验证，哈希不是可登录凭证；旧 bind 接口保留兼容。新增 owner-only revoke，永久停用专用身份并关闭相关活跃 DAG，不能保证已经出站的 Provider 请求终止。普通 task_create 和自动接力排除专用身份，后续仍需审计全部旧写入路径。未接本地 provisioning UI/令牌 vault，未启用生产 schema。
+
+### Hub 实例及本机专用令牌 enrollment
+
+opt-in schema 新增持久随机 instance_id（备份克隆同身份，需运维注意），owner 与专用执行身份可查询；provision 在同一事务验证实例 ID，回执携带该 ID。PackCore `AgentExecutorEnrollment` 用独立 device-only Keychain service、实例/Provider/UUID 隔离账户，生成 256-bit 随机令牌，先 insert-only 保存再提交 SHA-256；失败/进程替换按原密钥重试，拒绝不同实例或身份回执，必须经专用 token 验证回调。测试使用内存后端和模拟网络，不代表真实签名 Keychain 或真实 Hub 端到端。尚未将 coordinator 接到 App UI 或运行循环，不启用生产 schema。
