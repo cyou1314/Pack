@@ -219,6 +219,7 @@ struct ContentView: View {
                         case "approvals": ApprovalsView(state: state)
                         case "settings": SettingsView(state: state)
                         case "members": MemberDirectory(state: state)
+                        case "agent-accounts": AgentAccountsView()
                         case "collaboration": CollaborationWorkspaceView(state: state)
                             .id(state.collaborationScope)
                         default: RoomView(state: state)
@@ -328,6 +329,7 @@ private struct Sidebar: View {
             row("tasks", "任务板", "square.grid.2x2")
             row("collaboration", "协作", "person.3")
             row("members", "成员", "person.2")
+            row("agent-accounts", "Agent 账号", "person.crop.rectangle")
             if state.showSidebar {
                 HStack { Text("房间"); Spacer() }.font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText).padding(.top, DesignTokens.shellInset)
                 ForEach(state.rooms) { room in
@@ -433,7 +435,7 @@ private struct CenterHeader: View {
     @ObservedObject var state: AppState
     var body: some View {
         HStack(spacing: DesignTokens.shellGap) {
-            Text(state.selection == "collaboration" ? "协作 · " + state.currentRoom : state.selection == "tasks" ? "任务板" : state.selection == "members" ? "成员" : state.selection == "settings" ? "设置" : state.selection == "approvals" ? "收件箱" : state.currentRoom).font(DesignTokens.shellHeaderTitle)
+            Text(state.selection == "agent-accounts" ? "Agent 账号" : state.selection == "collaboration" ? "协作 · " + state.currentRoom : state.selection == "tasks" ? "任务板" : state.selection == "members" ? "成员" : state.selection == "settings" ? "设置" : state.selection == "approvals" ? "收件箱" : state.currentRoom).font(DesignTokens.shellHeaderTitle)
             Spacer()
             if !state.pendingApprovals.isEmpty { Pill(title: "待批准 \(state.pendingApprovals.count)", color: PackStyle.amber) }
         }.padding(.horizontal, DesignTokens.shellHeaderInset).frame(height: DesignTokens.shellHeaderHeight)

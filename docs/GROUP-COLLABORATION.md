@@ -146,3 +146,7 @@ macOS 协作工作台添加新建入口：私有任务正文、Focus/Compare/Tea
 ## 第二十二阶段：群主审核、取消及操作核对
 
 新增 owner-only `collaboration_review`：绑定 managed run/step 与私有检查返回的精确 review_version（任务 ID、正文、envelope、更新时间的摘要），同一写事务复核 active、未归档、待审核、纯文本结果，再复用 dispatcher 状态转换逻辑；通过后按既定 DAG 派发，拒绝则停止整组。旧 dispatcher 审核保留；结构化 envelope 仍使用旧任务板，不在新界面简化审核。SwiftUI 成果卡确认审核/拒绝、协作卡确认取消；回执异常不重放，锁定本页面其他审核/取消并通过 status + workspace 刷新核对。核对为当前状态，不保证原请求生效；离开页面或重启会丢失内存核对标记。Hub 停止不能保证上游模型取消或不计费，未知本机租约仍须人工安全恢复；不自动重试、不重新认领。新增真实 MCP 与 Swift 模型回归，生产 schema 未启用。
+
+## 第二十三阶段：Agent 双模式本地档案与凭证配置
+
+侧栏新增独立 Agent 账号页面，原有 Hub 成员入口及 Muse 交接不改。ChatGPT/Gemini/豆包原生与 OpenAI/Gemini/火山引擎 API 分模式创建 UUID 档案；仅 chat 能力，native provider-managed memory 为期望边界而非已验证状态，API 记忆暂 disabled。采用 ~/.pack/agents-v2 私有目录和协作进程锁，单进程共享 manager；需要既有 ~/.pack 目录，拒绝不安全目录/文件及第二 writer。先创建元数据后单独 insert-only Keychain 配置，拒绝覆盖；不导出密钥、不发网络请求、不存原始密钥进 JSON。状态只表示本机凭证存在/缺失/不可读，不表示 API 可用。未接原生登录、Hub 专用成员原子 provision、模型验证、删除/轮换或执行宿主。真实签名 Keychain 与 GUI 未验收；生产协作 schema 仍关闭。

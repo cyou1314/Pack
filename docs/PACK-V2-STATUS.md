@@ -96,3 +96,7 @@ Native Adapter 与 API Adapter 必须是不同实现，不得用 API Key 冒充�
 ## Provider 扩展与 API 凭证
 
 Gemini / Gemini API 已纳入候选目录，新增 UUID 引用工厂和 API-only Keychain Vault。实际 Provider 接入、UI、签名环境 Keychain 验收仍待完成。详见 [AGENT-PROVIDERS.md](AGENT-PROVIDERS.md)。
+
+### Agent 双模式管理 UI（PR #52 草稿）
+
+新增本机 Agent 档案及 API Keychain insert-only 配置界面；原生登录、真实 API 验证、Hub 执行身份绑定与运行循环尚未接通。状态不等于已上线成员。详见 GROUP-COLLABORATION.md 第二十三阶段。
