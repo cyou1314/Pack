@@ -57,6 +57,7 @@ jobs:
           python hub/test_agent_event_inbox.py
           python hub/test_agent_event_auth.py
           python hub/test_agent_event_consumers.py
+          python hub/test_agent_sessions.py
           python hub/test_structured_task_audit.py
           python hub/test_agent_registry_shadow.py
           PYTHONPATH=hub python -m services.agent_registry_shadow --help >/dev/null

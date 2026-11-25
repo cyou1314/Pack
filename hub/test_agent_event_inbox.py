@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Durable Hub Agent Event Inbox regression tests."""
+import json
 import sqlite3
 import tempfile
 import threading
@@ -59,6 +60,30 @@ class AgentEventInboxTests(unittest.TestCase):
         return append_agent_event(
             self.db, event or self.event(), received_at=100.0,
         )
+
+    def test_hub_session_id_is_optional_and_requires_provider_session_id(self):
+        result = self.append(self.event(
+            eventId="hub-session-event",
+            eventType="session.created",
+            sessionId="provider-thread-1",
+            hubSessionId="hub-session-1",
+        ))
+        self.db.commit()
+        stored = self.db.execute(
+            "SELECT event_json FROM agent_event_inbox WHERE inbox_seq=?",
+            (result["inboxSeq"],),
+        ).fetchone()
+        self.assertEqual(
+            json.loads(stored["event_json"])["hubSessionId"],
+            "hub-session-1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "hub_session_id_requires_session_id"):
+            self.append(self.event(
+                eventId="hub-session-without-provider-id",
+                hubSessionId="hub-session-1",
+            ))
+        self.db.rollback()
 
     def test_migration_creates_inbox_with_agent_and_provider_foreign_keys(self):
         tables = {

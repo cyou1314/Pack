@@ -84,6 +84,7 @@ test("Agent Event validates identity, type, timestamp and sequence", () => {
     agentId: "agent-codex",
     roomId: "pack-main",
     sessionId: "thread-1",
+    hubSessionId: "hub-session-1",
     runId: "run-1",
     sequence: 2,
     occurredAt: "2026-11-21T08:00:00.000Z",
@@ -92,6 +93,18 @@ test("Agent Event validates identity, type, timestamp and sequence", () => {
   assert.equal(event.eventType, "message.delta");
   assert.equal(event.sequence, 2);
   assert.equal(event.roomId, "pack-main");
+  assert.equal(event.hubSessionId, "hub-session-1");
+  assert.throws(
+    () => createAgentEvent({
+      eventId: "evt-hub-session-without-provider-id",
+      eventType: "session.created",
+      providerId: "codex",
+      agentId: "agent-codex",
+      hubSessionId: "hub-session-1",
+      occurredAt: "2026-11-21T08:00:00.000Z",
+    }),
+    /hub_session_id_requires_session_id/,
+  );
   assert.throws(
     () => createAgentEvent({
       eventId: "evt-2",
