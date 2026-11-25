@@ -151,8 +151,71 @@ def main():
             "SELECT task_id,status FROM task_transfers ORDER BY id").fetchall()
         assert [r["status"] for r in transfer_states] == ["accepted", "pending"], [
             dict(r) for r in transfer_states]
+
+        # Automatic relay is a savepoint: a failure after the guarded task
+        # update must roll back the assignment together with the transfer row.
+        now = time.time()
+        member_a_id = conn.execute(
+            "SELECT id FROM members WHERE name='guard-member-a'").fetchone()["id"]
+        member_b_id = conn.execute(
+            "SELECT id FROM members WHERE name='guard-member-b'").fetchone()["id"]
+        dispatcher_id = conn.execute(
+            "SELECT id FROM members WHERE role='dispatcher'").fetchone()["id"]
+        room_id = conn.execute(
+            "SELECT id FROM rooms WHERE name='pack-main'").fetchone()["id"]
+        conn.execute(
+            "UPDATE members SET last_heartbeat=?, quota_updated_at=?, "
+            "quota_week_used_pct=10 WHERE id=?",
+            (now, now, member_b_id))
+        cur = conn.execute(
+            """INSERT INTO tasks(room_id,title,body,created_by,assignee,status,
+                                 claim_token,lease_expires,attempts,created_at,updated_at)
+               VALUES(?,?,?,?,?,'blocked',NULL,NULL,1,?,?)""",
+            (room_id, "auto relay savepoint", "guard test", dispatcher_id,
+             member_a_id, now, now))
+        relay_task_id = cur.lastrowid
+        relay_task = conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (relay_task_id,)).fetchone()
+        conn.execute(
+            """CREATE TRIGGER fail_auto_relay_insert BEFORE INSERT ON task_transfers
+               WHEN NEW.actor='auto-relay'
+               BEGIN SELECT RAISE(ABORT, 'injected relay failure'); END""")
+        conn.commit()
+        try:
+            with hub._lock:
+                hub._auto_relay(conn, relay_task, "guard-member-a", "test")
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError("injected auto-relay failure was not raised")
+        after_failure = conn.execute(
+            "SELECT status,assignee,claim_token FROM tasks WHERE id=?",
+            (relay_task_id,)).fetchone()
+        assert after_failure["status"] == "blocked"
+        assert after_failure["assignee"] == member_a_id
+        assert after_failure["claim_token"] is None
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_transfers WHERE task_id=?",
+            (relay_task_id,)).fetchone()[0] == 0
+        conn.execute("DROP TRIGGER fail_auto_relay_insert")
+        conn.commit()
+        relay_task = conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (relay_task_id,)).fetchone()
+        with hub._lock:
+            relayed_to = hub._auto_relay(conn, relay_task, "guard-member-a", "test")
+        assert relayed_to == "guard-member-b", relayed_to
+        conn.commit()
+        after_success = conn.execute(
+            "SELECT status,assignee,claim_token FROM tasks WHERE id=?",
+            (relay_task_id,)).fetchone()
+        assert after_success["status"] == "claimed"
+        assert after_success["assignee"] == member_b_id
+        assert after_success["claim_token"] is None
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_transfers WHERE task_id=? AND status='pending'",
+            (relay_task_id,)).fetchone()[0] == 1
         conn.close()
-        print("PASS task lifecycle compare-and-swap guards", result)
+        print("PASS task lifecycle compare-and-swap guards and auto-relay savepoint", result)
 
 
 if __name__ == "__main__":
