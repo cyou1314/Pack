@@ -147,8 +147,10 @@ def _apply_session_created(
     if session is None:
         _block("hub_session_not_found")
 
-    if session["status"] == "failed" and session["provider_session_id"] is None:
-        return "ignored", "late_session_created_after_failure"
+    if session["status"] == "failed":
+        if session["provider_session_id"] in (None, provider_session_id):
+            return "ignored", "late_session_created_after_failure"
+        _block("session_binding_conflict")
 
     if (
         session["status"] == "creating"
@@ -173,7 +175,7 @@ def _apply_session_created(
         return "applied", None
 
     if (
-        session["status"] == "active"
+        session["status"] in {"active", "interrupted"}
         and session["provider_session_id"] == provider_session_id
     ):
         _touch_session(
@@ -311,6 +313,8 @@ def _apply_message_delta(
     received_at: float,
 ) -> tuple[str, str | None]:
     session = _load_bound_session(connection, agent_id, event)
+    if session["status"] != "active":
+        _block("session_not_active")
     payload = _event_payload(event)
     item_id = _event_text(payload.get("itemId"), "item_id")
     delta = payload.get("delta")
@@ -387,7 +391,8 @@ def _completion_metadata(payload: dict[str, Any]) -> tuple[
             isinstance(byte_length, bool)
             or not isinstance(byte_length, int)
             or byte_length < 0
-            or byte_length > _MAX_MESSAGE_BYTES
+            or byte_length > 2_147_483_647
+            or (text_included and byte_length > _MAX_MESSAGE_BYTES)
             or not isinstance(digest, str)
             or not _SHA256_RE.fullmatch(digest)
         ):
@@ -456,6 +461,10 @@ def _apply_message_completed(
         final_content = prior_content
         final_status = "incomplete"
         reason_code = "completion_text_unavailable"
+    elif byte_length > _MAX_MESSAGE_BYTES:
+        final_content = prior_content
+        final_status = "incomplete"
+        reason_code = "completion_text_too_large"
     else:
         try:
             prior_bytes = prior_content.encode("utf-8")
