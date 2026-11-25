@@ -68,7 +68,7 @@
 
 **2026-11-25 M2b Atomic Consumer Apply foundation（PR #49）：** 将 ack_agent_events 与 release_agent_event_lease 的核心逻辑拆为事务内 helper，要求调用方持有活动 SQLite transaction；旧包装接口仍自行 BEGIN / COMMIT / close，保持兼容。新增真实 SQLite 测试，验证 helper 不提交 / 关闭连接、提交前另一连接不可见、外层 rollback 能撤销 ACK、release 不推进 cursor。Hub、Runtime、macOS CI 全部通过。PR 仍为 Draft，叠加在 PR #47 上，尚未合入。
 
-**2026-11-25 M2c Session Projection Schema v7（PR #50）：** 新增 last_inbox_seq、Agent Session Messages / Runs、Projection Receipts / Resolutions；为 provider_session_id 增加按 Agent 的部分唯一索引，并在迁移前对重复、空白、首尾空白或超长值 fail closed；v1-v6 migration checksum 保持不变。Hub 单元测试与 MCP / SQLite contract snapshot 已通过；默认 Staging、Staging56 和 macOS release build 尚在运行。PR 仍为 Draft，尚未实现业务 Projector。
+**2026-11-25 M2c Session Projection Schema v7（PR #50）：** 新增 last_inbox_seq、Agent Session Messages / Runs、Projection Receipts / Resolutions；为 provider_session_id 增加按 Agent 的部分唯一索引，并在迁移前对重复、空白、首尾空白或超长值 fail closed；v1-v6 migration checksum 保持不变。Hub 单元测试、MCP / SQLite contract snapshot、默认 Staging、Staging56、Runtime 和 macOS App build 全部通过。PR 仍为 Draft，尚未实现业务 Projector。
 
 **下一切片（M2d Session Projector）：** 在 PR #49 事务 helper 和 PR #50 schema v7 稳定后，实现内部 process_agent_event_lease：同一 SQLite transaction 内完成 Session / Message / Run 投影、receipt 更新、连续前缀 ACK 和 blocked 时 Lease release。首批只处理 session.created、message.delta / completed、run.started / completed / failed / interrupted；Tool / Approval / Usage 仍为 ignored receipt。blocked 事件必须停住 cursor，修复重试或 dispatcher / owner 审计 skip 后才能越过。此后再独立实现 Session Read API；完整 generation rebuild 和 SwiftUI 页面继续后置。
 
@@ -199,7 +199,7 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 
 - **M0 Agent Core Foundation：** Descriptor / Registry / Event Envelope / Context Package / Codex App Server Adapter 与 mock contract tests 已存在；这只代表基础骨架完成，不代表已装配到生产 Runtime。
 - **M1 Agent Registry：** M1a/M1b 已合入 v2 Foundation（PR #21/#22/#23）；并发迁移、只读 CLI 和敏感字段输出测试通过 CI。PR #24 已将 SQLite quick_check / foreign_key_check 加入 Shadow readiness；PR #34 已增加 task hot-path migration v3，M1c Shadow CLI 会核对当前全部 migration checksum。真实 Mac 数据库尚未检查，M1c API 尚未开放。
-- **M2 Runtime / Event Gateway：** PR #39 Supervisor 与 PR #41 Durable Runtime Outbox / Hub Inbox 基础已合入 v2 Foundation；PR #43 Outbox Delivery Worker、PR #45 Inbox Consumer Lease / ACK 已有独立实现且 CI 通过，仍待按依赖顺序合入；PR #47 M2a Session Binding CI 全绿；PR #49 M2b 事务内 ACK / Release helper CI 全绿；PR #50 M2c schema v7 的 Hub 单测与 SQLite contract snapshot 通过，完整 Staging / macOS CI 尚未结束。PR #48 为配套设计文档。当前仍未接入生产 Runtime 主循环，未实现 Session Projector / Read API / SwiftUI，也未在用户 Mac 数据库上迁移或部署。
+- **M2 Runtime / Event Gateway：** PR #39 Supervisor 与 PR #41 Durable Runtime Outbox / Hub Inbox 基础已合入 v2 Foundation；PR #43 Outbox Delivery Worker、PR #45 Inbox Consumer Lease / ACK 已有独立实现且 CI 通过，仍待按依赖顺序合入；PR #47 M2a Session Binding CI 全绿；PR #49 M2b 事务内 ACK / Release helper CI 全绿；PR #50 M2c schema v7 的 Hub、Runtime、SQLite contract snapshot、默认 Staging、Staging56 和 macOS CI 全部通过。PR #48 为配套设计文档。当前仍未接入生产 Runtime 主循环，未实现 Session Projector / Read API / SwiftUI，也未在用户 Mac 数据库上迁移或部署。
 - **M3 Provider Adapter：** Codex Adapter 有 mock 测试，但真实 Mac App Server 登录、Session/Turn、断线恢复和审批闭环未验收；ChatGPT、Doubao 等 Adapter 仍按 Provider Matrix 单独验证。
 - **安全门槛：** 在 M2 Event Gateway、Hub Permission/Approval/Audit 与 SwiftUI 人工审批闭环完成前，不开放 Codex command/file 高风险工具自动执行。
 - **执行顺序：** M1a additive migration → M1b shadow read → M1c read-only API 评估 → M2 Supervisor/Session Manager/Inbox-Outbox/Event Gateway → M3 真实 Provider 验收。真实 Mac 部署继续后置。
