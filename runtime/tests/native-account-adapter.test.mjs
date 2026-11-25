@@ -8,7 +8,7 @@ function fixture(overrides={}) {
   const destination={account_ref:id,provider:'chatgpt',access_kind:'native',model_id:null,memory_boundary:'providerManaged'};
   const profile={id,providerID:'chatgpt',mode:'nativeAccount',credentialReference:{kind:'nativeSession',vaultKey:id},
     contextBoundary:'providerAccount',memoryBoundary:'providerManaged',enabledCapabilities:['chat']};
-  const request={version:1,task_id:1,run_id:'run',step_key:'answer',destination,deadline:100,
+  const request={version:1,task_id:1,run_id:'run',step_key:'answer',role:'answer',max_output_tokens:4096,destination,deadline:100,
     items:[{kind:'owner_message',source_id:1,sha256:'b'.repeat(64),text:'approved goal'}]};
   const origin=nativeProviderOrigin('chatgpt');
   const calls=[];
@@ -76,7 +76,7 @@ test('runner closes verified browser on egress denial before releasing account l
   const runner=createCollaborationRunner({
     hubCall:async(tool,args)=>{
       if(tool==='task_claim')return {task_id:1,status:'claimed',claim_token:'token',lease_expires:90};
-      if(tool==='collaboration_context_get')return {run_id:'run',step_key:'answer',provider:'chatgpt',
+      if(tool==='collaboration_context_get')return {run_id:'run',step_key:'answer',role:'answer',max_output_tokens:4096,provider:'chatgpt',
         access_kind:'native',account_ref:id,deadline:100,max_bytes:16384,items:f.request.items};
       if(tool==='task_block')return {task_id:1,status:'cancelled'};
       throw Error('unexpected tool');
@@ -97,7 +97,7 @@ test('runner retains account lease on browser close failure',async()=>{
   const runner=createCollaborationRunner({
     hubCall:async(tool)=>{
       if(tool==='task_claim')return {task_id:1,status:'claimed',claim_token:'token',lease_expires:90};
-      if(tool==='collaboration_context_get')return {run_id:'run',step_key:'answer',provider:'chatgpt',
+      if(tool==='collaboration_context_get')return {run_id:'run',step_key:'answer',role:'answer',max_output_tokens:4096,provider:'chatgpt',
         access_kind:'native',account_ref:id,deadline:100,max_bytes:16384,items:f.request.items};
       if(tool==='task_block')return {task_id:1,status:'cancelled'};
       throw Error('unexpected tool');

@@ -43,7 +43,7 @@ private actor HostHub: AgentCollaborationHub {
         case "collaboration_context_get":
             reads += 1
             result = ["run_id":"run","step_key":"answer","provider":destination.provider,
-                      "account_ref":destination.accountRef,"access_kind":"api","deadline":deadline,"max_bytes":16384,
+                      "account_ref":destination.accountRef,"access_kind":"api","deadline":deadline,"max_bytes":16384,"role":"answer","max_output_tokens":4096,
                       "items":[["kind":"owner_message","source_id":1,"sha256":String(repeating:"a",count:64),
                                 "text":changed && reads > 1 ? "changed" : "approved"]]]
         case "run_start": result = ["task_id":id,"status":"running","fence":1]

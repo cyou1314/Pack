@@ -7,7 +7,7 @@ const now=1000;
 function fixture(mode='api',overrides={}) {
   const native=mode==='native';
   const provider=native?'chatgpt':'openai';
-  const context={run_id:'fixture-run',step_key:'answer',provider,access_kind:mode,
+  const context={run_id:'fixture-run',step_key:'answer',role:'answer',max_output_tokens:4096,provider,access_kind:mode,
     account_ref:id,deadline:100,max_bytes:16384,items:[
       {kind:'owner_message',source_id:1,sha256:'a'.repeat(64),text:'Do the task'}
     ]};
@@ -118,5 +118,11 @@ test('structured Provider failure preserves metering and never retries',async()=
     execute:async()=>({status:'failed',code:'quota',usage:{input_tokens:0,output_tokens:0}})})});
   assert.deepEqual(await f.runner.execute(10),{status:'blocked',code:'quota',
     usage:{input_tokens:0,output_tokens:0}});
-  assert.equal(f.calls.at(-1).args.fail_class,'quota');
+  assert.equal(f.calls.at(-1).args.fail_class,'task');
+});
+
+test('role and budget must match step',()=>{
+ const f=fixture();assert.throws(()=>validateContext({...f.context,role:'review'}));
+ assert.throws(()=>validateContext({...f.context,max_output_tokens:8192}));
+ assert.equal(validateContext({...f.context,step_key:'review',role:'review',max_output_tokens:2048}).role,'review');
 });

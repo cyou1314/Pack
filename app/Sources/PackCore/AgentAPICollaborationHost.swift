@@ -62,11 +62,14 @@ public struct AgentCollaborationContext: Codable, Equatable, Sendable {
     public let accountRef: String
     public let deadline: Double
     public let maxBytes: Int
+    public let role: AgentCollaborationRole
+    public let maxOutputTokens: Int
     public let items: [AgentAPIContextItem]
     enum CodingKeys: String, CodingKey {
         case runID = "run_id", stepKey = "step_key", provider
         case accessKind = "access_kind", accountRef = "account_ref", deadline
-        case maxBytes = "max_bytes", items
+        case maxBytes = "max_bytes", items, role
+        case maxOutputTokens = "max_output_tokens"
     }
     var destination: AgentExecutionDestination {
         .init(accountRef: accountRef, provider: provider, accessKind: accessKind)
@@ -174,6 +177,7 @@ public actor AgentAPICollaborationHost {
             initial = try await call("collaboration_context_get", args)
             guard initial.destination == expected, !initial.runID.isEmpty, !initial.stepKey.isEmpty,
                   initial.maxBytes == 16*1024, initial.deadline.isFinite,
+                  initial.role.matches(stepKey: initial.stepKey), initial.maxOutputTokens == initial.role.outputLimit,
                   min(initial.deadline, claim.expires) > Date().timeIntervalSince1970
             else { return await stop(taskID, claim.token, "context_unavailable") }
         } catch { return await stop(taskID, claim.token, "context_unavailable") }
@@ -189,7 +193,8 @@ public actor AgentAPICollaborationHost {
         retain = true
         do {
             outcome = try await adapter.execute(destination: expected, items: initial.items,
-                maxOutputTokens: maxOutputTokens, deadline: deadline, authorize: { [self] approval in
+                maxOutputTokens: min(maxOutputTokens,initial.maxOutputTokens), deadline: deadline, role: initial.role,
+                authorize: { [self] approval in
                     guard try await authorize(approval), !Task.isCancelled else { return false }
                     // Re-check after human approval, before actual send. The
                     // exact prepared request is bound by the adapter's digest.

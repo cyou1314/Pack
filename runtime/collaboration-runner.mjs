@@ -10,6 +10,22 @@ const PROVIDERS = new Map([
   ['muse','native'], ['chatgpt','native'], ['openai','api'],
   ['gemini','native'], ['gemini-api','api'], ['doubao','native'], ['volcengine','api']
 ]);
+export const ROLE_OUTPUT_LIMITS=Object.freeze({
+  'answer':4096,'independent-analysis':2048,'worker':3072,'review':2048,'synthesis':4096
+});
+export const ROLE_INSTRUCTIONS=Object.freeze({
+  'answer':'Answer the approved owner task directly; report limitations and do not delegate.',
+  'independent-analysis':'Analyze independently; give evidence, tradeoffs and uncertainties; do not assume other Agents agree.',
+  'worker':'Produce a useful work contribution; identify assumptions and unfinished work.',
+  'review':'Critically review approved prerequisite results for errors, missing evidence and risks; do not claim approval authority.',
+  'synthesis':'Synthesize approved prerequisite results, resolve disagreements, disclose uncertainties and deliver the final answer.'
+});
+export function validStepRole(key,role,limit) {
+  const expected=key==='answer'?'answer':key==='review'?'review':key==='final'?'synthesis':
+    /^analysis-[0-2]$/.test(key)?'independent-analysis':/^work-[0-2]$/.test(key)?'worker':null;
+  return expected!==null && role===expected && limit===ROLE_OUTPUT_LIMITS[role];
+}
+
 const FAILURES = new Set(['account_unavailable','quota','provider_rejected','provider_unavailable']);
 const bytes = value => Buffer.byteLength(value,'utf8');
 const positiveID = value => Number.isSafeInteger(value) && value > 0;
@@ -28,6 +44,7 @@ export function validateContext(context) {
       !UUID.test(context.account_ref || '') ||
       PROVIDERS.get(context.provider) !== context.access_kind ||
       !['native','api'].includes(context.access_kind) ||
+      !validStepRole(context.step_key,context.role,context.max_output_tokens) ||
       !Number.isFinite(context.deadline) || context.max_bytes !== LIMIT ||
       !Array.isArray(context.items) || context.items.length < 1 || context.items.length > 8)
     fail('invalid_context');
@@ -45,7 +62,8 @@ export function validateContext(context) {
   if (!items.some(x=>x.kind==='owner_message') || bytes(JSON.stringify(items)) > LIMIT)
     fail('invalid_context_budget');
   return freeze({run_id:context.run_id,step_key:context.step_key,provider:context.provider,
-    access_kind:context.access_kind,account_ref:context.account_ref,deadline:context.deadline,items});
+    access_kind:context.access_kind,account_ref:context.account_ref,deadline:context.deadline,
+    role:context.role,max_output_tokens:context.max_output_tokens,items});
 }
 
 // Match the existing Swift AgentProfile / AgentCredentialReference.forProfile.
@@ -106,7 +124,7 @@ export function createCollaborationRunner({
   async function stop(task_id, claim_token, code, usage=null) {
     try {
       const result = await hubCall('task_block',{task_id,claim_token,reason:code,
-        fail_class:code==='quota'?'quota':'task'});
+        fail_class:'task'}); // 429 does not prove weekly quota exhaustion
       if (result?.task_id === task_id && result.status === 'cancelled')
         return {status:'blocked',code,usage};
     } catch {}
@@ -142,7 +160,8 @@ export function createCollaborationRunner({
             await adapter.verifyAccount(destination)!==true)
           return await stop(task_id,claim_token,'account_unavailable');
         const request=freeze({version:1,task_id,run_id:context.run_id,step_key:context.step_key,
-          destination,items:context.items,deadline:context.deadline});
+          destination,items:context.items,deadline:context.deadline,
+          role:context.role,max_output_tokens:context.max_output_tokens});
         const digest=fingerprint(request);
         phase='egress_not_authorized';
         if (await authorizeEgress(freeze({request,sha256:digest}))!==true)

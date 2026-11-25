@@ -45,7 +45,7 @@ function runner(dir,execute,deliveryUnknown=false) {
     hubCall:async(tool,args)=>{
       switch(tool){
         case 'task_claim':return {task_id:args.task_id,status:'claimed',claim_token:'fixture',lease_expires:90};
-        case 'collaboration_context_get':return {run_id:'run',step_key:'answer',provider:'openai',
+        case 'collaboration_context_get':return {run_id:'run',step_key:'answer',role:'answer',max_output_tokens:4096,provider:'openai',
           access_kind:'api',account_ref:id,deadline:100,max_bytes:16384,
           items:[{kind:'owner_message',source_id:1,sha256:'a'.repeat(64),text:'request'}]};
         case 'run_start':return {task_id:args.task_id,status:'running',fence:1};

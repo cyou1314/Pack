@@ -57,3 +57,21 @@ def plan_collaboration(*, actor_role: str, mode: str, eligible: set[str],
     if len(steps) > max_calls:
         raise ValueError("call budget exceeded")
     return steps
+
+
+ROLE_OUTPUT_LIMITS = {"answer": 4096, "independent-analysis": 2048,
+                      "worker": 3072, "review": 2048, "synthesis": 4096}
+
+
+def role_for_step(key):
+    if key == "answer":
+        return "answer"
+    if key == "final":
+        return "synthesis"
+    if key == "review":
+        return "review"
+    if key in ("analysis-0", "analysis-1", "analysis-2"):
+        return "independent-analysis"
+    if key in ("work-0", "work-1", "work-2"):
+        return "worker"
+    raise ValueError("invalid collaboration step")

@@ -9,6 +9,7 @@ import json
 import uuid
 
 from collaboration_store import _require_write, _time
+from collaboration_policy import ROLE_OUTPUT_LIMITS, role_for_step
 
 MAX_ITEMS = 8
 MAX_BYTES = 16 * 1024
@@ -264,8 +265,14 @@ def _validated_grant(conn,run_id,key,row,member_id,provider):
     items = _resolve(conn,run_id,key,row,grant[0],[(kind,i) for kind,i,_ in manifest])
     if [i["sha256"] for i in items] != [d for _,_,d in manifest]:
         raise ValueError("collaboration context source changed")
+    role = role_for_step(key)
+    actual = conn.execute("SELECT role FROM collaboration_steps WHERE run_id=? AND step_key=?",
+                          (run_id,key)).fetchone()
+    if not actual or actual[0] != role:
+        raise ValueError("collaboration step role mismatch")
     result = {"run_id":run_id,"step_key":key,"provider":provider,
-              "items":items,"max_bytes":MAX_BYTES,"deadline":row[3]}
+              "items":items,"max_bytes":MAX_BYTES,"deadline":row[3],
+              "role":role,"max_output_tokens":ROLE_OUTPUT_LIMITS[role]}
     if binding is not None:
         result.update(access_kind=binding[2],account_ref=binding[3])
     return result
