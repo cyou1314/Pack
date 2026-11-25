@@ -36,6 +36,8 @@ Agent 接入必须保留两种明确模式，添加 Agent 时由用户选择：
 - Workspace：统一会话、任务、素材、文件、Prompt 和项目上下文。
 - Policy UI：由用户明确授权工具、文件、网络、浏览器和本机操作权限。
 
+当前已在 `PackCore` 中落地第一版 `AgentProfile` 类型和边界校验：Native Account 只能引用原生会话、使用 Provider Account 上下文；Official API 只能引用 API Key、使用 Pack Workspace 上下文；两种模式的记忆所有权不能混用。该类型目前是领域模型，不代表 Agent Registry 持久化、Provider 登录、API 调用或 UI 已完成。
+
 ### Agent Adapter 层
 
 统一接口至少应表达：
