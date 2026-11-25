@@ -41,14 +41,17 @@ async def call(port, token, name, args):
     transport = StreamableHttpTransport(
         f"http://127.0.0.1:{port}/mcp",
         headers={"Authorization": f"Bearer {token}"})
-    async with Client(transport) as client:
-        result = await client.call_tool(name, args)
-        if getattr(result, "isError", False):
-            return {"error": result.content[0].text if result.content else "tool_error"}
-        structured = getattr(result, "structured_content", None)
-        if structured is not None:
-            return structured
-        return json.loads(result.content[0].text)
+    try:
+        async with Client(transport) as client:
+            result = await client.call_tool(name, args)
+            if getattr(result, "isError", False):
+                return {"error": result.content[0].text if result.content else "tool_error"}
+            structured = getattr(result, "structured_content", None)
+            if structured is not None:
+                return structured
+            return json.loads(result.content[0].text)
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 async def run_checks(port, dispatcher_token, a_token, b_token):
