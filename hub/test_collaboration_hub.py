@@ -173,6 +173,43 @@ def main():
             assert "error" in agent("collaboration_context_get",{"task_id":context_task,"claim_token":ct})
             dispatch("task_cancel",{"task_id":context_task})
 
+            # An ordinary Agent must not read linked content through legacy APIs.
+            other = dispatch("member_register", {"name": "collab-other"})
+            assert other.get("token"), other
+            def outsider(name,args):
+                return asyncio.run(call(port,other["token"],name,args))
+            private_run, private_task = fixture(conn,room,owner,member,10000,now,deadline=now+600)
+            claim = agent("task_claim",{"task_id":private_task})
+            assert claim.get("claim_token"),claim
+            ct = claim["claim_token"]
+            update = agent("task_update",{"task_id":private_task,"claim_token":ct,"note":"private-progress-marker"})
+            assert update.get("status") == "working",update
+            rejected_attachment = agent("task_complete",{"task_id":private_task,"claim_token":ct,
+                "result":"private-result-marker","attachment_ids":"[1]"})
+            assert "error" in rejected_attachment,rejected_attachment
+            complete = agent("task_complete",{"task_id":private_task,"claim_token":ct,
+                "result":"private-result-marker"})
+            assert complete.get("status") == "review",complete
+            for caller in (agent,outsider):
+                listing=caller("task_list",{"room":"pack-main"})
+                card=next(x for x in listing["tasks"] if x["id"]==private_task)
+                assert card["collaboration_context_required"] is True,card
+                assert card["result"] is None and card["envelope"] is None,card
+                assert "test input" not in card["body"],card
+                messages=caller("room_read_new",{"room":"pack-main","since_id":0,"limit":200})
+                reports=[x for x in messages["messages"] if x["task_id"]==private_task]
+                assert len(reports)==2,reports
+                assert all(x["body"]=="[Collaboration content restricted]" for x in reports),reports
+                inbox=caller("inbox_pull",{"room":"pack-main","since_id":0})
+                assert "error" not in inbox,inbox
+                assert "private-result-marker" not in str(inbox),inbox
+                assert "private-progress-marker" not in str(inbox),inbox
+            listing=dispatch("task_list",{"room":"pack-main"})
+            card=next(x for x in listing["tasks"] if x["id"]==private_task)
+            assert card["result"]=="private-result-marker",card
+            assert "error" in outsider("egress_check",{"url":"https://example.com","task_id":private_task})
+            assert dispatch("task_review",{"task_id":private_task,"approve":True}).get("status")=="done"
+
             removed, removed_task = fixture(conn, room, owner, member, 4, now, deadline=now+600)
             unbound, _ = fixture(conn, room, owner, member, 5, now, deadline=now+600, create_card=False)
             result = dispatch("member_remove", {"name": "collab-fixture-member"})

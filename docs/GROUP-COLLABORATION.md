@@ -68,3 +68,9 @@ build-dmg.sh 和 manager.py 的程序文件白名单已纳入四个协作模块�
 新增 collaboration_context.py 与 context grants 表：真实 owner 身份（非 dispatcher 或 Agent 自报）授权精确的同房 owner chat 消息及已通过审核的直接依赖任务 result；根消息及全部直接依赖必需，禁止任意其他任务、私有记忆、附件、全文历史。单步骤最多 8 项，序列化数据 16 KiB 上限；超限拒绝而非静默截断。授权固定接收成员 ID、provider 标识与内容指纹，读取重新检查房间、成员、租约、run、版本和撤销。新 MCP collaboration_context_get 仅在显式创建 schema 后注册，并要求实际任务 claim token；owner grant/revoke 目前仅可信内部函数，没有开放外部授权写工具。测试覆盖依赖、跨房、篡改、预算、撤销、真实 MCP holder。安装器同步加入模块白名单。
 
 **尚未达到全局隔离**：旧 task_list/room_read/inbox/attachment 等读取面仍保留原有范围，已有任务 body/result 及 report 仍可能被其他内部成员读到。新 Gateway 不等于撤销旧数据权限；不可发布真实敏感协作内容，生产 schema 不启用。provider 字符串不是账号或会话身份；未验证真实账号绑定、跨 Provider 出口授权、运行时实际消费及调用预算。已交付数据不能被撤销收回。后续应先为协作任务使用最小公开占位内容、保护所有旧读取路径、建立 owner 授权入口与 adapter 账号绑定，再启用生产。禁止将未授权数据写入 task body 或公开 room report。
+
+## 第九阶段：旧读取面收敛（测试启用）
+
+普通 Agent 的 task_list 对关联卡只返回状态/分工元数据与上下文入口占位，隐藏 title/body/result/envelope/review_note；room_read_new 和共用 inbox 格式化路径遮蔽关联消息正文、payload、附件、引用及任务标题，保留 ID/排序以维持游标。owner/dispatcher 仍有审阅权限。协作 task_update 仅写进度通知，task_complete 仅写交活通知，拒绝附带附件；结果仍存既有 task 行供审核与已授权依赖读取。attachment_list/get 拒绝普通成员读取关联附件，未绑定附件只允许上传者读取；旧 egress_check 不把关联卡当作跨 Provider 授权。仅 schema 存在时生效，旧库不改行为。
+
+这不是完整数据防泄露沙箱：普通 room_post、自主复制、历史公开 owner 消息、全局共享记忆、摘要、独立上传后发布、直接文件/DB 访问、外部 Provider 已收数据及其他侧通道仍需单独限制。尚未开放生产 schema/创建入口，不能把敏感内容交给不可信执行体。后续需将协作成员的工具面缩小至独立执行协议，明确输入/输出公开等级及真正的 Provider 账号和出口授权；附件暂不自动分发。

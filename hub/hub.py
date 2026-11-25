@@ -1330,6 +1330,34 @@ def _collaboration_link(conn, task_id):
     return row[0] if row else None
 
 
+def _collaboration_privileged(me):
+    """Trusted local owner/dispatcher can inspect results; Agent tokens cannot."""
+    return (not _is_external(me)
+            and (me["role"] == "dispatcher" or me["name"] == "owner"))
+
+
+def _collaboration_protected_tasks(conn, task_ids, me):
+    if _collaboration_privileged(me) or not _collaboration_present(conn):
+        return set()
+    ids = sorted({i for i in task_ids if i is not None})
+    protected = set()
+    # Keep the query below SQLite parameter limits for large pages.
+    for start in range(0, len(ids), 200):
+        chunk = ids[start:start+200]
+        protected.update(row[0] for row in conn.execute(
+            "SELECT task_id FROM collaboration_task_links WHERE task_id IN (%s)"
+            % ",".join("?" * len(chunk)), chunk))
+    return protected
+
+
+def _collaboration_hide_message(item):
+    # Preserve IDs/order so legacy cursors continue to advance.
+    item.update(body="[Collaboration content restricted]", payload=None,
+                attachments=[], reply_to_id=None)
+    if "task_title" in item:
+        item.update(task_title="Collaboration task", mentions_me=False)
+
+
 def _collaboration_active_task(conn, task_id, now):
     """Require a live linked run; ordinary tasks retain their existing semantics."""
     run_id = _collaboration_link(conn, task_id)
@@ -2003,6 +2031,7 @@ def _inbox_items(conn, rows, me, all_names):
              % ",".join("?" * len(tids)))
         for t in conn.execute(q, tids).fetchall():
             tmap[t["id"]] = t
+    protected = _collaboration_protected_tasks(conn, (x["task_id"] for x in rows), me)
     out = []
     for x in rows:
         deleted = bool(x["deleted_at"])
@@ -2025,6 +2054,8 @@ def _inbox_items(conn, rows, me, all_names):
             "deleted": deleted, "edited": bool(x["edited_at"]),
             "attachments": amap.get(x["id"], []),
         })
+        if x["task_id"] in protected:
+            _collaboration_hide_message(out[-1])
     return out
 
 
@@ -3181,6 +3212,7 @@ def build_server():
                 amap.setdefault(a["message_id"], []).append(
                     {"id": a["id"], "mime": a["mime"], "size": a["size"],
                      "filename": a["original_name"]})
+        protected = _collaboration_protected_tasks(conn, (x["task_id"] for x in rows), me)
         conn.close()
         out = []
         for x in rows:
@@ -3198,6 +3230,8 @@ def build_server():
                 "reply_to_id": None if deleted else x["reply_to_id"],
                 "attachments": amap.get(x["id"], []),
             })
+            if x["task_id"] in protected:
+                _collaboration_hide_message(out[-1])
         return {"messages": out}
 
     @mcp.tool
@@ -3475,6 +3509,15 @@ def build_server():
                     raise ValueError("forbidden: attachment is outside the bound room")
                 if row["created_at"] < me["created_at"]:
                     raise ValueError("forbidden: attachment predates external member join")
+            if not _collaboration_privileged(me) and _collaboration_present(conn):
+                # Unbound uploads may later be associated with a private report.
+                # Never let another Agent fetch them by guessing IDs.
+                if row["message_id"] is None and row["uploader_id"] != me["id"]:
+                    raise ValueError("forbidden: unbound attachment")
+                linked = conn.execute(
+                    "SELECT task_id FROM messages WHERE id=?", (row["message_id"],)).fetchone()
+                if linked and _collaboration_link(conn, linked[0]) is not None:
+                    raise ValueError("forbidden: collaboration attachment")
             path = _attach_path(row["sha256"], row["mime"])
             parent = os.path.dirname(path)
             if (os.path.islink(ATTACH_DIR) or os.path.islink(parent)
@@ -3521,6 +3564,12 @@ def build_server():
         if message_id:
             q += " AND a.message_id=?"
             args.append(message_id)
+        if not _collaboration_privileged(me) and _collaboration_present(conn):
+            q += (" AND (a.message_id IS NOT NULL OR a.uploader_id=?)"
+                  " AND NOT EXISTS (SELECT 1 FROM messages m "
+                  "JOIN collaboration_task_links l ON l.task_id=m.task_id "
+                  "WHERE m.id=a.message_id)")
+            args.append(me["id"])
         q += " ORDER BY a.id ASC"
         rows = conn.execute(q, args).fetchall()
         conn.close()
@@ -3982,6 +4031,9 @@ def build_server():
             if cur.rowcount != 1:
                 conn.close()
                 raise ValueError("not the current holder (claim_token mismatch)")
+            if note and _collaboration_link(conn, task_id) is not None:
+                # A progress notification is public metadata, not private context.
+                note = "[Collaboration progress updated]"
             if note:
                 t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
                 conn.execute(
@@ -4051,6 +4103,9 @@ def build_server():
             t0 = _holder(conn, me, task_id, claim_token)
             if _is_external(me) and t0["room_id"] != me["bound_room_id"]:
                 raise ValueError("forbidden: task is outside the bound room")
+            linked = _collaboration_link(conn, task_id)
+            if linked is not None and attachment_ids:
+                raise ValueError("collaboration: attachment delivery requires a dedicated grant")
             env = None
             stored = result
             if envelope is not None:
@@ -4074,7 +4129,9 @@ def build_server():
             t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
             cur = conn.execute(
                 "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
-                (t["room_id"], me["id"], f"交活 任务#{task_id}: {stored}", task_id, now))
+                (t["room_id"], me["id"],
+                 f"任务#{task_id}: [Collaboration result submitted]" if linked is not None
+                 else f"交活 任务#{task_id}: {stored}", task_id, now))
             mid = cur.lastrowid
             n_att = 0
             if attachment_ids:
@@ -4422,6 +4479,7 @@ def build_server():
             g = a["assignee"]
             ahead[a["id"]] = seen.get(g, 0)
             seen[g] = seen.get(g, 0) + 1
+        protected = _collaboration_protected_tasks(conn, (x["id"] for x in rows), me)
         conn.close()
         out = []
         for x in rows:
@@ -4440,6 +4498,10 @@ def build_server():
                 d["envelope"] = None
             nca = d.get("next_claim_at")
             d["backoff_remaining_sec"] = int(nca - _now()) if nca and nca > _now() else 0
+            if d["id"] in protected:
+                d.update(title="Collaboration task", body="[Use collaboration_context_get after claim]",
+                         result=None, envelope=None, review_note=None)
+                d["collaboration_context_required"] = True
             out.append(d)
         return {"tasks": out}
 
@@ -5001,6 +5063,9 @@ def build_server():
                           f"count={n} window=60s")
                     conn.commit()
                     raise _ext_rate_error(60)
+            if task_id and not _collaboration_privileged(me) and _collaboration_link(conn, task_id) is not None:
+                # A linked task's text is not a general-purpose egress grant.
+                raise ValueError("collaboration: dedicated provider egress authorization required")
             # 审计只记去查询串/片段的 URL：查询串常带签名 token，成员提交的
             # URL 是不可信输入，不许把其查询串原样落进审计（staging14 复检 C8）。
             safe_url = (url or "").split("?")[0].split("#")[0][:200]
