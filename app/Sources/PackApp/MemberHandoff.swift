@@ -108,6 +108,17 @@ enum MemberHandoff {
         let input = Pipe(), output = Pipe()
         process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { throw MemberHandoffError.helper("无法启动本机引擎交接通道。") }
+        let timeoutFlag = HandoffTimeoutFlag()
+        let timeoutWork = DispatchWorkItem {
+            if process.isRunning {
+                timeoutFlag.markTimedOut()
+                process.terminate()
+            }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + .seconds(DesignTokens.memberHandoffTimeoutSeconds),
+            execute: timeoutWork)
+        defer { timeoutWork.cancel() }
         do { try input.fileHandleForWriting.write(contentsOf: request) }
         catch { process.terminate(); throw MemberHandoffError.helper("本机引擎交接通道不可用。") }
         try? input.fileHandleForWriting.close()
@@ -125,7 +136,27 @@ enum MemberHandoff {
             throw error
         }
         process.waitUntilExit()
+        if timeoutFlag.timedOut {
+            throw MemberHandoffError.helper("本机引擎交接超时；请检查引擎是否卡住。")
+        }
         guard process.terminationStatus == 0, !response.isEmpty else { throw MemberHandoffError.helper("本机引擎未响应；请检查引擎和钥匙串授权。") }
         return response
+    }
+}
+
+private final class HandoffTimeoutFlag {
+    private let lock = NSLock()
+    private var value = false
+
+    func markTimedOut() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+
+    var timedOut: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
