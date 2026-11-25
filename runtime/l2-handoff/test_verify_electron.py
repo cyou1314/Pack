@@ -10,7 +10,7 @@ SPEC.loader.exec_module(verify_electron)
 
 
 def make_app(root, payload):
-    framework = root / "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+    framework = root / "Contents/Frameworks/Electron Framework.framework/Electron Framework"
     framework.parent.mkdir(parents=True)
     framework.write_bytes(payload)
     return root
