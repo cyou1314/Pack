@@ -62,7 +62,34 @@ def main():
         assert pathlib.Path(production["hub"]) == home / ".pack" / "local-hub", production
         assert production["prefix"] == "com.pack.local", production
 
-    print("PASS installer test-mode path isolation")
+        # Existing LaunchAgent files must be rejected without truncation.
+        agent_dir = test_root / "conflict-check"
+        check_env = env.copy()
+        check_env["PACK_TEST_AGENT_DIR"] = str(agent_dir)
+        check = subprocess.run(
+            [sys.executable, "-c",
+             "import os, pathlib, manager; "
+             "manager.agents = pathlib.Path(os.environ['PACK_TEST_AGENT_DIR']); "
+             "manager.agents.mkdir(parents=True, exist_ok=True); "
+             "manager.ensure_agent_paths_available()"],
+            cwd=HERE, env=check_env, text=True, capture_output=True,
+        )
+        assert check.returncode == 0, check.stderr
+
+        existing = agent_dir / (test["prefix"] + "-hub.plist")
+        existing.write_text("preserve-existing-plist\\n", encoding="utf-8")
+        check = subprocess.run(
+            [sys.executable, "-c",
+             "import os, pathlib, manager; "
+             "manager.agents = pathlib.Path(os.environ['PACK_TEST_AGENT_DIR']); "
+             "manager.ensure_agent_paths_available()"],
+            cwd=HERE, env=check_env, text=True, capture_output=True,
+        )
+        assert check.returncode != 0, check
+        assert "refusing to overwrite" in check.stderr, check.stderr
+        assert existing.read_text(encoding="utf-8") == "preserve-existing-plist\\n"
+
+    print("PASS installer test-mode path isolation and LaunchAgent no-clobber")
 
 
 if __name__ == "__main__":
