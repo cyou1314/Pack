@@ -7,8 +7,10 @@ import threading
 import unittest
 from pathlib import Path
 
+from core import migrations
 from core.migrations import apply_migrations
 from core.storage import connect
+from services.agent_events import append_agent_event
 
 
 class AgentRegistryMigrationTests(unittest.TestCase):
@@ -161,7 +163,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 self.assertEqual([tuple(row) for row in first], [tuple(row) for row in second])
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    6,
+                    7,
                 )
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
@@ -228,7 +230,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 apply_migrations(connection, clock=lambda: 200.0)
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    6,
+                    7,
                 )
                 self.assertEqual(
                     [row["task_id"] for row in connection.execute(
@@ -303,7 +305,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
             try:
                 self.assertEqual(
                     verify.execute("SELECT COUNT(*) FROM hub_schema_migrations").fetchone()[0],
-                    6,
+                    7,
                 )
                 self.assertEqual(
                     verify.execute("SELECT COUNT(*) FROM agents").fetchone()[0],
@@ -423,6 +425,271 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                     0,
                 )
             finally:
+                connection.close()
+
+    def test_v7_adds_projection_tables_and_preserves_existing_session_rows(self):
+        with tempfile.TemporaryDirectory(prefix="pack-agent-session-projection-v7-") as directory:
+            connection = self._database(directory)
+            original = migrations.MIGRATIONS
+            try:
+                migrations.MIGRATIONS = original[:-1]
+                apply_migrations(connection, clock=lambda: 100.0)
+                connection.execute(
+                    """INSERT INTO agents(
+                        agent_id,provider_id,display_name,status,created_at,updated_at
+                    ) VALUES('agent-1','codex','Agent One','active',1,1)"""
+                )
+                connection.execute(
+                    """INSERT INTO agent_sessions(
+                        session_id,agent_id,room_id,provider_session_id,status,
+                        last_event_sequence,created_at,updated_at
+                    ) VALUES('hub-session-1','agent-1',1,'provider-thread-1','active',3,1,1)"""
+                )
+                connection.execute(
+                    """INSERT INTO agent_sessions(
+                        session_id,agent_id,room_id,provider_session_id,status,
+                        last_event_sequence,created_at,updated_at
+                    ) VALUES('hub-session-null-1','agent-1',1,NULL,'creating',0,1,1)"""
+                )
+                connection.commit()
+
+                migrations.MIGRATIONS = original
+                apply_migrations(connection, clock=lambda: 200.0)
+
+                version7 = connection.execute(
+                    "SELECT version,name FROM hub_schema_migrations WHERE version=7"
+                ).fetchone()
+                self.assertEqual(
+                    (version7["version"], version7["name"]),
+                    (7, "agent_session_projection_read_models"),
+                )
+                session = connection.execute(
+                    "SELECT session_id,provider_session_id,last_inbox_seq "
+                    "FROM agent_sessions WHERE session_id='hub-session-1'"
+                ).fetchone()
+                self.assertEqual(
+                    tuple(session),
+                    ("hub-session-1", "provider-thread-1", 0),
+                )
+                tables = {
+                    row["name"] for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                self.assertTrue({
+                    "agent_session_messages",
+                    "agent_session_runs",
+                    "agent_event_projection_receipts",
+                    "agent_event_projection_resolutions",
+                }.issubset(tables))
+                indexes = {
+                    row["name"] for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    )
+                }
+                self.assertIn("idx_agent_sessions_agent_provider_session_unique", indexes)
+                self.assertIn("idx_agent_event_inbox_seq_agent_unique", indexes)
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+                connection.execute(
+                    """INSERT INTO agents(
+                        agent_id,provider_id,display_name,status,created_at,updated_at
+                    ) VALUES('agent-2','codex','Agent Two','active',1,1)"""
+                )
+                connection.execute(
+                    """INSERT INTO agent_sessions(
+                        session_id,agent_id,room_id,provider_session_id,status,
+                        last_event_sequence,created_at,updated_at
+                    ) VALUES('hub-session-2','agent-2',1,'provider-thread-1','active',0,1,1)"""
+                )
+                connection.execute(
+                    """INSERT INTO agent_sessions(
+                        session_id,agent_id,room_id,provider_session_id,status,
+                        last_event_sequence,created_at,updated_at
+                    ) VALUES('hub-session-null-2','agent-1',1,NULL,'creating',0,1,1)"""
+                )
+                connection.commit()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """INSERT INTO agent_sessions(
+                            session_id,agent_id,room_id,provider_session_id,status,
+                            last_event_sequence,created_at,updated_at
+                        ) VALUES('hub-session-duplicate','agent-1',1,
+                            'provider-thread-1','active',0,1,1)"""
+                    )
+                connection.rollback()
+
+                event = {
+                    "eventId": "projection-migration-event",
+                    "eventType": "run.progress",
+                    "providerId": "codex",
+                    "agentId": "agent-1",
+                    "sequence": 1,
+                    "occurredAt": "2026-11-24T03:00:00.000Z",
+                    "payload": {"progress": 25},
+                }
+                connection.execute("BEGIN IMMEDIATE")
+                inbox = append_agent_event(connection, event, received_at=10.0)
+                connection.commit()
+                inbox_seq = inbox["inboxSeq"]
+
+                connection.execute(
+                    """INSERT INTO agent_session_messages(
+                        message_id,session_id,provider_message_id,provider_run_id,
+                        content,status,phase,first_inbox_seq,last_inbox_seq,
+                        created_at,updated_at,completed_at
+                    ) VALUES('message-record-1','hub-session-1','item-1',NULL,
+                        'partial','streaming',NULL,?,?,1,1,NULL)""",
+                    (inbox_seq, inbox_seq),
+                )
+                connection.execute(
+                    """INSERT INTO agent_session_runs(
+                        run_record_id,session_id,provider_run_id,status,started_at,
+                        updated_at,ended_at,first_inbox_seq,last_inbox_seq
+                    ) VALUES('run-record-1','hub-session-1','provider-run-1',
+                        'running',1,1,NULL,?,?)""",
+                    (inbox_seq, inbox_seq),
+                )
+                connection.execute(
+                    """INSERT INTO agent_event_projection_receipts(
+                        consumer_id,agent_id,inbox_seq,event_id,event_type,outcome,
+                        reason_code,attempt_count,first_attempt_at,last_attempt_at,projected_at
+                    ) VALUES('hub-session-projector','agent-1',?,
+                        'projection-migration-event','run.progress','blocked',
+                        'test_blocked',1,1,1,NULL)""",
+                    (inbox_seq,),
+                )
+                connection.execute(
+                    """INSERT INTO agent_event_projection_resolutions(
+                        resolution_id,consumer_id,agent_id,inbox_seq,event_id,
+                        action,reason,actor,resolved_at
+                    ) VALUES('resolution-1','hub-session-projector','agent-1',?,
+                        'projection-migration-event','skip','test resolution',
+                        'dispatcher:test',2)""",
+                    (inbox_seq,),
+                )
+                connection.commit()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """INSERT INTO agent_event_projection_receipts(
+                            consumer_id,agent_id,inbox_seq,event_id,event_type,outcome,
+                            reason_code,attempt_count,first_attempt_at,last_attempt_at,projected_at
+                        ) VALUES('hub-session-projector','agent-2',?,
+                            'cross-agent-event','run.progress','blocked',
+                            'test_blocked',1,1,1,NULL)""",
+                        (inbox_seq,),
+                    )
+                connection.rollback()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """INSERT INTO agent_session_messages(
+                            message_id,session_id,provider_message_id,content,status,
+                            first_inbox_seq,last_inbox_seq,created_at,updated_at
+                        ) VALUES('message-large','hub-session-1','item-large',?,'streaming',?,?,1,1)""",
+                        ("x" * (4 * 1024 * 1024 + 1), inbox_seq, inbox_seq),
+                    )
+                connection.rollback()
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            finally:
+                migrations.MIGRATIONS = original
+                connection.close()
+
+    def test_v7_preflight_fails_closed_on_duplicate_provider_session_binding(self):
+        with tempfile.TemporaryDirectory(prefix="pack-agent-session-projection-duplicate-") as directory:
+            connection = self._database(directory)
+            original = migrations.MIGRATIONS
+            try:
+                migrations.MIGRATIONS = original[:-1]
+                apply_migrations(connection, clock=lambda: 100.0)
+                connection.execute(
+                    """INSERT INTO agents(
+                        agent_id,provider_id,display_name,status,created_at,updated_at
+                    ) VALUES('agent-duplicate','codex','Duplicate Agent','active',1,1)"""
+                )
+                connection.executemany(
+                    """INSERT INTO agent_sessions(
+                        session_id,agent_id,room_id,provider_session_id,status,
+                        last_event_sequence,created_at,updated_at
+                    ) VALUES(?,?,1,'same-provider-thread','active',0,1,1)""",
+                    [
+                        ("hub-session-duplicate-1", "agent-duplicate"),
+                        ("hub-session-duplicate-2", "agent-duplicate"),
+                    ],
+                )
+                connection.commit()
+                migrations.MIGRATIONS = original
+                with self.assertRaisesRegex(RuntimeError, "migration v7 blocked"):
+                    apply_migrations(connection, clock=lambda: 200.0)
+
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM hub_schema_migrations WHERE version=6"
+                    ).fetchone()[0],
+                    1,
+                )
+                columns = {
+                    row["name"] for row in connection.execute(
+                        "PRAGMA table_info(agent_sessions)"
+                    )
+                }
+                self.assertNotIn("last_inbox_seq", columns)
+                tables = {
+                    row["name"] for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                self.assertNotIn("agent_session_messages", tables)
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM agent_sessions WHERE agent_id='agent-duplicate'"
+                    ).fetchone()[0],
+                    2,
+                )
+            finally:
+                migrations.MIGRATIONS = original
+                connection.close()
+
+    def test_v7_preflight_fails_closed_on_blank_or_padded_provider_session_binding(self):
+        with tempfile.TemporaryDirectory(prefix="pack-agent-session-projection-blank-") as directory:
+            connection = self._database(directory)
+            original = migrations.MIGRATIONS
+            try:
+                migrations.MIGRATIONS = original[:-1]
+                apply_migrations(connection, clock=lambda: 100.0)
+                connection.execute(
+                    """INSERT INTO agents(
+                        agent_id,provider_id,display_name,status,created_at,updated_at
+                    ) VALUES('agent-blank','codex','Blank Agent','active',1,1)"""
+                )
+                connection.executemany(
+                    """INSERT INTO agent_sessions(
+                        session_id,agent_id,room_id,provider_session_id,status,
+                        last_event_sequence,created_at,updated_at
+                    ) VALUES(?,?,1,?,'active',0,1,1)""",
+                    [
+                        ("hub-session-blank", "agent-blank", "   "),
+                        ("hub-session-padded", "agent-blank", "\tprovider-thread"),
+                    ],
+                )
+                connection.commit()
+                migrations.MIGRATIONS = original
+                with self.assertRaisesRegex(RuntimeError, "migration v7 blocked"):
+                    apply_migrations(connection, clock=lambda: 200.0)
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM hub_schema_migrations WHERE version=6"
+                    ).fetchone()[0],
+                    1,
+                )
+                columns = {
+                    row["name"] for row in connection.execute(
+                        "PRAGMA table_info(agent_sessions)"
+                    )
+                }
+                self.assertNotIn("last_inbox_seq", columns)
+            finally:
+                migrations.MIGRATIONS = original
                 connection.close()
 
     def test_failed_migration_rolls_back_schema_and_ledger(self):
