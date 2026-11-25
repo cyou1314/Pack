@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import PackCore
 
 // The address-source credential is independent of the hub credentials.
 enum AddressSource {
@@ -48,10 +49,9 @@ enum AddressSource {
             let (data, response) = try await session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             NSLog("地址源 api.github.com HTTP %d", status)
-            guard status == 200, let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let parts = URLComponents(string: value), parts.scheme?.lowercased() == "https",
-                  let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
-                  parts.query == nil, parts.fragment == nil else { return nil }
+            guard status == 200,
+                  let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  PackHubURLPolicy.isAllowed(value) else { return nil }
             return value
         } catch {
             NSLog("地址源 api.github.com HTTP %d", 0)
