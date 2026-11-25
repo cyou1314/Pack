@@ -100,7 +100,7 @@ def load_install_state(strict=True):
                 or state.get('phase') not in ('installing', 'failed', 'completed', 'uninstalled')):
             raise ValueError('unsupported or invalid installer state')
         return state
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         if strict:
             raise SystemExit('Pack installer state is unreadable; preserve it and inspect before proceeding.')
         return None
@@ -108,6 +108,10 @@ def load_install_state(strict=True):
 
 def save_install_state(state):
     temp = base / f'.pack-install-state.{state["transaction_id"]}.tmp'
+    if path_exists(temp):
+        if temp.is_symlink() or not temp.is_file() or temp.stat().st_uid != uid:
+            raise OSError('installer state temporary path is unsafe')
+        temp.unlink()
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
     fd = os.open(temp, flags, 0o600)
     try:
@@ -150,7 +154,10 @@ def rollback_managed_agents():
     for label in labels.values():
         plist = agents/(label+'.plist')
         if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
-            ctl('bootout', f'gui/{uid}/{label}', check=False)
+            service = f'gui/{uid}/{label}'
+            if ctl('print', service, check=False).returncode == 0:
+                if ctl('bootout', service, check=False).returncode != 0:
+                    continue
             plist.unlink()
 
 
@@ -214,8 +221,8 @@ def install():
         for path in (hub, engine, config, socket_dir):
             if path_exists(path):
                 raise SystemExit(f'Existing service data or App config found; refusing to overwrite: {path}')
-        if agents.is_symlink():
-            raise SystemExit(f'LaunchAgents directory must not be a symlink: {agents}')
+        if agents.is_symlink() or (path_exists(agents) and not agents.is_dir()):
+            raise SystemExit(f'LaunchAgents path must be a real directory: {agents}')
         if not available(hp) or not available(ep):
             raise SystemExit('A required local port is in use; refusing to proceed.')
         for label in labels.values():
@@ -338,61 +345,71 @@ def is_managed_agent(path, label):
 
 
 def uninstall():
-    state = load_install_state(strict=False)
-    managed_agents = set()
-    blocked_agents = set()
-    for kind, label in labels.items():
-        plist = agents/(label+'.plist')
-        if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
-            ctl('bootout', f'gui/{uid}/{label}', check=False)
-            plist.unlink()
-            managed_agents.add(kind)
-        elif ctl('print', f'gui/{uid}/{label}', check=False).returncode == 0:
-            # A colliding but unverified loaded label must not be disrupted by
-            # deleting files from underneath it.
-            blocked_agents.add(kind)
+    ensure_base_directory()
+    lock_fd = acquire_install_lock()
+    try:
+        state = load_install_state(strict=False)
+        managed_agents = set()
+        blocked_agents = set()
+        for kind, label in labels.items():
+            plist = agents/(label+'.plist')
+            service = f'gui/{uid}/{label}'
+            if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
+                if ctl('print', service, check=False).returncode == 0:
+                    if ctl('bootout', service, check=False).returncode != 0:
+                        blocked_agents.add(kind)
+                        continue
+                plist.unlink()
+                managed_agents.add(kind)
+            elif ctl('print', service, check=False).returncode == 0:
+                # A colliding but unverified loaded label must not be disrupted
+                # by deleting files from underneath it.
+                blocked_agents.add(kind)
 
-    hub_owned = (not hub.is_symlink()
-                 and (is_managed_root(hub, 'hub')
-                      or bool(managed_agents.intersection({'hub', 'watch', 'backup'}))))
-    engine_owned = (not engine.is_symlink()
-                    and (is_managed_root(engine, 'engine') or 'engine' in managed_agents))
-    if blocked_agents.intersection({'hub', 'watch', 'backup'}):
-        hub_owned = False
-    if 'engine' in blocked_agents:
-        engine_owned = False
+        hub_owned = (not hub.is_symlink()
+                     and (is_managed_root(hub, 'hub')
+                          or bool(managed_agents.intersection({'hub', 'watch', 'backup'}))))
+        engine_owned = (not engine.is_symlink()
+                        and (is_managed_root(engine, 'engine') or 'engine' in managed_agents))
+        if blocked_agents.intersection({'hub', 'watch', 'backup'}):
+            hub_owned = False
+        if 'engine' in blocked_agents:
+            engine_owned = False
 
-    if hub_owned:
-        remove_program_files(hub, ('python', 'hub.py', 'room_watch.py',
-                                   'backup-db.sh', 'verify-backup.sh'))
-    if engine_owned:
-        remove_program_files(engine, ('app', 'Electron.app'))
-    if is_managed_root(socket_dir, 'socket') and not socket_dir.is_symlink():
-        shutil.rmtree(socket_dir)
+        if hub_owned:
+            remove_program_files(hub, ('python', 'hub.py', 'room_watch.py',
+                                       'backup-db.sh', 'verify-backup.sh'))
+        if engine_owned:
+            remove_program_files(engine, ('app', 'Electron.app'))
+        if (not engine_owned and 'engine' not in blocked_agents
+                and is_managed_root(socket_dir, 'socket') and not socket_dir.is_symlink()):
+            shutil.rmtree(socket_dir)
 
-    if not hub_owned and not engine_owned:
-        print('No Pack-owned program root found; preserving local program files.')
+        if not hub_owned and not engine_owned:
+            print('No Pack-owned program root found; preserving local program files.')
 
-    if app_path.is_dir() and not app_path.is_symlink():
-        try:
-            with (app_path/'Contents/Info.plist').open('rb') as f:
-                info = plistlib.load(f)
-            if info.get('PackInstallerMarker') == INSTALLER_MARKER:
-                shutil.rmtree(app_path)
-                print('Installed Pack App removed.')
-            else:
-                print('App not removed: installer marker missing.')
-        except (OSError, plistlib.InvalidFileException, ValueError):
-            print('App not removed: could not verify installer marker.')
+        if app_path.is_dir() and not app_path.is_symlink():
+            try:
+                with (app_path/'Contents/Info.plist').open('rb') as f:
+                    info = plistlib.load(f)
+                if info.get('PackInstallerMarker') == INSTALLER_MARKER:
+                    shutil.rmtree(app_path)
+                    print('Installed Pack App removed.')
+                else:
+                    print('App not removed: installer marker missing.')
+            except (OSError, plistlib.InvalidFileException, ValueError):
+                print('App not removed: could not verify installer marker.')
 
-    if state:
-        state['phase'] = 'uninstalled'
-        state['updated_at'] = int(time.time())
-        try:
-            save_install_state(state)
-        except OSError:
-            print('Warning: could not update installer state after uninstall.', file=sys.stderr)
-    print(f'Data preserved: {hub}, {engine}/data, {config}')
+        if state:
+            state['phase'] = 'uninstalled'
+            state['updated_at'] = int(time.time())
+            try:
+                save_install_state(state)
+            except OSError:
+                print('Warning: could not update installer state after uninstall.', file=sys.stderr)
+        print(f'Data preserved: {hub}, {engine}/data, {config}')
+    finally:
+        release_install_lock()
 
 if __name__ == '__main__':
     if len(sys.argv)!=2 or sys.argv[1] not in ('install','uninstall'): raise SystemExit('Use install or uninstall')
