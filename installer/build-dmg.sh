@@ -10,7 +10,7 @@ ENGINE_LOCK="${PACK_BUILD_ENGINE_LOCK:-$ROOT/installer/engine.lock.json}"
 
 fail() { echo "Pack DMG preflight failed: $*" >&2; exit 1; }
 # Explicit program-only allowlist; parity with manager.py is checked in CI.
-HUB_PROGRAM_FILES=(hub.py room_watch.py backup-db.sh verify-backup.sh collaboration_policy.py collaboration_store.py collaboration_dispatch.py collaboration_guard.py)
+HUB_PROGRAM_FILES=(hub.py room_watch.py backup-db.sh verify-backup.sh collaboration_policy.py collaboration_store.py collaboration_dispatch.py collaboration_guard.py collaboration_context.py)
 [ -f "$ENGINE_LOCK" ] && [ ! -L "$ENGINE_LOCK" ] || fail "missing approved Engine lock: $ENGINE_LOCK (see installer/BUILDING.md)"
 for f in "${HUB_PROGRAM_FILES[@]}"; do
   [ -f "$ROOT/hub/$f" ] && [ ! -L "$ROOT/hub/$f" ] || fail "missing or unsafe Hub program file: $f"
@@ -79,7 +79,7 @@ if find "$STAGE/hub" "$STAGE/engine" \( -name 'pack.db*' -o -name 'Cookies' -o -
 env -i HOME="$STAGE" PATH=/nonexistent PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3" -c 'import fastmcp,sqlite3,ssl; assert fastmcp.__version__ == "4.1.8"'
 # Validate imports from the staged payload, not the source checkout. Do not
 # initialize a database, start a service or create bytecode in the bundle.
-env -i HOME="$STAGE" PATH=/nonexistent PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE/hub" "$STAGE/python/bin/python3" -B -c 'import hub, collaboration_policy, collaboration_store, collaboration_dispatch, collaboration_guard'
+env -i HOME="$STAGE" PATH=/nonexistent PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE/hub" "$STAGE/python/bin/python3" -B -c 'import hub, collaboration_policy, collaboration_store, collaboration_dispatch, collaboration_guard, collaboration_context'
 mkdir -p "$(dirname "$OUT")"
 hdiutil create -srcfolder "$STAGE" -volname 'Pack 本地版' -format UDZO "$OUT"
 printf 'Built %s\nStaging directory: %s\n' "$OUT" "$STAGE"

@@ -48,7 +48,7 @@ def check_hub_program_manifest():
     names = ast.literal_eval(matches[0].value)
     expected = {"hub.py", "room_watch.py", "backup-db.sh", "verify-backup.sh",
                 "collaboration_policy.py", "collaboration_store.py",
-                "collaboration_dispatch.py", "collaboration_guard.py"}
+                "collaboration_dispatch.py", "collaboration_guard.py", "collaboration_context.py"}
     assert set(names) == expected and len(names) == len(expected), names
     shell = (HERE / "build-dmg.sh").read_text(encoding="utf-8")
     match = re.search(r"^HUB_PROGRAM_FILES=\(([^\n]*)\)$", shell, re.MULTILINE)

@@ -3993,6 +3993,31 @@ def build_server():
         finally:
             conn.close()
 
+    # Register only when the opt-in context schema already exists. Ordinary
+    # installations keep the legacy tool surface and never import this module.
+    with db() as context_conn:
+        context_enabled = context_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_context_grants'"
+        ).fetchone() is not None
+    context_conn.close()
+    if context_enabled:
+        @mcp.tool
+        def collaboration_context_get(task_id: int, claim_token: str) -> dict:
+            """Read explicitly granted context for the current linked task holder."""
+            me = authenticate()
+            require(me, "member")
+            from collaboration_context import read_context
+            conn = db()
+            try:
+                _holder(conn, me, task_id, claim_token)
+                result = read_context(conn, task_id, member_id=me["id"], now=_now())
+                audit(conn, me["name"], "collaboration_context_get",
+                      f"task {task_id} items={len(result['items'])}")
+                conn.commit()
+                return result
+            finally:
+                conn.close()
+
     @mcp.tool
     def task_update(task_id: int, claim_token: str, note: str = "") -> dict:
         """持有人汇报进度：状态转 working 并续租，可附一句进度说明（进房间消息）。

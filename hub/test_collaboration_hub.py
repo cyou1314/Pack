@@ -10,6 +10,7 @@ from test_task_lifecycle_guards import hub, free_port, wait_port, call
 from collaboration_store import initialize, write_transaction, create_run, snapshot
 from collaboration_dispatch import bind_task, reserve_claim
 from collaboration_guard import install_task_guards
+from collaboration_context import grant_context, revoke_context
 
 
 def fixture(conn, room, owner, member, source, now, *, deadline, claimed=False, lease=None,
@@ -69,7 +70,7 @@ def main():
             def dispatch(name, args):
                 return asyncio.run(call(port, token, name, args))
 
-            reg = dispatch("member_register", {"name": "collab-fixture-member"})
+            reg = dispatch("member_register", {"name": "collab-fixture-member", "provider": "fixture-provider"})
             assert reg.get("token"), reg
             member = conn.execute("SELECT id FROM members WHERE name='collab-fixture-member'").fetchone()[0]
             owner = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()[0]
@@ -142,6 +143,31 @@ def main():
                 "fail_class": "task"})
             assert result.get("status") == "cancelled", result
             assert_closed(conn, blocked, blocked_task, "failed")
+
+            owner_reg = dispatch("member_register", {"name": "owner"})
+            assert owner_reg.get("token"), owner_reg
+            real_owner = conn.execute("SELECT id FROM members WHERE name='owner'").fetchone()[0]
+            with write_transaction(conn):
+                message = conn.execute(
+                    "INSERT INTO messages(room_id,author_id,kind,body,created_at) VALUES(?,?,'chat',?,?)",
+                    (room,real_owner,"approved context fixture",now)).lastrowid
+            context_run, context_task = fixture(conn,room,owner,member,message,now,deadline=now+600)
+            with write_transaction(conn):
+                assert grant_context(conn,context_run,"answer",actor_id=real_owner,
+                    member_id=member,refs=[("owner_message",message)],now=now)
+            claim = agent("task_claim",{"task_id":context_task})
+            assert claim.get("claim_token"),claim
+            ct = claim["claim_token"]
+            response = agent("collaboration_context_get",{"task_id":context_task,"claim_token":ct})
+            assert response.get("items",[{}])[0].get("text") == "approved context fixture",response
+            assert "error" in agent("collaboration_context_get",{"task_id":context_task,"claim_token":"wrong"})
+            with write_transaction(conn):
+                conn.execute("UPDATE messages SET body='changed',edited_at=? WHERE id=?",(now+1,message))
+            assert "error" in agent("collaboration_context_get",{"task_id":context_task,"claim_token":ct})
+            with write_transaction(conn):
+                assert revoke_context(conn,context_run,"answer",actor_id=real_owner)
+            assert "error" in agent("collaboration_context_get",{"task_id":context_task,"claim_token":ct})
+            dispatch("task_cancel",{"task_id":context_task})
 
             removed, removed_task = fixture(conn, room, owner, member, 4, now, deadline=now+600)
             unbound, _ = fixture(conn, room, owner, member, 5, now, deadline=now+600, create_card=False)

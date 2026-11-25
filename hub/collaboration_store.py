@@ -51,6 +51,17 @@ CREATE TABLE IF NOT EXISTS collaboration_task_links (
     PRIMARY KEY(run_id, step_key),
     FOREIGN KEY(run_id, step_key) REFERENCES collaboration_steps(run_id, step_key)
 );
+CREATE TABLE IF NOT EXISTS collaboration_context_grants (
+    run_id TEXT NOT NULL,
+    step_key TEXT NOT NULL,
+    owner_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    manifest TEXT NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
+    PRIMARY KEY(run_id, step_key),
+    FOREIGN KEY(run_id, step_key) REFERENCES collaboration_steps(run_id, step_key)
+);
 CREATE INDEX IF NOT EXISTS idx_collaboration_deadline
     ON collaboration_runs(deadline) WHERE status='active';
 """

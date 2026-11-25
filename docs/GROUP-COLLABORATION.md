@@ -62,3 +62,9 @@ Hub task_claim 在同一事务内预留一次协作预算，失败回滚；持�
 ## 第七阶段：macOS 安装包兼容性
 
 build-dmg.sh 和 manager.py 的程序文件白名单已纳入四个协作模块，新增构建/安装前文件检查、staging 导入检查、重装残留检查、卸载清理及 Ubuntu/macOS CI 安装事务回归。保留现有数据库、账号凭证、附件及配置，不复制整个 Hub 目录。当前不启用协作 schema，不改变生产功能；安装事务测试为隔离 mock，不等于真实 DMG 构建或签名/安装验收。仍需要固定外部 Engine 与审核锁，且不支持将已启用协作数据的数据库降级到旧 Hub。
+
+## 第八阶段：按步骤授权的文本 Context Gateway（测试启用）
+
+新增 collaboration_context.py 与 context grants 表：真实 owner 身份（非 dispatcher 或 Agent 自报）授权精确的同房 owner chat 消息及已通过审核的直接依赖任务 result；根消息及全部直接依赖必需，禁止任意其他任务、私有记忆、附件、全文历史。单步骤最多 8 项，序列化数据 16 KiB 上限；超限拒绝而非静默截断。授权固定接收成员 ID、provider 标识与内容指纹，读取重新检查房间、成员、租约、run、版本和撤销。新 MCP collaboration_context_get 仅在显式创建 schema 后注册，并要求实际任务 claim token；owner grant/revoke 目前仅可信内部函数，没有开放外部授权写工具。测试覆盖依赖、跨房、篡改、预算、撤销、真实 MCP holder。安装器同步加入模块白名单。
+
+**尚未达到全局隔离**：旧 task_list/room_read/inbox/attachment 等读取面仍保留原有范围，已有任务 body/result 及 report 仍可能被其他内部成员读到。新 Gateway 不等于撤销旧数据权限；不可发布真实敏感协作内容，生产 schema 不启用。provider 字符串不是账号或会话身份；未验证真实账号绑定、跨 Provider 出口授权、运行时实际消费及调用预算。已交付数据不能被撤销收回。后续应先为协作任务使用最小公开占位内容、保护所有旧读取路径、建立 owner 授权入口与 adapter 账号绑定，再启用生产。禁止将未授权数据写入 task body 或公开 room report。
