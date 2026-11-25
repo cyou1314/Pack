@@ -158,7 +158,8 @@ async function runDriver(message, signal, chat = null) {
   const primitives = readFileSync(path.join(DIR, "driver-primitives.js"), "utf8");
   const core = readFileSync(path.join(DIR, chat?.action === "quota" ? "quota-driver.js" : chat ? "chat-driver.js" : "driver-core.js"), "utf8");
   const task = { profileId: cfg.profileId, spaceName: cfg.spaceName, message, ...(chat || {}) };
-  const source = `globalThis.PACK_TASK = ${JSON.stringify(task)};\\n${primitives}\\n${core}`;
+  const newline = String.fromCharCode(10);
+  const source = "globalThis.PACK_TASK = " + JSON.stringify(task) + ";" + newline + primitives + newline + core;
   const result = await runBoundedProcess(cfg.egoBin || "ego-browser", ["nodejs"], {
     input: source,
     signal,
@@ -167,7 +168,7 @@ async function runDriver(message, signal, chat = null) {
     maxOutputBytes: DRIVER_MAX_OUTPUT_BYTES,
   });
   if (result.code !== 0) throw new Error(`driver_exit_${result.code ?? result.signal ?? "unknown"}`);
-  const line = (result.stdout + "\\n" + result.stderr).split("\\n")
+  const line = (result.stdout + newline + result.stderr).split(newline)
     .filter(value => value.startsWith("DRIVER-RESULT")).pop();
   if (!line) throw new Error("driver_no_result");
   try { return JSON.parse(line.slice("DRIVER-RESULT".length).trim()); }
