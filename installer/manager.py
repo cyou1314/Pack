@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install the packaged local stack; PACK_INSTALL_TEST_ROOT isolates acceptance."""
 import asyncio, fcntl, json, os, pathlib, plistlib, shutil, socket, subprocess, sys, time, uuid
+from urllib.parse import urlsplit
 
 BUNDLE = pathlib.Path(__file__).resolve().parent
 HOME = pathlib.Path.home()
