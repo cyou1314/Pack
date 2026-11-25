@@ -216,6 +216,14 @@ def validate_reinstall_data():
     for path in (hub/'attachments', engine/'data', engine/'data'/'local'):
         if path.is_symlink() or (path_exists(path) and not path.is_dir()):
             raise SystemExit(f'Existing Pack data path is unsafe: {path}')
+        if path_exists(path) and path.stat().st_uid != uid:
+            raise SystemExit(f'Existing Pack data directory is not user-owned: {path}')
+    for path in (hub/'pack.db', hub/'pack.db-wal', hub/'pack.db-shm',
+                 hub/'pack.db-journal'):
+        if path.is_symlink() or (path_exists(path) and not path.is_file()):
+            raise SystemExit(f'Existing Pack database path is unsafe: {path}')
+        if path_exists(path) and path.stat().st_uid != uid:
+            raise SystemExit(f'Existing Pack database file is not user-owned: {path}')
     if path_exists(socket_dir):
         raise SystemExit(f'Existing IPC path must be removed by uninstall before reinstall: {socket_dir}')
     os.chmod(config, 0o600)
