@@ -1205,15 +1205,18 @@ def _auto_relay(conn, t, from_name, reason_label):
          RELAY_QUOTA_HEADROOM)).fetchone()
     if not cand:
         return None
+    cur = conn.execute(
+        "UPDATE tasks SET status='claimed', assignee=?, claim_token=NULL,"
+        " lease_expires=NULL, next_claim_at=NULL, sched_at=NULL, updated_at=? "
+        "WHERE id=? AND status=? AND assignee IS ? AND claim_token IS ?",
+        (cand["id"], now, t["id"], t["status"], t["assignee"], t["claim_token"]))
+    if cur.rowcount != 1:
+        return None
     conn.execute(
         "INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,expires_at)"
         " VALUES(?,?,?,?,?,?,?,?)",
         (t["id"], from_name, cand["name"], f"auto-relay: {reason_label}", "auto-relay",
          now, "pending", now + TRANSFER_ACCEPT_TTL))
-    conn.execute(
-        "UPDATE tasks SET status='claimed', assignee=?, claim_token=NULL,"
-        " lease_expires=NULL, next_claim_at=NULL, sched_at=NULL, updated_at=? WHERE id=?",
-        (cand["id"], now, t["id"]))
     disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
     conn.execute(
         "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'chat',?,?,?)",
@@ -3965,62 +3968,73 @@ def build_server():
 
     @mcp.tool
     def task_review(task_id: int, approve: bool, note: str = "") -> dict:
-        """调度员验收：approve=True 关单(done，清 fail_class/退避)；False 打回
-        回池(open, attempts 保留)，并按任务的 fail_class（无则 unknown）与
-        attempts 重算退避 next_claim_at（合成清单第 3 项），到期才可再认领。"""
+        """Dispatcher review uses a guarded review-state transition; only one reviewer wins."""
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
-        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
+        try:
+            with _lock:
+                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if not t:
+                    raise ValueError(f"no such task: {task_id}")
+                if t["status"] != "review":
+                    raise ValueError(f"task {task_id} not in review (status={t['status']})")
+                now = _now()
+                if approve:
+                    cur = conn.execute(
+                        "UPDATE tasks SET status='done', review_note=?, fail_class=NULL, "
+                        "next_claim_at=NULL, updated_at=? WHERE id=? AND status='review'",
+                        (note, now, task_id))
+                else:
+                    fc = t["fail_class"] or "unknown"
+                    nca = now + _backoff_seconds(fc, t["attempts"])
+                    cur = conn.execute(
+                        "UPDATE tasks SET status='open', "
+                        "assignee=CASE WHEN EXISTS(SELECT 1 FROM members "
+                        "WHERE id=tasks.assignee AND removed_at IS NULL) "
+                        "THEN assignee ELSE NULL END, review_note=?, next_claim_at=?, "
+                        "updated_at=? WHERE id=? AND status='review'",
+                        (note, nca, now, task_id))
+                if cur.rowcount != 1:
+                    raise ValueError(f"task {task_id} changed during review; reload and retry")
+                if not approve:
+                    audit(conn, me["name"], "task_review_backoff",
+                          f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
+                audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
+                conn.commit()
+                return {"task_id": task_id, "status": "done" if approve else "open"}
+        finally:
             conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        if t["status"] != "review":
-            conn.close()
-            raise ValueError(f"task {task_id} not in review (status={t['status']})")
-        now = _now()
-        if approve:
-            conn.execute("UPDATE tasks SET status='done', review_note=?, fail_class=NULL, next_claim_at=NULL, updated_at=? WHERE id=?",
-                         (note, now, task_id))
-        else:
-            fc = t["fail_class"] or "unknown"
-            nca = now + _backoff_seconds(fc, t["attempts"])
-            conn.execute(
-                "UPDATE tasks SET status='open', assignee=CASE WHEN EXISTS(SELECT 1 FROM members WHERE id=tasks.assignee AND removed_at IS NULL) THEN assignee ELSE NULL END, review_note=?, next_claim_at=?, updated_at=? WHERE id=?",
-                (note, nca, now, task_id))
-            audit(conn, me["name"], "task_review_backoff", f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
-        audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "done" if approve else "open"}
-
     @mcp.tool
     def task_cancel(task_id: int) -> dict:
-        """dispatcher cancels an unfinished task: status=cancelled, claim freed."""
+        """dispatcher cancels an unfinished task with a compare-and-swap state guard."""
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
-        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        if not t:
+        try:
+            with _lock:
+                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if not t:
+                    raise ValueError(f"no such task: {task_id}")
+                if t["status"] in ("done", "cancelled"):
+                    audit(conn, me["name"], "task_cancel_noop",
+                          f"task {task_id} already {t['status']}")
+                    conn.commit()
+                    return {"task_id": task_id, "status": t["status"]}
+                cur = conn.execute(
+                    "UPDATE tasks SET status='cancelled', claim_token=NULL, "
+                    "lease_expires=NULL, updated_at=? "
+                    "WHERE id=? AND status=? AND assignee IS ? AND claim_token IS ?",
+                    (time.time(), task_id, t["status"], t["assignee"], t["claim_token"]))
+                if cur.rowcount != 1:
+                    raise ValueError(f"task {task_id} changed while cancelling; retry")
+                _close_run(conn, task_id, "cancelled", me["name"])
+                _desktop_release_for_task(conn, task_id, me["name"], "cancel")
+                audit(conn, me["name"], "task_cancel", f"task {task_id}")
+                conn.commit()
+                return {"task_id": task_id, "status": "cancelled"}
+        finally:
             conn.close()
-            raise ValueError(f"no such task: {task_id}")
-        if t["status"] in ("done", "cancelled"):
-            # D3 (staging43): 早返也留审计，重复/误取消不再无痕。
-            audit(conn, me["name"], "task_cancel_noop",
-                  f"task {task_id} already {t['status']}")
-            conn.commit()
-            conn.close()
-            return {"task_id": task_id, "status": t["status"]}
-        conn.execute(
-            "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=?",
-            (time.time(), task_id))
-        _close_run(conn, task_id, "cancelled", me["name"])
-        _desktop_release_for_task(conn, task_id, me["name"], "cancel")
-        audit(conn, me["name"], "task_cancel", f"task {task_id}")
-        conn.commit()
-        conn.close()
-        return {"task_id": task_id, "status": "cancelled"}
-
     @mcp.tool
     def member_list() -> dict:
         """List room members with role/profile and last heartbeat (epoch seconds).
@@ -4344,10 +4358,13 @@ def build_server():
                 _close_run(conn, task_id, "transferred", me["name"])
                 now = time.time()
                 expires_at = now + TRANSFER_ACCEPT_TTL
-                conn.execute(
+                cur = conn.execute(
                     """UPDATE tasks SET assignee=?, claim_token=NULL, lease_expires=NULL,
-                       next_claim_at=NULL, updated_at=? WHERE id=?""",
-                    (target["id"], now, task_id))
+                       next_claim_at=NULL, updated_at=?
+                       WHERE id=? AND status=? AND assignee IS ? AND claim_token IS ?""",
+                    (target["id"], now, task_id, t["status"], t["assignee"], t["claim_token"]))
+                if cur.rowcount != 1:
+                    raise ValueError(f"task {task_id} changed while transferring; retry")
                 cur = conn.execute(
                     """INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,accepted_at,expires_at)
                        VALUES(?,?,?,?,?,?,'pending',NULL,?)""",
@@ -4420,13 +4437,22 @@ def build_server():
                 if t["assignee"] != me["id"]:
                     raise ValueError(
                         f"task {task_id} is not assigned to {me['name']}")
+                if x["status"] != "pending":
+                    raise ValueError(f"transfer {x['id']} is not pending")
                 new_tok = secrets.token_urlsafe(24)
-                conn.execute(
-                    "UPDATE tasks SET claim_token=?, lease_expires=?, updated_at=? WHERE id=?",
-                    (new_tok, now + LEASE_SECONDS, now, task_id))
-                conn.execute(
-                    "UPDATE task_transfers SET status='accepted', accepted_at=? WHERE id=?",
-                    (now, x["id"]))
+                cur = conn.execute(
+                    "UPDATE tasks SET claim_token=?, lease_expires=?, updated_at=? "
+                    "WHERE id=? AND status=? AND assignee=? AND claim_token IS NULL",
+                    (new_tok, now + LEASE_SECONDS, now, task_id, t["status"], me["id"]))
+                if cur.rowcount != 1:
+                    raise ValueError(f"task {task_id} changed while accepting transfer")
+                cur = conn.execute(
+                    "UPDATE task_transfers SET status='accepted', accepted_at=? "
+                    "WHERE id=? AND status='pending' AND to_member=? "
+                    "AND (expires_at IS NULL OR expires_at>?)",
+                    (now, x["id"], me["name"], now))
+                if cur.rowcount != 1:
+                    raise ValueError(f"transfer {x['id']} is no longer pending")
                 audit(conn, me["name"], "task_accept_transfer",
                       f"task {task_id} transfer {x['id']} {x['from_member']}->{x['to_member']}")
                 conn.commit()
