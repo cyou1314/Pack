@@ -21,3 +21,8 @@ export function isHubNetworkFailure(error) {
   }
   return false;
 }
+
+export function isHubRetryableFailure(error) {
+  if (error?.hubNetworkFailure || isHubNetworkFailure(error)) return true;
+  return /^hub HTTP (?:408|425|429|5\\d\\d)$/.test(String(error?.message || ''));
+}
