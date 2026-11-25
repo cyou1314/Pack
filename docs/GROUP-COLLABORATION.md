@@ -92,3 +92,9 @@ build-dmg.sh 和 manager.py 的程序文件白名单已纳入四个协作模块�
 Swift `AgentLocalAccountResolver` 通过现有 `AgentRegistryStore.profile(id:)` 查询固定 UUID，校验 provider/mode/credential reference/chat capability；API 只验证本机 vault 中凭证存在，不返回密钥或宣称上游登录已验证；native 明确返回仍需浏览器验证。Node `AccountExecutionLeases` 使用共享私有目录内的 UUID 独占 mkdir 租约，拒绝符号链接、非私有根及重复租约；只允许原持有者按 inode 校验 rmdir 自己的空目录，不按时间或 PID 自动破锁。Runner 强制注入账号租约，确认交付/明确失败才释放；超时、Provider 结果不明、交付不明保留标记，跨 runner/进程重启继续拒绝。新增 Swift mock vault 与 Node 本地文件系统回归。
 
 边界：宿主必须指定所有执行器共同使用的预建私有目录；没有启动接线、GUI 恢复入口、自动恢复或断电持久性保证。普通同 UID 的恶意进程不受此协作锁约束；账号引用仍是本地 profile ID，不是经过 Provider 验证的唯一远端账号。真实 API transport、浏览器账号验证、Keychain 签名实机验收、跨语言宿主集成仍未完成。不得自动清理未知租约；用户应先核对上游请求和 Hub 状态后显式恢复。
+
+## 第十三阶段：官方 API 文本适配器（未接生产）
+
+新增 Swift AgentOfficialAPIAdapter：OpenAI Responses、Gemini Developer generateContent、火山方舟 Chat Completions，固定 HTTPS 官方地址、显式模型、输出预算、无工具/附件、无应用层自动重试。使用原注册表和 Keychain，按精确 HTTP body SHA-256/URL/目标 profile/deadline 经可信宿主显式授权后读取密钥，仅在本进程 HTTP header 使用；拒绝重定向，ephemeral URLSession，响应读取上限 1 MiB。输出只取完成的文本，不返回思维链；保留 API 返回的 token 用量，缺失则 null。Gemini 输出计量暂按 totalTokenCount - promptTokenCount（包括思考等额外 token，非仅可见文本；非计费结算）。OpenAI store=false 不代表零数据留存。方舟 max_completion_tokens 仅支持兼容模型，不自动退回其他参数。HTTP 不明确失败抛出固定错误，宿主应保留账号租约。新增注入 transport 的离线测试。
+
+参考官方文档：https://developers.openai.com/api/reference/resources/responses/methods/create 、https://ai.google.dev/api/generate-content 、https://docs.volcengine.com/docs/ark/chat-api?lang=zh 。未验证真实 API key、模型兼容性、签名 Keychain、网络重定向实际行为、上游取消与网络层 exactly-once；未连接 Node runner/IPC/生产入口，可信宿主负责租约、审批与结果提交。API 原生工具和多模态仍关闭。
