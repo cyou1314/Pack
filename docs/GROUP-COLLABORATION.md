@@ -48,3 +48,9 @@ hub/collaboration_policy.py 是无副作用的纯计划器，以经过认证的 
 新增 collaboration_guard.py：可显式安装 SQLite triggers，对已绑定的 tasks 行约束身份/输入不变、认领须先有账本预留、尝试数最多一次、持有人 token 不可替换、完成必须经过 review、禁止 reopen/transfer/delete/replace，终止先关闭账本再清理卡。未绑定的既有任务不受影响。close_linked_tasks 通过同事务的可信取消回调清理未完成卡，验证任务取消与 token/lease 清除；回调尚未接入 Hub 的 run/desktop/audit 清理。触发器不验证操作者、外部请求、截止时间或审核内容，不能替代 Hub 权限、时间检查和真实 Provider 取消；也不是针对任意数据库写入者的安全沙箱。
 
 审计 hub.py 的 SQL 修改入口：_auto_relay、sweep_once（转交过期、租约回收）、member_remove、task_claim、_task_update_impl、task_complete、task_block、task_review、task_cancel、task_release、task_transfer、task_accept_transfer，以及开卡/排班/加急/退避修改。尤其 sweeper 与 member_remove 的批量 SQL 不能仅靠 trigger 拒绝，否则会回滚整个批次；启用前必须先分流协作任务并使用同事务的终止清理。现阶段 guard 仅测试显式安装，不在生产 init 安装，不发布协作任务，不改变旧群聊。后续还需守卫实际 Provider 重试、共享内容访问和 deadline，并测试完整 Hub 事务及运行时。
+
+## 第五阶段：真实 Hub 终止路径（仍不开放协作创建）
+
+hub.py 已接入现有 task_cancel、sweep_once、member_remove 和 _auto_relay 路径。仅检测到显式初始化的 collaboration_task_links 表时启用相应分支；正常 Hub init 不创建该表，也不会导入新增模块。取消/超时/成员移除在同一事务中停止 run、取消关联卡、关闭既有 runs、释放桌面锁、清理 pending transfer 并写审计。sweeper 在旧回收前独立写事务处理协作截止时间与租约失效，旧回收及未认领接力跳过已绑定卡。成员移除覆盖未绑定步骤。新增真实 Hub schema + 本地 MCP 测试，包含旧卡兼容性。
+
+仍未开放协作创建或认领：task_claim/reserve、task_review/reconcile、block/release/transfer 等入口及 Provider 重试、deadline 的实时检查尚须完整接线。终止只是 Hub 逻辑终止，不能证明外部请求已停止。安装器 build-dmg.sh 与 manager.py 固定清单未包含协作模块，当前正常安装不启用 schema；启用前必须补齐打包、升级、卸载、回滚和测试。不得手工在生产初始化协作表。

@@ -1212,6 +1212,8 @@ def _auto_relay(conn, t, from_name, reason_label):
     转交。多名合格时取周已用最低者。staging51：候选排除 kind=external
     （外部成员不参与自动接力，件二）；钉死判定改走公用 helper
     _is_executor_pinned（标题开头或正文包含，四处统一口径）。"""
+    if _collaboration_link(conn, t["id"]) is not None:
+        return None
     if _is_executor_pinned(t["title"], t["body"]):
         return None
     chain = conn.execute("SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=?",
@@ -1310,10 +1312,100 @@ def _week_start_cst(now=None):
     return monday.timestamp()
 
 
+# ---------------- Opt-in collaboration lifecycle ----------------
+# No schema is installed by Hub init yet. Legacy installations and standalone
+# hub.py staging fixtures therefore do not import the collaboration modules.
+def _collaboration_present(conn):
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_task_links'"
+    ).fetchone() is not None
+
+
+def _collaboration_link(conn, task_id):
+    if not _collaboration_present(conn):
+        return None
+    row = conn.execute(
+        "SELECT run_id FROM collaboration_task_links WHERE task_id=?", (task_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _collaboration_stop(conn, run_id, status, actor, reason, now):
+    """Stop the ledger and cancel its existing Hub tasks in one write transaction."""
+    from collaboration_store import _stop
+    from collaboration_guard import close_linked_tasks
+
+    if not conn.in_transaction:
+        raise RuntimeError("collaboration cleanup requires a write transaction")
+    row = conn.execute("SELECT status FROM collaboration_runs WHERE id=?", (run_id,)).fetchone()
+    if not row:
+        raise RuntimeError("missing collaboration run")
+    changed = _stop(conn, run_id, status)
+    if not changed and row[0] == "succeeded":
+        return False
+
+    def cancel_task(connection, task_id):
+        cur = connection.execute(
+            "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, "
+            "updated_at=? WHERE id=? AND status IN ('open','claimed','working','review','blocked')",
+            (now, task_id))
+        if cur.rowcount != 1:
+            raise RuntimeError("linked task changed during cancellation")
+        _close_run(connection, task_id, "cancelled", actor)
+        _desktop_release_for_task(connection, task_id, actor, reason)
+        connection.execute(
+            "UPDATE task_transfers SET status='expired' WHERE task_id=? AND status='pending'",
+            (task_id,))
+        audit(connection, actor, "task_cancel", f"task {task_id} collaboration={run_id} reason={reason}")
+
+    close_linked_tasks(conn, run_id, cancel_task=cancel_task)
+    if changed:
+        audit(conn, actor, "collaboration_stop", f"run {run_id} status={status} reason={reason}")
+    return changed
+
+
+def _collaboration_sweep(conn, now):
+    """Close due runs before the legacy requeue pass, with a fresh locked read."""
+    if not _collaboration_present(conn):
+        return 0
+    from collaboration_store import write_transaction
+    count = 0
+    with write_transaction(conn):
+        rows = conn.execute("""
+            SELECT DISTINCT r.id,r.deadline FROM collaboration_runs r
+            WHERE r.status='active' AND (
+                r.deadline<=? OR EXISTS (
+                    SELECT 1 FROM collaboration_task_links l JOIN tasks t ON t.id=l.task_id
+                    WHERE l.run_id=r.id AND t.status IN ('claimed','working')
+                      AND t.lease_expires IS NOT NULL AND t.lease_expires<?
+                )
+            ) ORDER BY r.id
+            """, (now, now)).fetchall()
+        for run_id, deadline in rows:
+            status = "expired" if deadline <= now else "failed"
+            reason = "deadline" if status == "expired" else "lease_expired"
+            count += int(_collaboration_stop(conn, run_id, status, "sweeper", reason, now))
+    return count
+
+
+def _collaboration_remove_member(conn, member_id, actor, now):
+    """Stop runs involving a removed member, including steps not yet bound."""
+    if not _collaboration_present(conn):
+        return
+    rows = conn.execute("""
+        SELECT DISTINCT r.id FROM collaboration_runs r
+        JOIN collaboration_steps s ON s.run_id=r.id
+        WHERE r.status='active' AND s.member=?
+        """, (str(member_id),)).fetchall()
+    for row in rows:
+        _collaboration_stop(conn, row[0], "failed", actor, "member_removed", now)
+
+
 def sweep_once():
     conn = db()
     try:
         now = _now()
+        _collaboration_sweep(conn, now)
         # 待接受转交过期回收（与租约回收同节律、同在 sweep_once 内，不另起定时器）：
         # pending 转交超过 expires_at 仍未被接收方 task_accept_transfer 接受 →
         # 转交行标 expired；任务若仍挂在接收方名下（claimed/working 且令牌为空，
@@ -1334,7 +1426,8 @@ def sweep_once():
                 continue
             t = conn.execute("SELECT * FROM tasks WHERE id=?", (x["task_id"],)).fetchone()
             requeued = False
-            if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
+            if (t and _collaboration_link(conn, t["id"]) is None
+                    and t["status"] in ("claimed", "working") and t["claim_token"] is None):
                 recv = conn.execute("SELECT id FROM members WHERE name=?",
                                     (x["to_member"],)).fetchone()
                 if recv and t["assignee"] == recv["id"]:
@@ -1352,6 +1445,8 @@ def sweep_once():
             "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
             (now,)).fetchall()
         for t in rows:
+            if _collaboration_link(conn, t["id"]) is not None:
+                continue  # only the collaboration sweeper may close linked tasks
             # 守卫：回收 UPDATE 复检租约仍过期——SELECT 之后持有人可能已
             # task_update/heartbeat 续租，无守卫会按旧快照误回收活跃任务
             # （staging14 复检 SW2）。rowcount=0 说明任务已变，整行跳过
@@ -1405,6 +1500,8 @@ def sweep_once():
                   AND (t.next_claim_at IS NULL OR t.next_claim_at<=?)""",
             (now,)).fetchall()
         for t in unclaimed:
+            if _collaboration_link(conn, t["id"]) is not None:
+                continue
             if _is_executor_pinned(t["title"], t["body"]):
                 continue
             eligible_at = max(t["updated_at"] or 0, t["next_claim_at"] or 0,
@@ -2051,6 +2148,8 @@ def build_server():
         with _lock:
             conn = db()
             try:
+                if _collaboration_present(conn):
+                    conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute("SELECT * FROM members WHERE name=?",
                                    (name,)).fetchone()
                 if not row:
@@ -2063,6 +2162,7 @@ def build_server():
                     raise ValueError(f"member already removed: {name}")
                 now = time.time()
                 mid = row["id"]
+                _collaboration_remove_member(conn, mid, me["name"], now)
                 for t in conn.execute(
                         "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','working')",
                         (mid,)).fetchall():
@@ -4058,6 +4158,8 @@ def build_server():
         conn = db()
         try:
             with _lock:
+                if _collaboration_present(conn):
+                    conn.execute("BEGIN IMMEDIATE")
                 t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if not t:
                     raise ValueError(f"no such task: {task_id}")
@@ -4066,6 +4168,12 @@ def build_server():
                           f"task {task_id} already {t['status']}")
                     conn.commit()
                     return {"task_id": task_id, "status": t["status"]}
+                collaboration_id = _collaboration_link(conn, task_id)
+                if collaboration_id is not None:
+                    _collaboration_stop(conn, collaboration_id, "cancelled", me["name"],
+                                        "task_cancel", _now())
+                    conn.commit()
+                    return {"task_id": task_id, "status": "cancelled"}
                 cur = conn.execute(
                     "UPDATE tasks SET status='cancelled', claim_token=NULL, "
                     "lease_expires=NULL, updated_at=? "

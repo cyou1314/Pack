@@ -50,6 +50,7 @@ jobs:
           python hub/test_collaboration_store.py
           python hub/test_collaboration_dispatch.py
           python hub/test_collaboration_guard.py
+          python hub/test_collaboration_hub.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py
           python -m py_compile runtime/l2-handoff/prepare-electron.py runtime/l2-handoff/verify-electron.py runtime/l2-handoff/test_prepare_electron.py runtime/l2-handoff/test_verify_electron.py
