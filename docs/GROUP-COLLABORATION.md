@@ -36,3 +36,9 @@ hub/collaboration_policy.py 是无副作用的纯计划器，以经过认证的 
 新增 `hub/collaboration_store.py`：以 Hub 所持 SQLite 连接显式初始化三张增量表，通过 BEGIN IMMEDIATE 统一写事务；房间 + 来源消息唯一约束、固定计划与截止时间冲突拒绝、步骤依赖、调用名额原子预留、内部 fence、失败/取消/过期终态，以及只含元数据的快照。重启后不会重新认领已运行步骤。当前不自动重试（不确定的外部副作用不得重复发起），失败时逻辑关闭整个 run；部分成果汇总需另行设计。取消仅表示账本拒绝后续执行与回写，并不证明已经停止外部请求。
 
 此模块仍未连接 Hub init、MCP、任务创建、运行时、审计、备份迁移或 App。上游必须验证真实房间/来源消息/成员身份与权限，调用前在同一事务内绑定实际任务，防止双重触发；每次实际 Provider 尝试必须纳入统一预算，不允许现有 Runtime 在账本之外自动重试。授权范围、任务结果引用、每步骤 deadline、真实取消传播及成本预算尚未实现。现有生产 schema 与运行行为不变。新增 SQLite 实际事务、并发连接、恢复、依赖、失败、过期及取消回归测试，纳入 CI。
+
+## 第三阶段：任务卡事务绑定（内部接线层）
+
+新增 collaboration_dispatch.py 与 collaboration_task_links 增量表。协作计划在此层必须使用稳定成员 ID 的十进制字符串而非显示名。ready_steps 仅返回依赖已成功、未绑定步骤；bind_task 校验任务同房、同成员、open 且 attempts=0，并强制步骤/任务一对一。调用方必须在同一写事务内复用既有开卡、消息及审计操作；失败整笔回滚。reserve_claim 在既有 task_claim UPDATE 前原子占用一次调用预算，失败不得退回普通认领路径。reconcile_terminal 以可信任务状态判断完成，review 不算成功，已尝试后重新 open 则失败关闭。测试使用与 Hub 相关字段一致的最小 SQLite fixture，不等于生产 Hub 集成测试。
+
+**保持关闭**：没有在 Hub init、MCP、watcher 或 Runtime 中启用此模块。启用前必须统一守卫所有任务变更入口（claim、complete、review、block、release、transfer、auto relay、sweeper、member_remove、cancel 等）、实际 Provider 调用重试、取消传播、共享结果授权与审计。绑定任务未认领前被取消、成员移除或 run 过期时，亦须通过已有取消机制同步处理；当前账本不会自动修改真实任务表。不要仅接 task_claim 就开放群聊。原有 task_list/room_read 对共享内容的可见性也需独立验收。

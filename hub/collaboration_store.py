@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS collaboration_dependencies (
     FOREIGN KEY(run_id, step_key) REFERENCES collaboration_steps(run_id, step_key),
     FOREIGN KEY(run_id, prerequisite) REFERENCES collaboration_steps(run_id, step_key)
 );
+CREATE TABLE IF NOT EXISTS collaboration_task_links (
+    run_id TEXT NOT NULL,
+    step_key TEXT NOT NULL,
+    task_id INTEGER NOT NULL UNIQUE,
+    member_id INTEGER NOT NULL,
+    PRIMARY KEY(run_id, step_key),
+    FOREIGN KEY(run_id, step_key) REFERENCES collaboration_steps(run_id, step_key)
+);
 CREATE INDEX IF NOT EXISTS idx_collaboration_deadline
     ON collaboration_runs(deadline) WHERE status='active';
 """
