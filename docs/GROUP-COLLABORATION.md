@@ -42,3 +42,9 @@ hub/collaboration_policy.py 是无副作用的纯计划器，以经过认证的 
 新增 collaboration_dispatch.py 与 collaboration_task_links 增量表。协作计划在此层必须使用稳定成员 ID 的十进制字符串而非显示名。ready_steps 仅返回依赖已成功、未绑定步骤；bind_task 校验任务同房、同成员、open 且 attempts=0，并强制步骤/任务一对一。调用方必须在同一写事务内复用既有开卡、消息及审计操作；失败整笔回滚。reserve_claim 在既有 task_claim UPDATE 前原子占用一次调用预算，失败不得退回普通认领路径。reconcile_terminal 以可信任务状态判断完成，review 不算成功，已尝试后重新 open 则失败关闭。测试使用与 Hub 相关字段一致的最小 SQLite fixture，不等于生产 Hub 集成测试。
 
 **保持关闭**：没有在 Hub init、MCP、watcher 或 Runtime 中启用此模块。启用前必须统一守卫所有任务变更入口（claim、complete、review、block、release、transfer、auto relay、sweeper、member_remove、cancel 等）、实际 Provider 调用重试、取消传播、共享结果授权与审计。绑定任务未认领前被取消、成员移除或 run 过期时，亦须通过已有取消机制同步处理；当前账本不会自动修改真实任务表。不要仅接 task_claim 就开放群聊。原有 task_list/room_read 对共享内容的可见性也需独立验收。
+
+## 第四阶段：任务变更安全防线（未启用）
+
+新增 collaboration_guard.py：可显式安装 SQLite triggers，对已绑定的 tasks 行约束身份/输入不变、认领须先有账本预留、尝试数最多一次、持有人 token 不可替换、完成必须经过 review、禁止 reopen/transfer/delete/replace，终止先关闭账本再清理卡。未绑定的既有任务不受影响。close_linked_tasks 通过同事务的可信取消回调清理未完成卡，验证任务取消与 token/lease 清除；回调尚未接入 Hub 的 run/desktop/audit 清理。触发器不验证操作者、外部请求、截止时间或审核内容，不能替代 Hub 权限、时间检查和真实 Provider 取消；也不是针对任意数据库写入者的安全沙箱。
+
+审计 hub.py 的 SQL 修改入口：_auto_relay、sweep_once（转交过期、租约回收）、member_remove、task_claim、_task_update_impl、task_complete、task_block、task_review、task_cancel、task_release、task_transfer、task_accept_transfer，以及开卡/排班/加急/退避修改。尤其 sweeper 与 member_remove 的批量 SQL 不能仅靠 trigger 拒绝，否则会回滚整个批次；启用前必须先分流协作任务并使用同事务的终止清理。现阶段 guard 仅测试显式安装，不在生产 init 安装，不发布协作任务，不改变旧群聊。后续还需守卫实际 Provider 重试、共享内容访问和 deadline，并测试完整 Hub 事务及运行时。
