@@ -232,6 +232,12 @@ manager.write_agent = original_write_agent
 async def unexpected_owner_setup():
     raise AssertionError("reinstall must not register a second owner")
 manager.setup_owner = unexpected_owner_setup
+# Simulate Pack App having migrated dispatcher/owner credentials to Keychain:
+# the config keeps hubUrl only, while private token files remain preserved.
+config_data = json.loads(manager.config.read_text())
+config_data.pop("token", None)
+config_data.pop("ownerToken", None)
+manager.config.write_text(json.dumps(config_data), encoding="utf-8")
 saved_config = manager.config.read_text()
 manager.install()
 state = manager.load_install_state()
