@@ -5,6 +5,8 @@ let package = Package(
     name: "PackApp",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "PackApp", path: "Sources/PackApp")
+        .target(name: "PackCore", path: "Sources/PackCore"),
+        .executableTarget(name: "PackApp", dependencies: ["PackCore"], path: "Sources/PackApp"),
+        .testTarget(name: "PackCoreTests", dependencies: ["PackCore"], path: "Tests/PackCoreTests")
     ]
 )
