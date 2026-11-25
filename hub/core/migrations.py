@@ -1,9 +1,8 @@
 """Versioned, additive SQLite migrations for Pack Hub data.
 
-The ledger currently covers the Agent Registry (v1) and structured task audit
-plus approval lookup indexes (v2). Each migration is applied under BEGIN
-IMMEDIATE and recorded with a content checksum so repeated or concurrent
-initialization is safe.
+The ledger covers the Agent Registry, task audit, Agent Event Inbox / Gateway / Consumer,
+and Agent Session projection schema. Each migration is applied under BEGIN IMMEDIATE
+and recorded with a content checksum so repeated or concurrent initialization is safe.
 """
 from __future__ import annotations
 
@@ -140,10 +139,73 @@ def _checksum(migration: Migration) -> str:
             "audit_task_id_source": _normalized_function_source(audit_task_id),
             "apply_task_audit_v2_source": _normalized_function_source(_apply_task_audit_v2),
         }
+    elif migration.version == 7:
+        # The v7 unique Provider Session binding index is safe only after a
+        # read-only preflight. Freeze that preflight implementation in the
+        # ledger checksum just like the earlier data-migration helpers.
+        payload["data_migration"] = {
+            "session_binding_preflight_source": _normalized_function_source(
+                _preflight_agent_session_projection_v7
+            ),
+        }
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+
+def _preflight_agent_session_projection_v7(connection: sqlite3.Connection) -> None:
+    """Fail closed before v7 if legacy Provider Session bindings are ambiguous."""
+    noncanonical = int(connection.execute(
+        """SELECT COUNT(*) FROM agent_sessions
+           WHERE provider_session_id IS NOT NULL
+             AND (
+                 length(trim(provider_session_id)) = 0
+                 OR provider_session_id != trim(provider_session_id)
+                 OR length(trim(provider_session_id)) > 160
+             )"""
+    ).fetchone()[0])
+    duplicate_group_count = int(connection.execute(
+        """SELECT COUNT(*) FROM (
+               SELECT agent_id, trim(provider_session_id) AS normalized_provider_session_id
+               FROM agent_sessions
+               WHERE provider_session_id IS NOT NULL
+                 AND length(trim(provider_session_id)) > 0
+               GROUP BY agent_id, trim(provider_session_id)
+               HAVING COUNT(*) > 1
+           )"""
+    ).fetchone()[0])
+    if not noncanonical and not duplicate_group_count:
+        return
+
+    affected_agents = [
+        row["agent_id"] for row in connection.execute(
+            """SELECT DISTINCT agent_id FROM (
+                   SELECT agent_id, trim(provider_session_id) AS normalized_provider_session_id
+                   FROM agent_sessions
+                   WHERE provider_session_id IS NOT NULL
+                     AND length(trim(provider_session_id)) > 0
+                   GROUP BY agent_id, trim(provider_session_id)
+                   HAVING COUNT(*) > 1
+               ) ORDER BY agent_id LIMIT 10"""
+        ).fetchall()
+    ]
+    details = []
+    if noncanonical:
+        details.append(f"{noncanonical} non-canonical Provider Session ID row(s)")
+    if duplicate_group_count:
+        details.append(
+            f"{duplicate_group_count} duplicate (Agent, Provider Session ID) group(s)"
+        )
+    if affected_agents:
+        details.append("affected Agent IDs: " + ", ".join(affected_agents))
+    raise RuntimeError(
+        "Hub migration v7 blocked by legacy Session binding preflight: "
+        + "; ".join(details)
+        + ". Repair only on a verified backup, then rerun the migration."
+    )
+
 
 
 def _provider_for(label: str | None) -> tuple[str, str]:
@@ -438,7 +500,135 @@ _AGENT_EVENT_CONSUMER_V6 = Migration(
     ),
 )
 
-MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3, _AGENT_EVENT_INBOX_V4, _AGENT_EVENT_GATEWAY_V5, _AGENT_EVENT_CONSUMER_V6)
+
+_AGENT_SESSION_PROJECTION_V7 = Migration(
+    version=7,
+    name="agent_session_projection_read_models",
+    statements=(
+        """ALTER TABLE agent_sessions
+           ADD COLUMN last_inbox_seq INTEGER NOT NULL DEFAULT 0
+           CHECK(last_inbox_seq >= 0)""",
+        """CREATE UNIQUE INDEX idx_agent_sessions_agent_provider_session_unique
+           ON agent_sessions(agent_id, provider_session_id)
+           WHERE provider_session_id IS NOT NULL""",
+        """CREATE UNIQUE INDEX idx_agent_event_inbox_seq_agent_unique
+           ON agent_event_inbox(inbox_seq, agent_id)""",
+        """CREATE TABLE agent_session_messages (
+            message_id TEXT PRIMARY KEY
+                CHECK(length(trim(message_id)) BETWEEN 1 AND 128),
+            session_id TEXT NOT NULL REFERENCES agent_sessions(session_id)
+                ON DELETE RESTRICT,
+            provider_message_id TEXT NOT NULL
+                CHECK(length(trim(provider_message_id)) BETWEEN 1 AND 160),
+            provider_run_id TEXT
+                CHECK(provider_run_id IS NULL OR
+                      length(trim(provider_run_id)) BETWEEN 1 AND 160),
+            content TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL CHECK(status IN (
+                'streaming','completed','failed','interrupted','incomplete'
+            )),
+            phase TEXT CHECK(phase IS NULL OR length(phase) <= 64),
+            first_inbox_seq INTEGER NOT NULL REFERENCES agent_event_inbox(inbox_seq)
+                ON DELETE RESTRICT,
+            last_inbox_seq INTEGER NOT NULL REFERENCES agent_event_inbox(inbox_seq)
+                ON DELETE RESTRICT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            completed_at REAL,
+            UNIQUE(session_id, provider_message_id),
+            CHECK(last_inbox_seq >= first_inbox_seq),
+            CHECK(length(CAST(content AS BLOB)) <= 4194304),
+            CHECK((status='completed' AND completed_at IS NOT NULL)
+                OR (status!='completed' AND completed_at IS NULL))
+        )""",
+        """CREATE INDEX idx_agent_session_messages_session_created
+           ON agent_session_messages(session_id, created_at, message_id)""",
+        """CREATE INDEX idx_agent_session_messages_session_run
+           ON agent_session_messages(session_id, provider_run_id, status)""",
+        """CREATE TABLE agent_session_runs (
+            run_record_id TEXT PRIMARY KEY
+                CHECK(length(trim(run_record_id)) BETWEEN 1 AND 128),
+            session_id TEXT NOT NULL REFERENCES agent_sessions(session_id)
+                ON DELETE RESTRICT,
+            provider_run_id TEXT NOT NULL
+                CHECK(length(trim(provider_run_id)) BETWEEN 1 AND 160),
+            status TEXT NOT NULL CHECK(status IN (
+                'running','completed','failed','interrupted'
+            )),
+            started_at REAL,
+            updated_at REAL NOT NULL,
+            ended_at REAL,
+            first_inbox_seq INTEGER NOT NULL REFERENCES agent_event_inbox(inbox_seq)
+                ON DELETE RESTRICT,
+            last_inbox_seq INTEGER NOT NULL REFERENCES agent_event_inbox(inbox_seq)
+                ON DELETE RESTRICT,
+            UNIQUE(session_id, provider_run_id),
+            CHECK(last_inbox_seq >= first_inbox_seq),
+            CHECK((status='running' AND ended_at IS NULL)
+                OR (status!='running' AND ended_at IS NOT NULL))
+        )""",
+        """CREATE INDEX idx_agent_session_runs_session_started
+           ON agent_session_runs(session_id, started_at, run_record_id)""",
+        """CREATE TABLE agent_event_projection_receipts (
+            consumer_id TEXT NOT NULL
+                CHECK(length(trim(consumer_id)) BETWEEN 1 AND 80),
+            agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+            inbox_seq INTEGER NOT NULL,
+            event_id TEXT NOT NULL
+                CHECK(length(trim(event_id)) BETWEEN 1 AND 160),
+            event_type TEXT NOT NULL
+                CHECK(length(trim(event_type)) BETWEEN 1 AND 64),
+            outcome TEXT NOT NULL CHECK(outcome IN (
+                'applied','ignored','blocked','skipped'
+            )),
+            reason_code TEXT
+                CHECK(reason_code IS NULL OR
+                      length(trim(reason_code)) BETWEEN 1 AND 80),
+            attempt_count INTEGER NOT NULL DEFAULT 1 CHECK(attempt_count >= 1),
+            first_attempt_at REAL NOT NULL,
+            last_attempt_at REAL NOT NULL,
+            projected_at REAL,
+            PRIMARY KEY(consumer_id, agent_id, inbox_seq),
+            UNIQUE(consumer_id, agent_id, event_id),
+            FOREIGN KEY(inbox_seq, agent_id)
+                REFERENCES agent_event_inbox(inbox_seq, agent_id)
+                ON DELETE RESTRICT,
+            CHECK(last_attempt_at >= first_attempt_at),
+            CHECK((outcome='blocked' AND projected_at IS NULL)
+                OR (outcome!='blocked' AND projected_at IS NOT NULL))
+        )""",
+        """CREATE INDEX idx_agent_event_projection_receipts_outcome
+           ON agent_event_projection_receipts(
+               consumer_id, agent_id, outcome, inbox_seq
+           )""",
+        """CREATE TABLE agent_event_projection_resolutions (
+            resolution_id TEXT PRIMARY KEY
+                CHECK(length(trim(resolution_id)) BETWEEN 1 AND 128),
+            consumer_id TEXT NOT NULL
+                CHECK(length(trim(consumer_id)) BETWEEN 1 AND 80),
+            agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+            inbox_seq INTEGER NOT NULL,
+            event_id TEXT NOT NULL
+                CHECK(length(trim(event_id)) BETWEEN 1 AND 160),
+            action TEXT NOT NULL CHECK(action='skip'),
+            reason TEXT NOT NULL
+                CHECK(length(trim(reason)) BETWEEN 1 AND 500),
+            actor TEXT NOT NULL
+                CHECK(length(trim(actor)) BETWEEN 1 AND 80),
+            resolved_at REAL NOT NULL,
+            UNIQUE(consumer_id, agent_id, inbox_seq),
+            FOREIGN KEY(consumer_id, agent_id, inbox_seq)
+                REFERENCES agent_event_projection_receipts(
+                    consumer_id, agent_id, inbox_seq
+                ) ON DELETE RESTRICT
+        )""",
+        """CREATE INDEX idx_agent_event_projection_resolutions_agent_time
+           ON agent_event_projection_resolutions(agent_id, resolved_at DESC)""",
+    ),
+)
+
+
+MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3, _AGENT_EVENT_INBOX_V4, _AGENT_EVENT_GATEWAY_V5, _AGENT_EVENT_CONSUMER_V6, _AGENT_SESSION_PROJECTION_V7)
 
 
 def apply_migrations(
@@ -478,6 +668,8 @@ def apply_migrations(
                     )
                 continue
 
+            if migration.version == 7:
+                _preflight_agent_session_projection_v7(connection)
             for statement in migration.statements:
                 connection.execute(statement)
             if migration.version == 1:
