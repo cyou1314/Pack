@@ -23,8 +23,7 @@ public enum PackHubURLPolicy {
                 && components.port == 8794
         }
         if scheme == "https" {
-            let isPinggy = host == "pinggy-free.link"
-                || host.hasSuffix(".pinggy-free.link")
+            let isPinggy = host.hasSuffix(".pinggy-free.link")
             return isPinggy && (components.port == nil || components.port == 443)
         }
         return false
