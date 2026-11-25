@@ -402,7 +402,7 @@ def uninstall():
                                        'backup-db.sh', 'verify-backup.sh'))
         if engine_owned:
             remove_program_files(engine, ('app', 'Electron.app'))
-        if (not engine_owned and 'engine' not in blocked_agents
+        if ('engine' not in blocked_agents
                 and is_managed_root(socket_dir, 'socket') and not socket_dir.is_symlink()):
             shutil.rmtree(socket_dir)
 
