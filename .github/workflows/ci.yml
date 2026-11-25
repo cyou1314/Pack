@@ -75,7 +75,7 @@ jobs:
             node --check "$f"
           done
       - name: Runtime unit tests
-        run: node --test runtime/tests/*.test.mjs runtime/muse4ai-bridge/tests/*.test.mjs runtime/l2-handoff/*.test.cjs
+        run: node --test runtime/tests/*.test.mjs runtime/muse4ai-bridge/tests/*.test.mjs runtime/l2-handoff/*.test.cjs runtime/browser-driver/sessions.test.mjs
 
   app:
     name: macOS App / build
@@ -103,3 +103,22 @@ jobs:
           trap 'rm -rf "$STAGE"' EXIT
           bash app/make-bundle.sh "$STAGE/Pack.app"
           test -x "$STAGE/Pack.app/Contents/MacOS/PackApp"
+
+  browser:
+    name: Browser / Chromium isolation
+    runs-on: macos-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: runtime/browser-driver
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned Playwright Core
+        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
+      - name: Install matching Chromium
+        run: node node_modules/playwright-core/cli.js install chromium
+      - name: Local browser isolation smoke
+        run: node --test chromium.smoke.mjs

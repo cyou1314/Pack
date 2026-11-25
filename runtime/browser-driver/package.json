@@ -1,0 +1,12 @@
+{
+  "name": "pack-browser-driver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "playwright-core": "1.65.1"
+  }
+}
