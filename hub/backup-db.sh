@@ -7,6 +7,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 HUB="${PACK_HUB_DIR:-$HERE}"
 DIR="${PACK_BACKUP_DIR:-$HUB/backups}"
 KEEP="${PACK_BACKUP_KEEP:-14}"
+if [[ ! "$KEEP" =~ ^[0-9]+$ ]] || [ "$KEEP" -lt 1 ]; then
+  echo "backup failed: PACK_BACKUP_KEEP must be a positive integer" >&2
+  exit 1
+fi
+KEEP=$((10#$KEEP))
 DB="$HUB/pack.db"
 ATTACH="$HUB/attachments"
 LOG="$HUB/backup.log"
@@ -24,7 +29,7 @@ hash_file() {
   fi
 }
 
-stamp="$(date +%Y%m%d-%H%M%S)"
+stamp="$(date +%Y%m%d-%H%M%S)-$"
 db_out="$DIR/pack-$stamp.db"
 attachments_out="$DIR/attachments-$stamp.tar.gz"
 manifest_out="$DIR/manifest-$stamp.sha256"
@@ -49,20 +54,33 @@ tar -C "$HUB" -czf "$attachments_tmp" "$(basename "$ATTACH")"
 
 mv "$db_tmp" "$db_out"
 mv "$attachments_tmp" "$attachments_out"
-{
-  hash_file "$db_out"
-  hash_file "$attachments_out"
-} > "$manifest_tmp"
+(
+  cd "$DIR"
+  hash_file "$(basename "$db_out")"
+  hash_file "$(basename "$attachments_out")"
+) > "$manifest_tmp"
 mv "$manifest_tmp" "$manifest_out"
 
 now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 printf '%s backup=%s attachments=%s integrity=%s live=%s\n'   "$now" "$db_out" "$attachments_out" "$db_check" "$live_check" >> "$LOG"
 
-# Rotate complete backup sets, not individual files.
-ls -1t "$DIR"/pack-*.db 2>/dev/null | tail -n +"$((KEEP + 1))" | while IFS= read -r old_db; do
+# Rotate complete backup sets, not individual files. Orphaned/incomplete
+# database snapshots are removed and never count against the retention limit.
+complete_count=0
+while IFS= read -r old_db; do
+  [ -n "$old_db" ] || continue
   old_stamp="${old_db##*/pack-}"
   old_stamp="${old_stamp%.db}"
-  rm -f "$old_db" "$DIR/attachments-$old_stamp.tar.gz" "$DIR/manifest-$old_stamp.sha256"
-done
+  old_attachments="$DIR/attachments-$old_stamp.tar.gz"
+  old_manifest="$DIR/manifest-$old_stamp.sha256"
+  if [ ! -f "$old_attachments" ] || [ ! -f "$old_manifest" ]; then
+    rm -f "$old_db" "$old_attachments" "$old_manifest"
+    continue
+  fi
+  complete_count=$((complete_count + 1))
+  if [ "$complete_count" -gt "$KEEP" ]; then
+    rm -f "$old_db" "$old_attachments" "$old_manifest"
+  fi
+done < <(ls -1t "$DIR"/pack-*.db 2>/dev/null || true)
 
 echo "BACKUP OK: $stamp"
