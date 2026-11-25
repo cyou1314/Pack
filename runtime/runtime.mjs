@@ -20,7 +20,7 @@ import {parseQuotaSnapshot, quotaDue} from './quota-policy.mjs';
  * Smoke mode: node runtime.mjs --smoke "message"  (runs driver once)
  */
 import { readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { runBoundedProcess } from "./process-supervisor.mjs";
 import path from "node:path";
 import { format } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,12 @@ for (const level of ["log", "error"]) {
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const cfg = JSON.parse(readFileSync(path.join(DIR, "config.json"), "utf8"));
 const POLL_MS = (cfg.pollSeconds || 20) * 1000;
+const DRIVER_TIMEOUT_MS = Number.isSafeInteger(cfg.driverTimeoutMs)
+  && cfg.driverTimeoutMs >= 30_000 && cfg.driverTimeoutMs <= 30 * 60_000
+  ? cfg.driverTimeoutMs : 6 * 60_000;
+const DRIVER_MAX_OUTPUT_BYTES = Number.isSafeInteger(cfg.driverMaxOutputBytes)
+  && cfg.driverMaxOutputBytes >= 64 * 1024 && cfg.driverMaxOutputBytes <= 32 * 1024 * 1024
+  ? cfg.driverMaxOutputBytes : 8 * 1024 * 1024;
 // approval marker tag, built from char codes to survive any encoding path
 const NEED_TAG = String.fromCharCode(0x3010, 0x9700, 0x6279, 0x51c6, 0x3011);
 
@@ -145,32 +151,29 @@ async function mcpInit() {
   }).catch(() => {});
 }
 
-function runDriver(message, signal, chat = null) {
-  // ego-browser nodejs reads program source from stdin (no file argument),
-  // so compose: task injection + primitives (Mac-local) + core flow.
+async function runDriver(message, signal, chat = null) {
+  // ego-browser reads composed source from stdin. Bound execution time and
+  // combined output so a stuck page or runaway log cannot hold the task slot
+  // or grow the Runtime process without limit.
   const primitives = readFileSync(path.join(DIR, "driver-primitives.js"), "utf8");
   const core = readFileSync(path.join(DIR, chat?.action === "quota" ? "quota-driver.js" : chat ? "chat-driver.js" : "driver-core.js"), "utf8");
   const task = { profileId: cfg.profileId, spaceName: cfg.spaceName, message, ...(chat || {}) };
-  const source = `globalThis.PACK_TASK = ${JSON.stringify(task)};\n${primitives}\n${core}`;
-  return new Promise((resolve, reject) => {
-    const child = spawn(cfg.egoBin || "ego-browser", ["nodejs"], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let out = "", err = "";
-    if (signal) { if (signal.aborted) child.kill(); else signal.addEventListener("abort", () => child.kill(), {once:true}); }
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", reject);
-    child.on("close", (code) => {
-      const line = (out + "\n" + err).split("\n").filter((l) => l.startsWith("DRIVER-RESULT")).pop();
-      if (!line) return reject(new Error(`driver no result (code ${code}): ${err.slice(0, 300)}`));
-      try { resolve(JSON.parse(line.slice("DRIVER-RESULT".length).trim())); }
-      catch { reject(new Error("driver result not json")); }
-    });
-    child.stdin.write(source);
-    child.stdin.end();
+  const source = `globalThis.PACK_TASK = ${JSON.stringify(task)};\\n${primitives}\\n${core}`;
+  const result = await runBoundedProcess(cfg.egoBin || "ego-browser", ["nodejs"], {
+    input: source,
+    signal,
+    cwd: DIR,
+    timeoutMs: DRIVER_TIMEOUT_MS,
+    maxOutputBytes: DRIVER_MAX_OUTPUT_BYTES,
   });
+  if (result.code !== 0) throw new Error(`driver_exit_${result.code ?? result.signal ?? "unknown"}`);
+  const line = (result.stdout + "\\n" + result.stderr).split("\\n")
+    .filter(value => value.startsWith("DRIVER-RESULT")).pop();
+  if (!line) throw new Error("driver_no_result");
+  try { return JSON.parse(line.slice("DRIVER-RESULT".length).trim()); }
+  catch { throw new Error("driver_result_not_json"); }
 }
+
 
 
 let failStreak = 0;
