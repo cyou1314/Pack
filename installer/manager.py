@@ -168,7 +168,8 @@ def is_managed_root(root, role):
 def is_allowed_hub_url(value):
     try:
         url = urlsplit(value)
-        if (url.username or url.password or url.query or url.fragment
+        if (url.username is not None or url.password is not None
+                or url.query or url.fragment or '?' in value or '#' in value
                 or url.path != '/mcp'):
             return False
         if url.scheme == 'http':
