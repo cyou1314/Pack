@@ -29,7 +29,7 @@ hash_file() {
   fi
 }
 
-stamp="$(date +%Y%m%d-%H%M%S)-$"
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
 db_out="$DIR/pack-$stamp.db"
 attachments_out="$DIR/attachments-$stamp.tar.gz"
 manifest_out="$DIR/manifest-$stamp.sha256"
