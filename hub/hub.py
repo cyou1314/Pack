@@ -3801,6 +3801,8 @@ def build_server():
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
             raise ValueError(f"no such task: {task_id}")
+        if t["status"] not in ("claimed", "working"):
+            raise ValueError(f"task is not actively held (status={t['status']})")
         if t["assignee"] != me["id"] or not t["claim_token"] or not hmac.compare_digest(t["claim_token"], claim_token or ""):
             raise ValueError("not the current holder (claim_token mismatch)")
         return t
@@ -3834,7 +3836,7 @@ def build_server():
             # （staging14 复检 C6 语句级实证）。complete/block 同此修。
             cur = conn.execute(
                 "UPDATE tasks SET status='working', lease_expires=?, updated_at=? "
-                "WHERE id=? AND assignee=? AND claim_token=?",
+                "WHERE id=? AND assignee=? AND claim_token=? AND status IN ('claimed','working')",
                 (now + LEASE_SECONDS, now, task_id, me["id"], claim_token))
             if cur.rowcount != 1:
                 conn.close()
@@ -3895,7 +3897,7 @@ def build_server():
                 stored = env["summary"]
             now = time.time()
             cur = conn.execute(
-                "UPDATE tasks SET status='review', result=?, envelope=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND assignee=? AND claim_token=?",
+                "UPDATE tasks SET status='review', result=?, envelope=?, claim_token=NULL, lease_expires=NULL, updated_at=? WHERE id=? AND assignee=? AND claim_token=? AND status IN ('claimed','working')",
                 (stored, json.dumps(env, ensure_ascii=False) if env else None, now, task_id,
                  me["id"], claim_token))
             if cur.rowcount != 1:
@@ -3969,7 +3971,7 @@ def build_server():
             now = _now()
             nca = now + _backoff_seconds(fc, t["attempts"])
             cur = conn.execute(
-                "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? WHERE id=? AND assignee=? AND claim_token=?",
+                "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? WHERE id=? AND assignee=? AND claim_token=? AND status IN ('claimed','working')",
                 (reason, fc, nca, now, task_id, me["id"], claim_token))
             if cur.rowcount != 1:
                 conn.close()
