@@ -64,7 +64,7 @@
 
 **2026-11-24 Hub Inbox Consumer Lease / ACK（设计与内部实现）：** PR #44 建立协议设计；PR #45 新增 additive migration v6，为每个 Consumer + Agent 建立独立连续 cursor、限时 Lease 与 Lease items，并为 `(agent_id,inbox_seq)` 增加范围索引。内部服务支持有条数/字节上限的顺序 claim、每个 Consumer + Agent 单一 active Lease、部分 ACK、幂等重试、release 与过期回收。所有 claim/ACK/release/cursor 操作都接收 Hub trusted resolver 签发的 issuer-owned ConsumerPrincipal，并从 principal 派生 consumer_id；Lease capability 与 Consumer 身份双重校验。completed ACK 在 24 小时窗口内只允许只读重试。**PR #45 当前已实现服务层、migration v6、真实 SQLite 测试与合约快照；GitHub Actions #1215 的 Hub、Runtime、macOS 三组 CI 全部通过，最新 Codex Review 未发现重大问题。PR 仍开放且未合入；不新增公开端点、不做业务副作用、不接生产 Runtime。** 详细契约见 M2-INBOX-CONSUMER-DESIGN.md。
 
-**下一切片（Hub Event Projection / Session Recovery，设计已建立）：** 新增 M2-HUB-EVENT-PROJECTION-DESIGN.md，定义 Inbox 到 Agent Session messages/runs/tool calls/approvals 的独立投影模型，明确不复用现有 rooms/messages/tasks/runs；关键门槛是把 ACK 拆为同连接事务 helper，使投影副作用、projection receipt 和 Consumer cursor 在一个 SQLite 事务内提交。定义 Session ID / Provider Session ID 映射、跨 Agent 隔离、poison event quarantine、显式 replay 与 generation rebuild。当前仅完成设计文档，尚未实现 migration v7 或业务投影；下一步先核对真实 payload 与历史 Session ID 唯一性，再实现最小投影闭环。
+**下一切片（Hub Event Projection / Session Recovery，PR #48 设计）：** 设计已对齐 M2a 的 Session ID 契约：sessionId 始终是 Provider ID，hubSessionId 是 Hub Session 主键；session.created 只能绑定 Hub 预创建的 creating 行，不能创建或覆盖 Session。首版 migration v7 只包括 Agent Session Messages / Runs、Projection Receipts / Resolutions 和 last_inbox_seq；Tool / Approval / Usage 先写 ignored receipt，不提前建立不完整读模型。ACK 必须拆成同连接事务 helper；blocked 事件不自动 ACK，只有修复重试或 dispatcher / owner 审计 skip 才能越过。Session Read API 与完整 generation rebuild 后置，避免 receipt / cursor 无 generation 维度却宣称支持重建。当前仍为设计文档，未实现 migration v7、Projector 或生产 Runtime 接线。
 
 **2026-11-24 第四个切片（Agent Event Gateway）：** 新增 Hub migration v5：一次性配对码、Agent 专属 events:write Token、失败计数与索引；新增配对码创建/兑换、Token 撤销、Agent Token 认证与带身份绑定的事件写入服务；新增 /agent/pair/create、/agent/pair/redeem、/agent/events、/agent/tokens/revoke HTTP 路由。明文 Token 只在兑换响应出现一次，数据库只存哈希；Agent / Provider 身份由 Token 绑定关系派生；写入与 Token last-used 在同一事务中提交；事件有 256 KiB 请求上限、1200 条/分钟默认限流、重复事件不消耗新事件预算。新增凭证/配对/限流/幂等测试。**第五个切片已在此 Gateway 之上加入独立 Outbox Delivery Worker，但尚未接入生产 Runtime；下游消费 ACK/租约、Session Cursor 与断线 replay 仍未实现。** 详细协议见 M2-AGENT-EVENT-GATEWAY.md。
 
@@ -189,11 +189,11 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 - [ ] 浏览器和桌面操作有独立权限与审计。
 - [ ] 旧任务、审批和 external 安全隔离无回归。
 
-## 8. 2026-11-23 实施状态校准
+## 8. 2026-11-25 实施状态校准
 
 - **M0 Agent Core Foundation：** Descriptor / Registry / Event Envelope / Context Package / Codex App Server Adapter 与 mock contract tests 已存在；这只代表基础骨架完成，不代表已装配到生产 Runtime。
 - **M1 Agent Registry：** M1a/M1b 已合入 v2 Foundation（PR #21/#22/#23）；并发迁移、只读 CLI 和敏感字段输出测试通过 CI。PR #24 已将 SQLite quick_check / foreign_key_check 加入 Shadow readiness；PR #34 已增加 task hot-path migration v3，M1c Shadow CLI 会核对当前全部 migration checksum。真实 Mac 数据库尚未检查，M1c API 尚未开放。
-- **M2 Runtime / Event Gateway：** 首个 Supervisor 切片已实现，负责 Adapter 生命周期、Session 操作、事件校验/串行 append 和审批 fail-closed；但 `runtime/runtime.mjs` 仍是 Muse ego v1 主循环，Supervisor 未接入生产入口。Event Store 目前只有注入式接口，没有生产 durable Inbox/Outbox、Hub Gateway、游标/ack/replay、自动重连或 Hub/App 审批闭环。
+- **M2 Runtime / Event Gateway：** PR #39 Supervisor 与 PR #41 Durable Runtime Outbox / Hub Inbox 基础已合入 v2 Foundation；PR #43 Outbox Delivery Worker、PR #45 Inbox Consumer Lease / ACK 已有独立实现且 CI 通过，但仍开放待最终审查 / 合入；PR #47 M2a Session Binding 仍为 Draft，过期 feature 断言已修正、最新 CI 重跑中；PR #48 定义后续原子 Session Projection。当前仍未接入生产 Runtime 主循环，未实现 Session Projector / Read API / SwiftUI，也未在用户 Mac 数据库上迁移或部署。
 - **M3 Provider Adapter：** Codex Adapter 有 mock 测试，但真实 Mac App Server 登录、Session/Turn、断线恢复和审批闭环未验收；ChatGPT、Doubao 等 Adapter 仍按 Provider Matrix 单独验证。
 - **安全门槛：** 在 M2 Event Gateway、Hub Permission/Approval/Audit 与 SwiftUI 人工审批闭环完成前，不开放 Codex command/file 高风险工具自动执行。
 - **执行顺序：** M1a additive migration → M1b shadow read → M1c read-only API 评估 → M2 Supervisor/Session Manager/Inbox-Outbox/Event Gateway → M3 真实 Provider 验收。真实 Mac 部署继续后置。
