@@ -118,9 +118,12 @@ final class AgentProfileTests: XCTestCase {
             memoryBoundary: .packManaged
         )
         let data = try JSONEncoder().encode(profile)
-        let json = String(decoding: data, as: UTF8.self)
-        XCTAssertFalse(json.contains("sk-"))
-        XCTAssertTrue(json.contains("keychain:openai:primary"))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNil(object["apiKey"])
+        XCTAssertNil(object["secret"])
+        let credential = try XCTUnwrap(object["credentialReference"] as? [String: Any])
+        XCTAssertEqual(credential["vaultKey"] as? String, "keychain:openai:primary")
         XCTAssertEqual(try JSONDecoder().decode(AgentProfile.self, from: data), profile)
     }
 }
