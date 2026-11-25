@@ -18,6 +18,17 @@ final class CollaborationWorkspaceModelsTests: XCTestCase {
             XCTAssertEqual(value.canPublishFinal,expected)
         }
     }
+    func testReviewRequiresUnapprovedStepAndVersion() throws {
+        let version = String(repeating:"a",count:64)
+        for (step,approved,expected) in [(nil as String?,false,false),("answer",true,false),("answer",false,true)] {
+            var obj: [String:Any] = ["run_id":"r","approved":approved,"result":"text","review_version":version]
+            if let step { obj["step_key"] = step }
+            let value = try JSONDecoder().decode(CollaborationWorkspaceResult.self,
+                from:JSONSerialization.data(withJSONObject:obj))
+            XCTAssertEqual(value.canReview,expected)
+            XCTAssertFalse(value.canPublishFinal)
+        }
+    }
     func testUnknownMeteringIsNotZero() throws {
         let data = Data(#"{"run_id":"r","registered_attempts":1,"metered_attempts":0,"unmetered_registered_attempts":1,"reported_input_tokens":null,"reported_output_tokens":null}"#.utf8)
         let value = try JSONDecoder().decode(CollaborationWorkspaceUsage.self,from:data)

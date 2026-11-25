@@ -142,3 +142,7 @@ Swift API host 与 Node runner 将已解析的 input/output tokens 随 task_comp
 ## 第二十一阶段：协作任务创建表单
 
 macOS 协作工作台添加新建入口：私有任务正文、Focus/Compare/Team、成员数、调用预算、相对截止时间、未知额度显式选项；只读角色预览显示成员名称及 Provider，经群主确认才提交。客户端校验预览角色/预算/候选资格，固定 request_key、正文、deadline、成员与预算；异常回执锁定原请求，可通过 owner-only `collaboration_request_lookup` 按原房间与键核对，或显式原键重试，不自动生成新任务。表单临时内存状态，不把私有正文写 UserDefaults；退出/进程终止/中枢切换丢失待核对请求，须刷新确认后再创建。路由预览非预留，执行时仍需验证账号与出口授权；当前只支持使用推荐分配，未提供任意手工选人、原子在线预留或实际费用约束。新增 Swift 模型及 Hub MCP 回归，生产 schema 仍关闭。
+
+## 第二十二阶段：群主审核、取消及操作核对
+
+新增 owner-only `collaboration_review`：绑定 managed run/step 与私有检查返回的精确 review_version（任务 ID、正文、envelope、更新时间的摘要），同一写事务复核 active、未归档、待审核、纯文本结果，再复用 dispatcher 状态转换逻辑；通过后按既定 DAG 派发，拒绝则停止整组。旧 dispatcher 审核保留；结构化 envelope 仍使用旧任务板，不在新界面简化审核。SwiftUI 成果卡确认审核/拒绝、协作卡确认取消；回执异常不重放，锁定本页面其他审核/取消并通过 status + workspace 刷新核对。核对为当前状态，不保证原请求生效；离开页面或重启会丢失内存核对标记。Hub 停止不能保证上游模型取消或不计费，未知本机租约仍须人工安全恢复；不自动重试、不重新认领。新增真实 MCP 与 Swift 模型回归，生产 schema 未启用。

@@ -15,6 +15,23 @@ struct CollaborationWorkspaceView: View {
     @State private var confirmPublish = false
     @State private var loaded = false
     @State private var showCreate = false
+    private enum Control {
+        case review(run: String, step: String, version: String, approve: Bool)
+        case cancel(run: String)
+        var prompt: String {
+            switch self {
+            case .review(_,_,_,true): return "通过审核后，已授权的后续步骤可能被派发。"
+            case .review(_,_,_,false): return "拒绝成果会停止整组协作，不会自动重试。"
+            case .cancel: return "停止整组协作；已经发送给模型的请求可能仍在运行或计费。"
+            }
+        }
+        var destructive: Bool {
+            switch self { case .review(_,_,_,true): return false; default: return true }
+        }
+    }
+    @State private var control: Control?
+    @State private var confirmControl = false
+    @State private var uncertainRun: String?
     @State private var requestGeneration = UUID()
 
     var body: some View {
@@ -36,6 +53,11 @@ struct CollaborationWorkspaceView: View {
             } else {
                 if busy { ProgressView().controlSize(.small) }
                 if !note.isEmpty { Text(note).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.amber) }
+                if let uncertainRun {
+                    Button("核对操作状态 · \(uncertainRun.prefix(8))") {
+                        Task { await reconcile(uncertainRun) }
+                    }.disabled(busy)
+                }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: DesignTokens.boardGap) {
                         if loaded && runs.isEmpty { Text("当前房间尚无协作任务").foregroundStyle(DesignTokens.subText) }
@@ -61,6 +83,14 @@ struct CollaborationWorkspaceView: View {
             if available { Task { await load() } }
         }
         .onDisappear { clear() }
+        .alert("确认协作操作", isPresented: $confirmControl, presenting: control) { action in
+            Button(action.destructive ? "确认停止" : "确认通过", role: action.destructive ? .destructive : nil) {
+                Task { await applyControl(action) }
+            }
+            Button("返回", role: .cancel) { control = nil }
+        } message: { action in
+            Text(action.prompt)
+        }
         .confirmationDialog("发布已审核最终成果？", isPresented: $confirmPublish, titleVisibility: .visible) {
             Button("确认发布到当前房间") { if let result { Task { await publish(result) } } }
             Button("取消", role: .cancel) {}
@@ -94,6 +124,10 @@ struct CollaborationWorkspaceView: View {
             Divider()
             HStack {
                 Button("用量") { Task { await readUsage(run.id) } }.disabled(busy)
+                if run.status == "active" {
+                    Button("取消协作…") { control = .cancel(run: run.id); confirmControl = true }
+                        .disabled(busy || uncertainRun != nil)
+                }
                 Spacer()
                 if run.publication != nil { Text("已发布").foregroundStyle(DesignTokens.okGreen) }
                 if run.finalResultAvailable {
@@ -124,6 +158,23 @@ struct CollaborationWorkspaceView: View {
             }
             // Verbatim plain text; no model-generated clickable links or markup.
             Text(verbatim: value.result).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            if value.canReview, let step = value.stepKey, let version = value.reviewVersion,
+               runs.contains(where: { $0.id == value.runId && $0.status == "active" &&
+                   $0.steps.contains { $0.key == step && $0.taskStatus == "review" } }) {
+                HStack {
+                    Button("通过审核…") {
+                        control = .review(run:value.runId,step:step,version:version,approve:true)
+                        confirmControl = true
+                    }.buttonStyle(.borderedProminent)
+                    Button("拒绝并停止…") {
+                        control = .review(run:value.runId,step:step,version:version,approve:false)
+                        confirmControl = true
+                    }
+                }.disabled(busy || uncertainRun != nil)
+            } else if !value.approved {
+                Text("该成果当前不能在此审核。结构化成果请使用原任务板。")
+                    .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            }
             if value.canPublishFinal && runs.first(where: { $0.id == value.runId })?.publication == nil {
                 Button("发布最终成果…") { confirmPublish = true }.disabled(busy)
             }
@@ -133,7 +184,7 @@ struct CollaborationWorkspaceView: View {
     private func clear() {
         requestGeneration = UUID()
         runs = []; cursor = nil; result = nil; usage = nil; note = ""; loaded = false
-        busy = false; confirmPublish = false
+        busy = false; confirmPublish = false; confirmControl = false; control = nil; uncertainRun = nil
     }
     @MainActor private func load(before: Int? = nil) async {
         guard !busy, state.collaborationOwnerAvailable else { return }
@@ -205,6 +256,71 @@ struct CollaborationWorkspaceView: View {
             }
         }
     }
+    @MainActor private func applyControl(_ action: Control) async {
+        guard !busy, uncertainRun == nil, state.collaborationOwnerAvailable else { return }
+        let generation = requestGeneration, scope = state.collaborationScope
+        let runId: String
+        switch action {
+        case .review(let run,let step,let version,_):
+            guard result?.runId == run, result?.stepKey == step, result?.reviewVersion == version,
+                  result?.canReview == true,
+                  runs.contains(where: { $0.id == run && $0.status == "active" &&
+                      $0.steps.contains { $0.key == step && $0.taskStatus == "review" } }) else { return }
+            runId = run
+        case .cancel(let run):
+            guard runs.contains(where: { $0.id == run && $0.status == "active" }) else { return }
+            runId = run
+        }
+        busy = true; note = ""; control = nil
+        defer { if generation == requestGeneration { busy = false } }
+        do {
+            let status: String
+            switch action {
+            case .review(let run,let step,let version,let approve):
+                let receipt = try await state.collaborationOwnerRequest("collaboration_review",
+                    args:["run_id":run,"step_key":step,"expected_version":version,"approve":approve],
+                    scope:scope, as:CollaborationReviewReceipt.self)
+                guard receipt.runId == run, receipt.stepKey == step,
+                      receipt.status == (approve ? "done" : "cancelled") else {
+                    throw HubError.badResponse("review receipt mismatch")
+                }
+                status = receipt.runStatus
+            case .cancel(let run):
+                let receipt = try await state.collaborationOwnerRequest("collaboration_cancel",
+                    args:["run_id":run],scope:scope,as:CollaborationControlStatus.self)
+                guard receipt.runId == run, ["cancelled","failed","expired","succeeded"].contains(receipt.status)
+                else { throw HubError.badResponse("cancel receipt mismatch") }
+                status = receipt.status
+            }
+            guard generation == requestGeneration, !Task.isCancelled else { return }
+            result = nil; busy = false
+            await load()
+            if generation == requestGeneration { note = "操作已确认 · \(statusLabel(status))" }
+        } catch {
+            guard generation == requestGeneration else { return }
+            result = nil; uncertainRun = runId
+            note = "操作结果未确认，请核对当前状态；不会自动重复审核或取消。"
+        }
+    }
+
+    @MainActor private func reconcile(_ id: String) async {
+        guard !busy, uncertainRun == id, state.collaborationOwnerAvailable else { return }
+        let generation = requestGeneration, scope = state.collaborationScope
+        busy = true
+        defer { if generation == requestGeneration { busy = false } }
+        do {
+            let value = try await state.collaborationOwnerRequest("collaboration_status",
+                args:["run_id":id],scope:scope,as:CollaborationControlStatus.self)
+            guard generation == requestGeneration, value.runId == id, !Task.isCancelled else { return }
+            busy = false
+            await load()
+            if generation == requestGeneration && loaded {
+                uncertainRun = nil
+                note = "已读取当前协作状态 · \(statusLabel(value.status))；请重新查看步骤，不代表原操作必然成功。"
+            }
+        } catch { if generation == requestGeneration { note = "状态核对失败，尚未确认原操作结果。" } }
+    }
+
     private func modeLabel(_ mode: String) -> String {
         ["focus":"单 Agent","compare":"独立分析","team":"团队协作"][mode] ?? mode
     }

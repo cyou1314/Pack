@@ -1501,6 +1501,14 @@ def _collaboration_workspace_snapshot(conn, run_id):
     return out
 
 
+def _collaboration_review_version(row):
+    """Opaque version for the exact text, envelope and task revision inspected."""
+    import hashlib
+    data = json.dumps([row["id"],row["result"],row["envelope"],row["updated_at"]],
+                      ensure_ascii=False,separators=(",",":")).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
 def _collaboration_final_result(conn, run_id):
     """Only return the approved terminal result, never intermediate output."""
     row = conn.execute("""
@@ -4471,7 +4479,7 @@ def build_server():
                     return {"run_id":run_id,"result":text,"approved":True,
                             "sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()}
                 row = conn.execute("""
-                    SELECT t.id,t.status,t.result,s.role FROM collaboration_task_links l
+                    SELECT t.id,t.status,t.result,s.role,t.envelope,t.updated_at FROM collaboration_task_links l
                     JOIN tasks t ON t.id=l.task_id
                     JOIN collaboration_steps s ON s.run_id=l.run_id AND s.step_key=l.step_key
                     WHERE l.run_id=? AND l.step_key=? AND t.status IN ('review','done')
@@ -4479,7 +4487,43 @@ def build_server():
                 if not row or not isinstance(row[2],str) or len(row[2].encode("utf-8"))>16*1024:
                     raise ValueError("collaboration step result unavailable")
                 return {"run_id":run_id,"step_key":step_key,"task_id":row[0],
-                        "approved":row[1]=="done","result":row[2],"role":row[3]}
+                        "approved":row[1]=="done","result":row[2],"role":row[3],
+                        "review_version":_collaboration_review_version(row) if row[1]=="review" and row[4] is None else None}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_review(run_id: str, step_key: str, expected_version: str, approve: bool) -> dict:
+            """Owner-only review of the exact inspected plain-text step revision."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            from collaboration_store import write_transaction
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    _owner(conn,me["id"])
+                    request = _collaboration_managed_request(conn,run_id)
+                    if not request or request[0] != me["id"]:
+                        raise ValueError("collaboration run unavailable")
+                    row = conn.execute("""
+                        SELECT t.* FROM collaboration_task_links l
+                        JOIN tasks t ON t.id=l.task_id
+                        JOIN collaboration_runs r ON r.id=l.run_id
+                        JOIN rooms rm ON rm.id=r.room_id
+                        WHERE l.run_id=? AND l.step_key=? AND r.status='active'
+                          AND rm.archived_at IS NULL AND t.status='review'
+                        """,(run_id,step_key)).fetchone()
+                    if (not row or row["envelope"] is not None
+                            or not isinstance(row["result"],str) or not row["result"].strip()
+                            or len(row["result"].encode("utf-8"))>16*1024
+                            or expected_version != _collaboration_review_version(row)):
+                        raise ValueError("collaboration review version unavailable or changed")
+                    result = _review_task_locked(conn,me,row["id"],approve,"")
+                    result.update(run_id=run_id,step_key=step_key,
+                                  run_status=conn.execute(
+                                      "SELECT status FROM collaboration_runs WHERE id=?",(run_id,)).fetchone()[0])
+                    return result
             finally:
                 conn.close()
 
@@ -4791,6 +4835,71 @@ def build_server():
         finally:
             conn.close()
 
+    def _review_task_locked(conn, me, task_id, approve, note):
+        """Shared dispatcher/owner transition, caller owns the transaction."""
+        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not t:
+            raise ValueError(f"no such task: {task_id}")
+        if t["status"] != "review":
+            raise ValueError(f"task {task_id} not in review (status={t['status']})")
+        now = _now()
+        linked = _collaboration_active_task(conn, task_id, now)
+        if linked is not None and not approve:
+            _collaboration_stop(conn, linked, "failed", me["name"],
+                                "review_rejected", now)
+            conn.execute("UPDATE tasks SET review_note=? WHERE id=?", (note, task_id))
+            audit(conn, me["name"], "task_review", f"task {task_id} approve=False")
+            return {"task_id": task_id, "status": "cancelled"}
+        if linked is not None and t["envelope"]:
+            if json.loads(t["envelope"]).get("verdict") != "done":
+                raise ValueError("collaboration: partial or failed envelope cannot be approved")
+        if approve:
+            cur = conn.execute(
+                "UPDATE tasks SET status='done', review_note=?, fail_class=NULL, "
+                "next_claim_at=NULL, updated_at=? WHERE id=? AND status='review'",
+                (note, now, task_id))
+        else:
+            fc = t["fail_class"] or "unknown"
+            nca = now + _backoff_seconds(fc, t["attempts"])
+            cur = conn.execute(
+                "UPDATE tasks SET status='open', "
+                "assignee=CASE WHEN EXISTS(SELECT 1 FROM members "
+                "WHERE id=tasks.assignee AND removed_at IS NULL) "
+                "THEN assignee ELSE NULL END, review_note=?, next_claim_at=?, "
+                "updated_at=? WHERE id=? AND status='review'",
+                (note, nca, now, task_id))
+        if cur.rowcount != 1:
+            raise ValueError(f"task {task_id} changed during review; reload and retry")
+        if not approve:
+            audit(conn, me["name"], "task_review_backoff",
+                  f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
+        if linked is not None:
+            from collaboration_dispatch import reconcile_terminal
+            if not reconcile_terminal(conn, task_id, now=now):
+                raise RuntimeError("collaboration: review reconciliation failed")
+            state = conn.execute(
+                "SELECT s.status FROM collaboration_steps s JOIN collaboration_task_links l "
+                "ON l.run_id=s.run_id AND l.step_key=s.step_key WHERE l.task_id=?",
+                (task_id,)).fetchone()
+            if not state or state[0] != "succeeded":
+                raise RuntimeError("collaboration: review did not succeed")
+            # Managed runs advance only after approved prerequisites.
+            # Roll back *all* new grants/cards if any dispatch is
+            # invalid; retain the approved work and stop the run.
+            if _collaboration_managed_request(conn,linked):
+                conn.execute("SAVEPOINT collaboration_advance")
+                try:
+                    _collaboration_dispatch_ready(conn,linked,now)
+                except ValueError:
+                    conn.execute("ROLLBACK TO collaboration_advance")
+                    conn.execute("RELEASE collaboration_advance")
+                    _collaboration_stop(conn,linked,"failed",me["name"],
+                                        "next_step_unavailable",now)
+                else:
+                    conn.execute("RELEASE collaboration_advance")
+        audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
+        return {"task_id": task_id, "status": "done" if approve else "open"}
+
     @mcp.tool
     def task_review(task_id: int, approve: bool, note: str = "") -> dict:
         """Dispatcher review uses a guarded review-state transition; only one reviewer wins."""
@@ -4801,70 +4910,9 @@ def build_server():
             with _lock:
                 if _collaboration_present(conn):
                     conn.execute("BEGIN IMMEDIATE")
-                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-                if not t:
-                    raise ValueError(f"no such task: {task_id}")
-                if t["status"] != "review":
-                    raise ValueError(f"task {task_id} not in review (status={t['status']})")
-                now = _now()
-                linked = _collaboration_active_task(conn, task_id, now)
-                if linked is not None and not approve:
-                    _collaboration_stop(conn, linked, "failed", me["name"],
-                                        "review_rejected", now)
-                    conn.execute("UPDATE tasks SET review_note=? WHERE id=?", (note, task_id))
-                    audit(conn, me["name"], "task_review", f"task {task_id} approve=False")
-                    conn.commit()
-                    return {"task_id": task_id, "status": "cancelled"}
-                if linked is not None and t["envelope"]:
-                    if json.loads(t["envelope"]).get("verdict") != "done":
-                        raise ValueError("collaboration: partial or failed envelope cannot be approved")
-                if approve:
-                    cur = conn.execute(
-                        "UPDATE tasks SET status='done', review_note=?, fail_class=NULL, "
-                        "next_claim_at=NULL, updated_at=? WHERE id=? AND status='review'",
-                        (note, now, task_id))
-                else:
-                    fc = t["fail_class"] or "unknown"
-                    nca = now + _backoff_seconds(fc, t["attempts"])
-                    cur = conn.execute(
-                        "UPDATE tasks SET status='open', "
-                        "assignee=CASE WHEN EXISTS(SELECT 1 FROM members "
-                        "WHERE id=tasks.assignee AND removed_at IS NULL) "
-                        "THEN assignee ELSE NULL END, review_note=?, next_claim_at=?, "
-                        "updated_at=? WHERE id=? AND status='review'",
-                        (note, nca, now, task_id))
-                if cur.rowcount != 1:
-                    raise ValueError(f"task {task_id} changed during review; reload and retry")
-                if not approve:
-                    audit(conn, me["name"], "task_review_backoff",
-                          f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
-                if linked is not None:
-                    from collaboration_dispatch import reconcile_terminal
-                    if not reconcile_terminal(conn, task_id, now=now):
-                        raise RuntimeError("collaboration: review reconciliation failed")
-                    state = conn.execute(
-                        "SELECT s.status FROM collaboration_steps s JOIN collaboration_task_links l "
-                        "ON l.run_id=s.run_id AND l.step_key=s.step_key WHERE l.task_id=?",
-                        (task_id,)).fetchone()
-                    if not state or state[0] != "succeeded":
-                        raise RuntimeError("collaboration: review did not succeed")
-                    # Managed runs advance only after approved prerequisites.
-                    # Roll back *all* new grants/cards if any dispatch is
-                    # invalid; retain the approved work and stop the run.
-                    if _collaboration_managed_request(conn,linked):
-                        conn.execute("SAVEPOINT collaboration_advance")
-                        try:
-                            _collaboration_dispatch_ready(conn,linked,now)
-                        except ValueError:
-                            conn.execute("ROLLBACK TO collaboration_advance")
-                            conn.execute("RELEASE collaboration_advance")
-                            _collaboration_stop(conn,linked,"failed",me["name"],
-                                                "next_step_unavailable",now)
-                        else:
-                            conn.execute("RELEASE collaboration_advance")
-                audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
+                result = _review_task_locked(conn,me,task_id,approve,note)
                 conn.commit()
-                return {"task_id": task_id, "status": "done" if approve else "open"}
+                return result
         finally:
             conn.close()
     @mcp.tool

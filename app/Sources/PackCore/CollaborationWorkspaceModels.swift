@@ -59,7 +59,15 @@ public struct CollaborationWorkspaceResult: Decodable, Sendable {
     public let approved: Bool
     public let result: String
     public let sha256: String?
-    enum CodingKeys: String, CodingKey { case runId = "run_id", stepKey = "step_key", approved, result, sha256 }
+    public let reviewVersion: String?
+    enum CodingKeys: String, CodingKey {
+        case runId = "run_id", stepKey = "step_key", approved, result, sha256
+        case reviewVersion = "review_version"
+    }
+    public var canReview: Bool {
+        !approved && stepKey != nil && !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        reviewVersion?.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
+    }
     public var canPublishFinal: Bool {
         approved && stepKey == nil && !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         sha256?.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil
@@ -84,4 +92,21 @@ public struct CollaborationPublishReceipt: Decodable, Sendable {
     public let messageId: Int
     public let published: Bool
     enum CodingKeys: String, CodingKey { case runId = "run_id", messageId = "message_id", published }
+}
+
+
+public struct CollaborationReviewReceipt: Decodable, Sendable {
+    public let runId: String
+    public let stepKey: String
+    public let taskId: Int
+    public let status: String
+    public let runStatus: String
+    enum CodingKeys: String, CodingKey {
+        case runId = "run_id", stepKey = "step_key", taskId = "task_id", status, runStatus = "run_status"
+    }
+}
+public struct CollaborationControlStatus: Decodable, Sendable {
+    public let runId: String
+    public let status: String
+    enum CodingKeys: String, CodingKey { case runId = "run_id", status }
 }

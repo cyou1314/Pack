@@ -339,7 +339,12 @@ def main():
                 assert execute("task_complete",delivery).get("status")=="review"
                 inspected=owner_call("collaboration_result_get",{"run_id":managed,"step_key":step["key"]})
                 assert inspected["result"]==result and inspected["approved"] is False,inspected
-                assert dispatch("task_review",{"task_id":tid,"approve":True}).get("status")=="done"
+                review_args={"run_id":managed,"step_key":step["key"],
+                             "expected_version":inspected["review_version"],"approve":True}
+                assert "error" in outsider("collaboration_review",review_args)
+                assert "error" in owner_call("collaboration_review",{**review_args,"expected_version":"0"*64})
+                assert owner_call("collaboration_review",review_args).get("status")=="done"
+                assert "error" in owner_call("collaboration_review",review_args)
                 return context
             finish_managed(steps["analysis-0"],members[0],"first result")
             assert owner_call("collaboration_status",{"run_id":managed})["steps"][-1]["task_id"] is None
@@ -385,6 +390,21 @@ def main():
             assert pending.get("status")=="active",pending
             assert owner_call("collaboration_cancel",{"run_id":pending["run_id"]})["status"]=="cancelled"
             assert owner_call("collaboration_cancel",{"run_id":pending["run_id"]})["status"]=="cancelled"
+            assert "error" in outsider("collaboration_cancel",{"run_id":managed})
+            assert owner_call("collaboration_cancel",{"run_id":managed})["status"]=="succeeded"
+            rejected=owner_call("collaboration_create",{**focus,"request_key":"c"*32})
+            rtid=rejected["steps"][0]["task_id"]
+            def execute_rejected(name,args):
+                return asyncio.run(call(port,members[0]["token"],name,args))
+            claimed=execute_rejected("task_claim",{"task_id":rtid})
+            rargs={"task_id":rtid,"claim_token":claimed["claim_token"]}
+            assert execute_rejected("run_start",rargs).get("fence")==1
+            assert execute_rejected("task_complete",{**rargs,"result":"reject this result"}).get("status")=="review"
+            rkey={"run_id":rejected["run_id"],"step_key":"answer"}
+            inspected=owner_call("collaboration_result_get",rkey)
+            denied=owner_call("collaboration_review",{**rkey,"expected_version":inspected["review_version"],"approve":False})
+            assert denied["status"]=="cancelled" and denied["run_status"]=="failed",denied
+            assert "error" in execute_rejected("task_claim",{"task_id":rtid})
 
             removed, removed_task = fixture(conn, room, owner, member, 4, now, deadline=now+600)
             unbound, _ = fixture(conn, room, owner, member, 5, now, deadline=now+600, create_card=False)
