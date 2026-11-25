@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Install the packaged local stack; PACK_INSTALL_TEST_ROOT isolates acceptance."""
-import asyncio, json, os, pathlib, plistlib, shutil, socket, subprocess, sys, time
+import asyncio, fcntl, json, os, pathlib, plistlib, shutil, socket, subprocess, sys, time, uuid
 
 BUNDLE = pathlib.Path(__file__).resolve().parent
 HOME = pathlib.Path.home()
@@ -27,6 +27,9 @@ else:
     socket_dir = base/'l2-ipc'
 labels = {kind: prefix+'-'+kind for kind in ('hub','watch','backup','engine')}
 INSTALLER_MARKER = 'com.cyou.pack.installer.v1'
+OWNER_MARKER = '.pack-installer-owner.json'
+STATE_PATH = base/'.pack-install-state.json'
+LOCK_PATH = base/'.pack-install.lock'
 uid = os.getuid()
 
 def ctl(*args, check=True):
@@ -48,6 +51,121 @@ def ensure_agent_paths_available():
         paths = ', '.join(str(path) for path in conflicts)
         raise SystemExit(f'Existing LaunchAgent plist found; refusing to overwrite: {paths}')
 
+def path_exists(path):
+    return path.exists() or path.is_symlink()
+
+
+def ensure_base_directory():
+    if base.is_symlink():
+        raise SystemExit(f'Install base must not be a symlink: {base}')
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not base.is_dir() or base.stat().st_uid != uid:
+        raise SystemExit(f'Install base is not a user-owned directory: {base}')
+
+
+def acquire_install_lock():
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(LOCK_PATH, flags, 0o600)
+    try:
+        if not os.path.isfile(LOCK_PATH) or os.fstat(fd).st_uid != uid:
+            raise SystemExit('Installer lock is not a regular user-owned file.')
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise SystemExit('Another Pack installer operation is active or the lock is unsafe.')
+
+
+def release_install_lock(fd):
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def load_install_state(strict=True):
+    if not path_exists(STATE_PATH):
+        return None
+    try:
+        if STATE_PATH.is_symlink() or not STATE_PATH.is_file():
+            raise ValueError('state path is not a regular file')
+        state = json.loads(STATE_PATH.read_text(encoding='utf-8'))
+        txid = state.get('transaction_id', '')
+        if (state.get('schema_version') != 1
+                or state.get('hub') != str(hub)
+                or state.get('engine') != str(engine)
+                or len(txid) != 32
+                or any(ch not in '0123456789abcdef' for ch in txid)
+                or state.get('phase') not in ('installing', 'failed', 'completed', 'uninstalled')):
+            raise ValueError('unsupported or invalid installer state')
+        return state
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        if strict:
+            raise SystemExit('Pack installer state is unreadable; preserve it and inspect before proceeding.')
+        return None
+
+
+def save_install_state(state):
+    temp = base / f'.pack-install-state.{state["transaction_id"]}.tmp'
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(temp, flags, 0o600)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(state, stream, ensure_ascii=False, sort_keys=True)
+            stream.write('\\n')
+        os.replace(temp, STATE_PATH)
+        os.chmod(STATE_PATH, 0o600)
+    except BaseException:
+        try: temp.unlink()
+        except OSError: pass
+        raise
+
+
+def write_root_marker(root, role, transaction_id):
+    marker = {'schema_version': 1, 'transaction_id': transaction_id,
+              'role': role, 'root': str(root)}
+    write_private(root / OWNER_MARKER, json.dumps(marker, ensure_ascii=False))
+
+
+def is_managed_root(root, role):
+    try:
+        if root.is_symlink() or not root.is_dir():
+            return False
+        path = root / OWNER_MARKER
+        if path.is_symlink() or not path.is_file():
+            return False
+        marker = json.loads(path.read_text(encoding='utf-8'))
+        txid = marker.get('transaction_id', '')
+        return (marker.get('schema_version') == 1
+                and marker.get('role') == role
+                and marker.get('root') == str(root)
+                and len(txid) == 32
+                and all(ch in '0123456789abcdef' for ch in txid))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def rollback_managed_agents():
+    for label in labels.values():
+        plist = agents/(label+'.plist')
+        if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
+            ctl('bootout', f'gui/{uid}/{label}', check=False)
+            plist.unlink()
+
+
+def remove_program_files(root, names):
+    if root.is_symlink() or not root.is_dir():
+        return
+    for name in names:
+        path = root/name
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        elif path.is_file():
+            path.unlink()
+
 def write_agent(kind, args, env, keepalive=False, calendar=False):
     label = labels[kind]
     doc = {'Label':label,'PackInstallerMarker':INSTALLER_MARKER,
@@ -59,8 +177,18 @@ def write_agent(kind, args, env, keepalive=False, calendar=False):
     path=agents/(label+'.plist')
     # Exclusive creation closes the check/write race and never truncates an
     # existing LaunchAgent plist, even if another process creates it meanwhile.
-    with path.open('xb') as f: plistlib.dump(doc,f)
-    ctl('bootstrap',f'gui/{uid}',str(path))
+    created = False
+    try:
+        with path.open('xb') as f:
+            created = True
+            plistlib.dump(doc, f)
+        ctl('bootstrap', f'gui/{uid}', str(path))
+    except BaseException:
+        # Remove only the file created by this call; never touch a collision.
+        if created:
+            try: path.unlink()
+            except OSError: pass
+        raise
 
 async def setup_owner():
     from fastmcp import Client
