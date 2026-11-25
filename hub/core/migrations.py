@@ -157,46 +157,39 @@ def _checksum(migration: Migration) -> str:
 
 def _preflight_agent_session_projection_v7(connection: sqlite3.Connection) -> None:
     """Fail closed before v7 if legacy Provider Session bindings are ambiguous."""
-    noncanonical = int(connection.execute(
-        """SELECT COUNT(*) FROM agent_sessions
+    rows = connection.execute(
+        """SELECT agent_id, provider_session_id FROM agent_sessions
            WHERE provider_session_id IS NOT NULL
-             AND (
-                 length(trim(provider_session_id)) = 0
-                 OR provider_session_id != trim(provider_session_id)
-                 OR length(trim(provider_session_id)) > 160
-             )"""
-    ).fetchone()[0])
-    duplicate_group_count = int(connection.execute(
-        """SELECT COUNT(*) FROM (
-               SELECT agent_id, trim(provider_session_id) AS normalized_provider_session_id
-               FROM agent_sessions
-               WHERE provider_session_id IS NOT NULL
-                 AND length(trim(provider_session_id)) > 0
-               GROUP BY agent_id, trim(provider_session_id)
-               HAVING COUNT(*) > 1
-           )"""
-    ).fetchone()[0])
-    if not noncanonical and not duplicate_group_count:
+           ORDER BY agent_id, session_id"""
+    ).fetchall()
+    noncanonical = 0
+    binding_counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        provider_session_id = row["provider_session_id"]
+        if (
+            not isinstance(provider_session_id, str)
+            or not provider_session_id
+            or provider_session_id != provider_session_id.strip()
+            or len(provider_session_id.strip()) > 160
+        ):
+            noncanonical += 1
+            continue
+        key = (row["agent_id"], provider_session_id.strip())
+        binding_counts[key] = binding_counts.get(key, 0) + 1
+
+    duplicate_bindings = {
+        key: count for key, count in binding_counts.items() if count > 1
+    }
+    if not noncanonical and not duplicate_bindings:
         return
 
-    affected_agents = [
-        row["agent_id"] for row in connection.execute(
-            """SELECT DISTINCT agent_id FROM (
-                   SELECT agent_id, trim(provider_session_id) AS normalized_provider_session_id
-                   FROM agent_sessions
-                   WHERE provider_session_id IS NOT NULL
-                     AND length(trim(provider_session_id)) > 0
-                   GROUP BY agent_id, trim(provider_session_id)
-                   HAVING COUNT(*) > 1
-               ) ORDER BY agent_id LIMIT 10"""
-        ).fetchall()
-    ]
+    affected_agents = sorted({agent_id for agent_id, _ in duplicate_bindings})[:10]
     details = []
     if noncanonical:
         details.append(f"{noncanonical} non-canonical Provider Session ID row(s)")
-    if duplicate_group_count:
+    if duplicate_bindings:
         details.append(
-            f"{duplicate_group_count} duplicate (Agent, Provider Session ID) group(s)"
+            f"{len(duplicate_bindings)} duplicate (Agent, Provider Session ID) group(s)"
         )
     if affected_agents:
         details.append("affected Agent IDs: " + ", ".join(affected_agents))
@@ -205,7 +198,6 @@ def _preflight_agent_session_projection_v7(connection: sqlite3.Connection) -> No
         + "; ".join(details)
         + ". Repair only on a verified backup, then rerun the migration."
     )
-
 
 
 def _provider_for(label: str | None) -> tuple[str, str]:
