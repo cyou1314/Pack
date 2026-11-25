@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import PackCore
 
 struct PackConfig {
     var hubUrl: String
@@ -27,6 +28,9 @@ struct PackConfig {
               var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let url = object["hubUrl"] as? String else {
             return LoadResult(config: nil, credentialStatus: "无法读取本机配置。")
+        }
+        guard PackHubURLPolicy.isAllowed(url) else {
+            return LoadResult(config: nil, credentialStatus: "Hub 地址不在允许范围内，已阻止发送凭证。")
         }
         var values: [String: String] = [:]
         var failure: String?
@@ -113,7 +117,10 @@ actor HubClient {
     func discoverBeforeSending() async { }
 
     private func post(body: [String: Any], isNotification: Bool) async throws -> (Data, HTTPURLResponse) {
-        guard let url = URL(string: cfg.hubUrl) else { throw HubError.badResponse("bad hub url") }
+        guard PackHubURLPolicy.isAllowed(cfg.hubUrl),
+              let url = URL(string: cfg.hubUrl) else {
+            throw HubError.badResponse("untrusted hub url")
+        }
         var req = URLRequest(url: url)
         req.timeoutInterval = 20
         req.setValue("close", forHTTPHeaderField: "Connection")
