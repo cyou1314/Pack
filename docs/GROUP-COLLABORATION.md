@@ -138,3 +138,7 @@ Swift API host 与 Node runner 将已解析的 input/output tokens 随 task_comp
 ## 第二十阶段：macOS 协作工作台首批接线
 
 现有侧栏新增「协作」，绑定当前房间与 Hub generation，owner-only 独立请求（无 dispatcher fallback、无自动重放发布、无私有错误日志），手动刷新/游标分页、步骤状态、单步和最终成果纯文本查看、已报告用量和未知计量、明确确认后按 SHA-256 发布。切换房间/中枢、断连、离开页面清除私有临时状态；旧 Hub 缺少工具时显示不可用，不影响原有页面。新增 PackCore Codable 模型及解码回归。尚未实现 Agent 管理、创建表单、审核/取消按钮、实时状态更新、群聊内聚合卡片；未在真实 macOS GUI 操作验收，生产 schema 保持关闭。
+
+## 第二十一阶段：协作任务创建表单
+
+macOS 协作工作台添加新建入口：私有任务正文、Focus/Compare/Team、成员数、调用预算、相对截止时间、未知额度显式选项；只读角色预览显示成员名称及 Provider，经群主确认才提交。客户端校验预览角色/预算/候选资格，固定 request_key、正文、deadline、成员与预算；异常回执锁定原请求，可通过 owner-only `collaboration_request_lookup` 按原房间与键核对，或显式原键重试，不自动生成新任务。表单临时内存状态，不把私有正文写 UserDefaults；退出/进程终止/中枢切换丢失待核对请求，须刷新确认后再创建。路由预览非预留，执行时仍需验证账号与出口授权；当前只支持使用推荐分配，未提供任意手工选人、原子在线预留或实际费用约束。新增 Swift 模型及 Hub MCP 回归，生产 schema 仍关闭。

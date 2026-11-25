@@ -4300,7 +4300,8 @@ def build_server():
                            EXISTS(SELECT 1 FROM collaboration_steps s
                              JOIN collaboration_runs r ON r.id=s.run_id
                              WHERE s.member=CAST(e.member_id AS TEXT) AND r.status='active'
-                               AND r.deadline>? AND s.status IN ('pending','running')) AS active_plan
+                               AND r.deadline>? AND s.status IN ('pending','running')) AS active_plan,
+                           m.name AS member_name
                     FROM collaboration_executors e JOIN members m ON m.id=e.member_id
                     WHERE e.owner_id=? AND e.revoked=0 ORDER BY e.member_id
                     """,(now,me["id"])).fetchall()
@@ -4315,7 +4316,7 @@ def build_server():
                     fresh = (row[5] is not None and 0 <= row[5] <= 100
                              and row[6] is not None and 0 <= now-row[6] <= RELAY_QUOTA_FRESH)
                     state = ("available" if row[5]<RELAY_QUOTA_HEADROOM else "limited") if fresh else "unknown"
-                    candidates.append(dict(member_id=row[0],provider=row[1],access_kind=row[2],
+                    candidates.append(dict(member_id=row[0],member_name=row[9],provider=row[1],access_kind=row[2],
                         account_ref=row[3],online=online,queue=row[7],active_plan=bool(row[8]),
                         quota_state=state,quota_pct=row[5] if fresh else None))
                 suggestion = suggest_roles(mode=mode,candidates=candidates,worker_count=worker_count,
@@ -4385,6 +4386,28 @@ def build_server():
                         _collaboration_dispatch_ready(conn,run_id,now)
                         audit(conn,me["name"],"collaboration_create",f"run {run_id} mode={mode}")
                     return _collaboration_public_snapshot(conn,run_id)
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_request_lookup(room: str, request_key: str) -> dict:
+            """Owner-only readback after an uncertain create; never creates work."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                if not re.fullmatch(r"[a-f0-9]{32}",request_key):
+                    raise ValueError("invalid collaboration request key")
+                row = conn.execute("""
+                    SELECT q.run_id FROM collaboration_requests q
+                    JOIN collaboration_runs r ON r.id=q.run_id
+                    JOIN rooms rm ON rm.id=r.room_id
+                    WHERE q.owner_id=? AND q.request_key=? AND rm.name=?
+                    """,(me["id"],request_key,room)).fetchone()
+                return {"room":room,"request_key":request_key,"run_id":row[0] if row else None}
             finally:
                 conn.close()
 

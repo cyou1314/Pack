@@ -212,7 +212,8 @@ actor HubClient {
     // errors or retries publication automatically. Legacy Hub remains valid.
     func ownerWorkspaceCall(name: String, args: [String: Any]) async throws -> Data {
         let allowed: Set<String> = ["collaboration_workspace", "collaboration_result_get",
-                                    "collaboration_usage_get", "collaboration_publish"]
+                                    "collaboration_usage_get", "collaboration_publish", "collaboration_route_preview",
+                                    "collaboration_create", "collaboration_request_lookup"]
         guard allowed.contains(name) else { throw HubError.badResponse("invalid workspace call") }
         do {
             let result = try await callOnce(name: name, args: args)

@@ -14,6 +14,7 @@ struct CollaborationWorkspaceView: View {
     @State private var usage: CollaborationWorkspaceUsage?
     @State private var confirmPublish = false
     @State private var loaded = false
+    @State private var showCreate = false
     @State private var requestGeneration = UUID()
 
     var body: some View {
@@ -25,6 +26,8 @@ struct CollaborationWorkspaceView: View {
                         .foregroundStyle(DesignTokens.subText)
                 }
                 Spacer()
+                Button { showCreate = true } label: { Label("新建协作", systemImage: "plus") }
+                    .disabled(busy || !loaded || !state.collaborationOwnerAvailable)
                 Button { Task { await load() } } label: { Label("刷新", systemImage: "arrow.clockwise") }
                     .disabled(busy || !state.collaborationOwnerAvailable)
             }
@@ -49,6 +52,9 @@ struct CollaborationWorkspaceView: View {
         .font(DesignTokens.fontUI)
         .padding(DesignTokens.boardInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(isPresented: $showCreate, onDismiss: { Task { await load() } }) {
+            CollaborationCreateView(state: state, scope: state.collaborationScope)
+        }
         .task { await load() }
         .onChange(of: state.collaborationOwnerAvailable) { _, available in
             clear()

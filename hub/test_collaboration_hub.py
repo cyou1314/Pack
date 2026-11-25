@@ -290,12 +290,18 @@ def main():
             preview=owner_call("collaboration_route_preview",{"mode":"compare","max_calls":3,
                 "allow_unknown_quota":True})
             assert preview.get("suggestion",{}).get("planned_calls")==3,preview
+            assert any(c["member_name"]=="managed-executor-0" for c in preview["candidates"]),preview
             assert "error" in outsider("collaboration_route_preview",{"mode":"focus"})
             request={"room":"pack-main","request_key":"f"*32,"body":"managed-private-root-marker",
                 "mode":"compare","leader":members[0]["member_id"],"workers":[members[1]["member_id"]],
                 "deadline":time.time()+600,"max_calls":3}
             assert "error" in outsider("collaboration_create",request)
+            lookup={"room":"pack-main","request_key":request["request_key"]}
+            assert owner_call("collaboration_request_lookup",lookup)["run_id"] is None
+            assert "error" in outsider("collaboration_request_lookup",lookup)
             created=owner_call("collaboration_create",request)
+            assert owner_call("collaboration_request_lookup",lookup)["run_id"]==created["run_id"]
+            assert owner_call("collaboration_request_lookup",{**lookup,"room":"wrong-room"})["run_id"] is None
             assert created.get("status")=="active",created
             managed=created["run_id"]
             assert owner_call("collaboration_create",request)==created
