@@ -105,6 +105,17 @@ jobs:
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots
         run: python hub/export_contracts.py --check
+      - name: Export generated contract snapshots for temporary diagnostics
+        if: always()
+        run: python hub/export_contracts.py --print > pack-contracts-debug.json
+      - name: Upload generated contract snapshots for temporary diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-contracts-debug
+          path: pack-contracts-debug.json
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
       - name: Staging56 access-mode and migration regression
