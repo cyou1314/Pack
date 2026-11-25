@@ -89,6 +89,23 @@ def main():
         assert "refusing to overwrite" in check.stderr, check.stderr
         assert existing.read_text(encoding="utf-8") == "preserve-existing-plist\\n"
 
+        # Never follow a symlink in place of the LaunchAgents directory.
+        external_agents = home / "external-launchagents"
+        external_agents.mkdir()
+        linked_agents = home / "linked-launchagents"
+        linked_agents.symlink_to(external_agents, target_is_directory=True)
+        link_env = env.copy()
+        link_env["PACK_TEST_AGENT_DIR"] = str(linked_agents)
+        linked = subprocess.run(
+            [sys.executable, "-c",
+             "import os, pathlib, manager; "
+             "manager.agents=pathlib.Path(os.environ['PACK_TEST_AGENT_DIR']); "
+             "manager.ensure_agent_directory_safe()"],
+            cwd=HERE, env=link_env, text=True, capture_output=True,
+        )
+        assert linked.returncode != 0, linked
+        assert list(external_agents.iterdir()) == []
+
         # Uninstall/rollback ownership checks: marked and exact legacy Pack
         # agents are accepted; a foreign command under a colliding label is not.
         ownership = subprocess.run(
