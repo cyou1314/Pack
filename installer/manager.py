@@ -40,6 +40,13 @@ def available(port):
         try: s.bind(('127.0.0.1',port)); return True
         except OSError: return False
 
+def ensure_agent_paths_available():
+    conflicts = [agents / (label + '.plist') for label in labels.values()
+                 if (agents / (label + '.plist')).exists() or (agents / (label + '.plist')).is_symlink()]
+    if conflicts:
+        paths = ', '.join(str(path) for path in conflicts)
+        raise SystemExit(f'Existing LaunchAgent plist found; refusing to overwrite: {paths}')
+
 def write_agent(kind, args, env, keepalive=False, calendar=False):
     label = labels[kind]
     doc = {'Label':label,'ProgramArguments':[str(x) for x in args], 'WorkingDirectory':str(hub),
@@ -48,7 +55,9 @@ def write_agent(kind, args, env, keepalive=False, calendar=False):
     if keepalive: doc.update(RunAtLoad=True,KeepAlive=True)
     if calendar: doc['StartCalendarInterval']={'Hour':3,'Minute':15}
     path=agents/(label+'.plist')
-    with path.open('wb') as f: plistlib.dump(doc,f)
+    # Exclusive creation closes the check/write race and never truncates an
+    # existing LaunchAgent plist, even if another process creates it meanwhile.
+    with path.open('xb') as f: plistlib.dump(doc,f)
     ctl('bootstrap',f'gui/{uid}',str(path))
 
 async def setup_owner():
@@ -66,6 +75,7 @@ def install():
     if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
     for label in labels.values():
         if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0: raise SystemExit('A service label is already in use.')
+    ensure_agent_paths_available()
     if socket_dir.exists(): raise SystemExit('Existing handoff socket directory; refusing to overwrite.')
     os.umask(0o077); hub.mkdir(parents=True,mode=0o700); engine.mkdir(parents=True,mode=0o700); agents.mkdir(parents=True,exist_ok=True)
     shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
