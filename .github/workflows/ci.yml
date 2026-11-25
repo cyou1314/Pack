@@ -89,6 +89,8 @@ jobs:
         run: python hub/test_db_query_indexes.py
       - name: App bundle output path safety
         run: bash app/test-make-bundle.sh
+      - name: Swift unit tests
+        run: swift test --package-path app
       - name: Swift app bundle build
         run: |
           STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-app-ci.XXXXXX")"
