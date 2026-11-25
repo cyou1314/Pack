@@ -62,7 +62,17 @@
 
 **2026-11-24 第五个切片（Outbox Delivery Worker）：** 新增 AgentEventDeliveryWorker，按 Outbox 顺序每次投递一条事件到 /agent/events；新增 SQLite delivery_attempts、next_attempt_at、last_error_code，并以 additive migration 保留旧 Outbox 数据；支持 408/425/429、5xx、网络错误的持久化退避与 Retry-After；401/403、其他 4xx、非法回执和超大事件暂停但不丢弃；仅在 Hub 返回合法 accepted/duplicate + inboxSeq 后标记本地 delivered。增加旧 schema 升级、重试跨重启、严格顺序、重复回执、授权暂停、请求大小、URL/TLS 和并发单飞测试。**当前 Worker 仍为独立 runOnce()，尚未接入 Supervisor、自动调度或生产 Runtime；Hub Inbox 下游消费 ACK/租约与 Session Cursor 仍未实现。** 详细边界见 M2-OUTBOX-DELIVERY-WORKER.md。
 
-**2026-11-24 Hub Inbox Consumer Lease / ACK（设计与内部实现）：** PR #44 建立协议设计；PR #45 新增 additive migration v6，为每个 Consumer + Agent 建立独立连续 cursor、限时 Lease 与 Lease items，并为 `(agent_id,inbox_seq)` 增加范围索引。内部服务支持有条数/字节上限的顺序 claim、每个 Consumer + Agent 单一 active Lease、部分 ACK、幂等重试、release 与过期回收。所有 claim/ACK/release/cursor 操作都接收 Hub trusted resolver 签发的 issuer-owned ConsumerPrincipal，并从 principal 派生 consumer_id；Lease capability 与 Consumer 身份双重校验。completed ACK 在 24 小时窗口内只允许只读重试。**PR #45 当前已实现服务层、migration v6、真实 SQLite 测试与合约快照，但仍为 Draft/待最终 CI 与审查；不新增公开端点、不做业务副作用、不接生产 Runtime。** 详细契约见 M2-INBOX-CONSUMER-DESIGN.md。
+**2026-11-24 Hub Inbox Consumer Lease / ACK（设计与内部实现）：** PR #44 建立协议设计；PR #45 新增 additive migration v6，为每个 Consumer + Agent 建立独立连续 cursor、限时 Lease 与 Lease items，并为 `(agent_id,inbox_seq)` 增加范围索引。内部服务支持有条数/字节上限的顺序 claim、每个 Consumer + Agent 单一 active Lease、部分 ACK、幂等重试、release 与过期回收。所有 claim/ACK/release/cursor 操作都接收 Hub trusted resolver 签发的 issuer-owned ConsumerPrincipal，并从 principal 派生 consumer_id；Lease capability 与 Consumer 身份双重校验。completed ACK 在 24 小时窗口内只允许只读重试。**PR #45 当前已实现服务层、migration v6、真实 SQLite 测试与合约快照；GitHub Actions #1215 的 Hub、Runtime、macOS 三组 CI 全部通过，最新 Codex Review 未发现重大问题。PR 仍开放且未合入；不新增公开端点、不做业务副作用、不接生产 Runtime。** 详细契约见 M2-INBOX-CONSUMER-DESIGN.md。
+
+**2026-11-25 M2a Hub-issued Agent Session Binding（PR #47）：** 新增 Hub 内部 create/fail Session 服务；Hub 先生成 Pack hubSessionId 并写入 creating 状态，Codex Adapter 再把 Provider threadId 写入事件 Envelope 的 sessionId，hubSessionId 作为独立字段随事件发送。GET /agent/capabilities 的 hub-session-id-envelope-v1 只表示 Gateway 接受该字段，不代表 Projector 或 UI 已就绪。Adapter 已处理 thread/start 通知竞态、Session 映射 write-once 和大消息完成正文 hash。PR #47 首次 CI 发现一个过期 feature 名称断言，已修正测试；修复后的 Hub、Runtime、macOS 三组 CI 全部通过。PR 仍为 Draft，尚未合入，也未接生产 Runtime。
+
+**2026-11-25 M2b Atomic Consumer Apply foundation（PR #49）：** 将 ack_agent_events 与 release_agent_event_lease 的核心逻辑拆为事务内 helper，要求调用方持有活动 SQLite transaction；旧包装接口仍自行 BEGIN / COMMIT / close，保持兼容。新增真实 SQLite 测试，验证 helper 不提交 / 关闭连接、提交前另一连接不可见、外层 rollback 能撤销 ACK、release 不推进 cursor。Hub、Runtime、macOS CI 全部通过。PR 仍为 Draft，叠加在 PR #47 上，尚未合入。
+
+**2026-11-25 M2c Session Projection Schema v7（PR #50）：** 新增 last_inbox_seq、Agent Session Messages / Runs、Projection Receipts / Resolutions；为 provider_session_id 增加按 Agent 的部分唯一索引，并在迁移前对重复、空白、首尾空白或超长值 fail closed；v1-v6 migration checksum 保持不变。Hub 单元测试、MCP / SQLite contract snapshot、默认 Staging、Staging56、Runtime 和 macOS App build 全部通过。PR 仍为 Draft，尚未实现业务 Projector。
+
+**2026-11-25 M2d Session Projector（PR #51）：** 已新增内部 process_agent_event_lease：同一 SQLite transaction 内完成 Session / Message / Run 投影、receipt 更新、连续前缀 ACK 和 blocked 时 Lease release。首批处理 session.created、message.delta / completed、run.started / completed / failed / interrupted；Tool / Approval / Usage / progress 写 ignored receipt；校验消息最终文本 byte length / SHA-256，并将缺失或不匹配的文本标为 incomplete。新增真实 SQLite 测试覆盖投影、阻塞前缀、修复重试、Provider Session 冲突、Run 终态和投影 + ACK rollback。Hub 单测、SQLite contract snapshot、默认 Staging、Staging56、Runtime 和 macOS CI 全部通过。PR 仍为 Draft，未接入生产 Runtime。
+
+**下一切片（M2e Audited Skip Resolution）：** 为 blocked receipt 增加 dispatcher / owner 审计 skip 服务：同一事务校验目标是该 Agent 当前 cursor 后的第一条未 ACK Inbox 事件、不存在 active Lease，写入 Projection Resolution、将 receipt 改为 skipped、写 Hub audit 并推进 cursor。不得跳过前序事件、不得在 active Lease 中改 cursor。完成后再实现 Session Read API；完整 generation rebuild 和 SwiftUI 页面继续后置。
 
 **2026-11-24 第四个切片（Agent Event Gateway）：** 新增 Hub migration v5：一次性配对码、Agent 专属 events:write Token、失败计数与索引；新增配对码创建/兑换、Token 撤销、Agent Token 认证与带身份绑定的事件写入服务；新增 /agent/pair/create、/agent/pair/redeem、/agent/events、/agent/tokens/revoke HTTP 路由。明文 Token 只在兑换响应出现一次，数据库只存哈希；Agent / Provider 身份由 Token 绑定关系派生；写入与 Token last-used 在同一事务中提交；事件有 256 KiB 请求上限、1200 条/分钟默认限流、重复事件不消耗新事件预算。新增凭证/配对/限流/幂等测试。**第五个切片已在此 Gateway 之上加入独立 Outbox Delivery Worker，但尚未接入生产 Runtime；下游消费 ACK/租约、Session Cursor 与断线 replay 仍未实现。** 详细协议见 M2-AGENT-EVENT-GATEWAY.md。
 
@@ -187,11 +197,11 @@ Accepted：首轮 Agent Core 不改生产 SQLite Schema。Agent Registry 数据�
 - [ ] 浏览器和桌面操作有独立权限与审计。
 - [ ] 旧任务、审批和 external 安全隔离无回归。
 
-## 8. 2026-11-23 实施状态校准
+## 8. 2026-11-25 实施状态校准
 
 - **M0 Agent Core Foundation：** Descriptor / Registry / Event Envelope / Context Package / Codex App Server Adapter 与 mock contract tests 已存在；这只代表基础骨架完成，不代表已装配到生产 Runtime。
 - **M1 Agent Registry：** M1a/M1b 已合入 v2 Foundation（PR #21/#22/#23）；并发迁移、只读 CLI 和敏感字段输出测试通过 CI。PR #24 已将 SQLite quick_check / foreign_key_check 加入 Shadow readiness；PR #34 已增加 task hot-path migration v3，M1c Shadow CLI 会核对当前全部 migration checksum。真实 Mac 数据库尚未检查，M1c API 尚未开放。
-- **M2 Runtime / Event Gateway：** 首个 Supervisor 切片已实现，负责 Adapter 生命周期、Session 操作、事件校验/串行 append 和审批 fail-closed；但 `runtime/runtime.mjs` 仍是 Muse ego v1 主循环，Supervisor 未接入生产入口。Event Store 目前只有注入式接口，没有生产 durable Inbox/Outbox、Hub Gateway、游标/ack/replay、自动重连或 Hub/App 审批闭环。
+- **M2 Runtime / Event Gateway：** PR #39 Supervisor 与 PR #41 Durable Runtime Outbox / Hub Inbox 基础已合入 v2 Foundation；PR #43 Outbox Delivery Worker、PR #45 Inbox Consumer Lease / ACK 已有独立实现且 CI 通过，仍待按依赖顺序合入；PR #47 M2a Session Binding CI 全绿；PR #49 M2b 事务内 ACK / Release helper CI 全绿；PR #50 M2c schema v7 全套 CI 通过；PR #51 M2d Session Projector 的 Hub 单测、SQLite contract snapshot、默认 Staging、Staging56、Runtime 和 macOS CI 全部通过。PR #48 为配套设计文档。当前仍未接入生产 Runtime 主循环，未实现 Audited Skip Resolution / Session Read API / SwiftUI，也未在用户 Mac 数据库上迁移或部署。
 - **M3 Provider Adapter：** Codex Adapter 有 mock 测试，但真实 Mac App Server 登录、Session/Turn、断线恢复和审批闭环未验收；ChatGPT、Doubao 等 Adapter 仍按 Provider Matrix 单独验证。
 - **安全门槛：** 在 M2 Event Gateway、Hub Permission/Approval/Audit 与 SwiftUI 人工审批闭环完成前，不开放 Codex command/file 高风险工具自动执行。
 - **执行顺序：** M1a additive migration → M1b shadow read → M1c read-only API 评估 → M2 Supervisor/Session Manager/Inbox-Outbox/Event Gateway → M3 真实 Provider 验收。真实 Mac 部署继续后置。
