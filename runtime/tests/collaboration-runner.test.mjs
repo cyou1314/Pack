@@ -18,6 +18,7 @@ function fixture(mode='api',overrides={}) {
   const calls=[];let invocations=0,reads=0;
   const options={
     now:()=>now,timeoutMs:50,
+    accountLeases:{acquire:async()=>({release:async()=>{}})},
     hubCall:async (tool,args)=>{
       calls.push({tool,args});
       switch(tool){

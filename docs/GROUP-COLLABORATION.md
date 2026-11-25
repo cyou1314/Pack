@@ -86,3 +86,9 @@ build-dmg.sh 和 manager.py 的程序文件白名单已纳入四个协作模块�
 新增 `runtime/collaboration-runner.mjs`：复用 Swift `AgentProfile` provider/mode/UUID credential reference 契约，不引入第二份账号数据。可信宿主注入 no-retry Hub transport、profile resolver、adapter resolver 与对精确请求 SHA-256/目标账号的显式出口授权。流程 claim → context_get → 核对账号/模式/能力 → 真实本地账号检查回调 → 出口授权 → run_start → context_get 复验 → 单次 adapter.execute → task_complete。失败按固定原因 block，不传播原始上游异常；交付响应不明时不重发、不擅自改卡。超时 AbortSignal 与调用结果不明触发进程内账号隔离；不能保证上游取消、不能跨进程恢复。明确 API token usage 或 unknown(null)，没有估算费用或伪造原生平台用量。新增 Node mock 回归覆盖双模式、越权、授权拒绝、变更、超时及交付不确定。Hub context 返回 deadline 供 runner 限制调用窗口。
 
 **仍未接入实际 Provider**：resolver/verifyAccount/authorizeEgress/execute 均为可信宿主注入契约，mock 验证不代表真实账号验证、网络取消或一次模型请求。现有 runtime.mjs 和 installer 不启动此 runner；旧 runtime 工具自动重试不可直接用于本协议。真实接线前需实现本机单写者、持久化不确定调用隔离、可信的 Keychain/浏览器账号解析、出站授权与无重试 transport、用量审计和取消传播。Provider catalog 是候选，不是已实现适配器；保持生产协作关闭。
+
+## 第十二阶段：设备本地账号解析与跨进程租约
+
+Swift `AgentLocalAccountResolver` 通过现有 `AgentRegistryStore.profile(id:)` 查询固定 UUID，校验 provider/mode/credential reference/chat capability；API 只验证本机 vault 中凭证存在，不返回密钥或宣称上游登录已验证；native 明确返回仍需浏览器验证。Node `AccountExecutionLeases` 使用共享私有目录内的 UUID 独占 mkdir 租约，拒绝符号链接、非私有根及重复租约；只允许原持有者按 inode 校验 rmdir 自己的空目录，不按时间或 PID 自动破锁。Runner 强制注入账号租约，确认交付/明确失败才释放；超时、Provider 结果不明、交付不明保留标记，跨 runner/进程重启继续拒绝。新增 Swift mock vault 与 Node 本地文件系统回归。
+
+边界：宿主必须指定所有执行器共同使用的预建私有目录；没有启动接线、GUI 恢复入口、自动恢复或断电持久性保证。普通同 UID 的恶意进程不受此协作锁约束；账号引用仍是本地 profile ID，不是经过 Provider 验证的唯一远端账号。真实 API transport、浏览器账号验证、Keychain 签名实机验收、跨语言宿主集成仍未完成。不得自动清理未知租约；用户应先核对上游请求和 Hub 状态后显式恢复。

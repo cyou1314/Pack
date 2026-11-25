@@ -90,13 +90,15 @@ const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).
 // adapter with verifyAccount(destination) and execute(request,{signal}).
 // verifyAccount must check the actual local session or Keychain binding, not
 // echo untrusted input. execute must enforce the same account binding, avoid
-// hidden fallback/retry, and honor AbortSignal. authorizeEgress is an explicit
+// hidden fallback/retry, and honor AbortSignal. accountLeases is the shared
+// device-local AccountExecutionLeases instance. authorizeEgress is an explicit
 // local owner authorization for the exact fingerprint and destination.
 export function createCollaborationRunner({
-  hubCall, resolveProfile, resolveAdapter, authorizeEgress,
+  hubCall, resolveProfile, resolveAdapter, authorizeEgress, accountLeases,
   timeoutMs = 60000, now = () => Date.now()
 }) {
   if ([hubCall,resolveProfile,resolveAdapter,authorizeEgress,now].some(x=>typeof x!=='function') ||
+      typeof accountLeases?.acquire!=='function' ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000)
     fail('invalid_runner_configuration');
   const busy = new Set();
@@ -121,7 +123,7 @@ export function createCollaborationRunner({
           !Number.isFinite(claim.lease_expires))
         return {status:'claimUnknown',usage:null};
       const claim_token=claim.claim_token;
-      let account, locked=false, invoked=false, timer, controller;
+      let account, lease, locked=false, invoked=false, retainLease=false, timer, controller;
       let usage=null;
       let phase='context_unavailable';
       try {
@@ -133,6 +135,8 @@ export function createCollaborationRunner({
         phase='account_unavailable';
         if (busy.has(account) || uncertain.has(account)) return await stop(task_id,claim_token,'account_unavailable');
         busy.add(account); locked=true;
+        lease=await accountLeases.acquire(account);
+        if(typeof lease?.release!=='function') fail('invalid_account_lease');
         const adapter=await resolveAdapter(destination);
         if (!adapter || typeof adapter.verifyAccount!=='function' || typeof adapter.execute!=='function' ||
             await adapter.verifyAccount(destination)!==true)
@@ -157,23 +161,30 @@ export function createCollaborationRunner({
         controller=new AbortController();
         phase='provider_outcome_unknown';
         // Exactly one adapter invocation. Timeout does not imply upstream
-        // cancellation; quarantine this account for this runner instance.
+        // cancellation; retain the shared on-disk account lease on ambiguity.
         const deadline=new Promise((_,reject)=>{
           timer=setTimeout(()=>{controller.abort();reject(Error('provider_timeout'));},Math.min(remaining,timeoutMs));
         });
         invoked=true;
+        retainLease=true;
         const pending=Promise.resolve().then(()=>adapter.execute(request,{signal:controller.signal}));
         let output;
         try { output=outcomeOf(await Promise.race([pending,deadline])); }
         catch { uncertain.add(account); return await stop(task_id,claim_token,phase); }
         finally { clearTimeout(timer); }
         usage=output.usage;
-        if (output.status==='failed') return await stop(task_id,claim_token,output.code,usage);
+        if (output.status==='failed') {
+          const stopped=await stop(task_id,claim_token,output.code,usage);
+          retainLease=stopped.status!=='blocked';
+          return stopped;
+        }
         // Do not retry a submission whose remote commit is unknown.
         try {
           const delivered=await hubCall('task_complete',{task_id,claim_token,result:output.text});
-          if (delivered?.task_id===task_id && delivered.status==='review')
+          if (delivered?.task_id===task_id && delivered.status==='review') {
+            retainLease=false;
             return {status:'review',usage};
+          }
         } catch {}
         return {status:'deliveryUnknown',usage};
       } catch {
@@ -181,6 +192,10 @@ export function createCollaborationRunner({
         return await stop(task_id,claim_token,phase,usage);
       } finally {
         clearTimeout(timer);
+        if (lease && !retainLease) {
+          try { await lease.release(); }
+          catch { uncertain.add(account); }
+        }
         if (locked) busy.delete(account);
       }
     }

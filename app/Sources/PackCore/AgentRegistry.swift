@@ -151,6 +151,13 @@ public actor AgentRegistryStore {
 
     public func list() -> [AgentProfile] { registry.profiles }
 
+    public func profile(id: UUID) throws -> AgentProfile {
+        guard let value = registry.profiles.first(where: { $0.id == id }) else {
+            throw AgentRegistryError.unknownProfile
+        }
+        return value
+    }
+
     private func persist(_ next: AgentRegistry) throws {
         if let attrs = try Self.attributesIfPresent(file),
            attrs[.type] as? FileAttributeType != .typeRegular {
