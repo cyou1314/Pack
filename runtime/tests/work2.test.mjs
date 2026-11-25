@@ -29,7 +29,7 @@ test('socket failure is retryable and HTTP business response is not', async()=>{
 });
 
 test('Hub retries transient HTTP failures but not business errors',()=> {
- assert.equal(isHubRetryableFailure(Object.assign(Error('hub HTTP 503'),{hubNetworkFailure:true})),true);
+ assert.equal(isHubRetryableFailure(Error('hub HTTP 503')),true);
  assert.equal(isHubRetryableFailure(Error('hub HTTP 429')),true);
  assert.equal(isHubRetryableFailure(Error('hub HTTP 400')),false);
  assert.equal(isHubRetryableFailure(Error('invalid_envelope')),false);
