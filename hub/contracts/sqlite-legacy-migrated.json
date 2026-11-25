@@ -544,6 +544,17 @@
         },
         {
           "columns": [
+            "inbox_seq",
+            "agent_id"
+          ],
+          "name": "idx_agent_event_inbox_seq_agent_unique",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE UNIQUE INDEX idx_agent_event_inbox_seq_agent_unique\n   ON agent_event_inbox(inbox_seq, agent_id)",
+          "unique": true
+        },
+        {
+          "columns": [
             "agent_id",
             "event_id"
           ],
@@ -716,6 +727,303 @@
       "columns": [
         {
           "default": null,
+          "name": "consumer_id",
+          "notnull": true,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 2,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "inbox_seq",
+          "notnull": true,
+          "primary_key_position": 3,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "event_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "event_type",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "outcome",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "reason_code",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "1",
+          "name": "attempt_count",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "first_attempt_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "last_attempt_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "projected_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "inbox_seq",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_inbox",
+          "to": "inbox_seq"
+        },
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_inbox",
+          "to": "agent_id"
+        },
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agents",
+          "to": "agent_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "consumer_id",
+            "agent_id",
+            "outcome",
+            "inbox_seq"
+          ],
+          "name": "idx_agent_event_projection_receipts_outcome",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_projection_receipts_outcome\n   ON agent_event_projection_receipts(\n       consumer_id, agent_id, outcome, inbox_seq\n   )",
+          "unique": false
+        },
+        {
+          "columns": [
+            "consumer_id",
+            "agent_id",
+            "inbox_seq"
+          ],
+          "name": "sqlite_autoindex_agent_event_projection_receipts_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        },
+        {
+          "columns": [
+            "consumer_id",
+            "agent_id",
+            "event_id"
+          ],
+          "name": "sqlite_autoindex_agent_event_projection_receipts_2",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        },
+        {
+          "columns": [
+            "consumer_id",
+            "agent_id",
+            "inbox_seq",
+            "event_id"
+          ],
+          "name": "sqlite_autoindex_agent_event_projection_receipts_3",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_event_projection_receipts"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "resolution_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "consumer_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "agent_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "event_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "action",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "reason",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "actor",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "resolved_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "consumer_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_projection_receipts",
+          "to": "consumer_id"
+        },
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_projection_receipts",
+          "to": "agent_id"
+        },
+        {
+          "from": "inbox_seq",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_projection_receipts",
+          "to": "inbox_seq"
+        },
+        {
+          "from": "event_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_projection_receipts",
+          "to": "event_id"
+        },
+        {
+          "from": "agent_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agents",
+          "to": "agent_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "agent_id",
+            "resolved_at"
+          ],
+          "name": "idx_agent_event_projection_resolutions_agent_time",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_event_projection_resolutions_agent_time\n   ON agent_event_projection_resolutions(agent_id, resolved_at DESC)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "resolution_id"
+          ],
+          "name": "sqlite_autoindex_agent_event_projection_resolutions_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        },
+        {
+          "columns": [
+            "consumer_id",
+            "agent_id",
+            "inbox_seq"
+          ],
+          "name": "sqlite_autoindex_agent_event_projection_resolutions_2",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_event_projection_resolutions"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
           "name": "token_id",
           "notnull": false,
           "primary_key_position": 1,
@@ -817,6 +1125,291 @@
       "columns": [
         {
           "default": null,
+          "name": "message_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "session_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "provider_message_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "provider_run_id",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "''",
+          "name": "content",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "phase",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "first_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "last_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "completed_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "last_inbox_seq",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_inbox",
+          "to": "inbox_seq"
+        },
+        {
+          "from": "first_inbox_seq",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_inbox",
+          "to": "inbox_seq"
+        },
+        {
+          "from": "session_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_sessions",
+          "to": "session_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "session_id",
+            "created_at",
+            "message_id"
+          ],
+          "name": "idx_agent_session_messages_session_created",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_session_messages_session_created\n   ON agent_session_messages(session_id, created_at, message_id)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "session_id",
+            "provider_run_id",
+            "status"
+          ],
+          "name": "idx_agent_session_messages_session_run",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_session_messages_session_run\n   ON agent_session_messages(session_id, provider_run_id, status)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "message_id"
+          ],
+          "name": "sqlite_autoindex_agent_session_messages_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        },
+        {
+          "columns": [
+            "session_id",
+            "provider_message_id"
+          ],
+          "name": "sqlite_autoindex_agent_session_messages_2",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_session_messages"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
+          "name": "run_record_id",
+          "notnull": false,
+          "primary_key_position": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "session_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "provider_run_id",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "status",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "started_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "ended_at",
+          "notnull": false,
+          "primary_key_position": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "first_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "last_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "from": "last_inbox_seq",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_inbox",
+          "to": "inbox_seq"
+        },
+        {
+          "from": "first_inbox_seq",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_event_inbox",
+          "to": "inbox_seq"
+        },
+        {
+          "from": "session_id",
+          "on_delete": "RESTRICT",
+          "on_update": "NO ACTION",
+          "table": "agent_sessions",
+          "to": "session_id"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "session_id",
+            "started_at",
+            "run_record_id"
+          ],
+          "name": "idx_agent_session_runs_session_started",
+          "origin": "c",
+          "partial": false,
+          "sql": "CREATE INDEX idx_agent_session_runs_session_started\n   ON agent_session_runs(session_id, started_at, run_record_id)",
+          "unique": false
+        },
+        {
+          "columns": [
+            "run_record_id"
+          ],
+          "name": "sqlite_autoindex_agent_session_runs_1",
+          "origin": "pk",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        },
+        {
+          "columns": [
+            "session_id",
+            "provider_run_id"
+          ],
+          "name": "sqlite_autoindex_agent_session_runs_2",
+          "origin": "u",
+          "partial": false,
+          "sql": null,
+          "unique": true
+        }
+      ],
+      "name": "agent_session_runs"
+    },
+    {
+      "columns": [
+        {
+          "default": null,
           "name": "session_id",
           "notnull": false,
           "primary_key_position": 1,
@@ -877,6 +1470,13 @@
           "notnull": false,
           "primary_key_position": 0,
           "type": "REAL"
+        },
+        {
+          "default": "0",
+          "name": "last_inbox_seq",
+          "notnull": true,
+          "primary_key_position": 0,
+          "type": "INTEGER"
         }
       ],
       "foreign_keys": [
@@ -896,6 +1496,17 @@
         }
       ],
       "indexes": [
+        {
+          "columns": [
+            "agent_id",
+            "provider_session_id"
+          ],
+          "name": "idx_agent_sessions_agent_provider_session_unique",
+          "origin": "c",
+          "partial": true,
+          "sql": "CREATE UNIQUE INDEX idx_agent_sessions_agent_provider_session_unique\n   ON agent_sessions(agent_id, provider_session_id)\n   WHERE provider_session_id IS NOT NULL",
+          "unique": true
+        },
         {
           "columns": [
             "agent_id",
