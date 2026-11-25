@@ -7,7 +7,7 @@ const net = require('node:net');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pack-l2-test-'));
 process.env.PACK_L2_SOCKET_DIR = temp;
 const { cookieDetails, startHandoff } = require('./engine.cjs');
-test.after(() => fs.rmdirSync(temp));
+test.after(() => fs.rmSync(temp, { recursive: true, force: true }));
 
 test('runtime verifies exactly one enabled Electron cookie-encryption fuse', () => {
   const framework = path.join(temp, 'Electron Framework.fixture');
@@ -18,6 +18,8 @@ test('runtime verifies exactly one enabled Electron cookie-encryption fuse', () 
   fs.writeFileSync(framework, Buffer.concat([Buffer.from('prefix'), marker, wire(0x30), Buffer.from('suffix')]));
   assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), false);
   fs.writeFileSync(framework, Buffer.concat([marker, wire(0x31), marker]));
+  assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), false);
+  fs.writeFileSync(framework, Buffer.concat([marker, wire(0x31), marker, wire(0x31)]));
   assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), false);
   fs.writeFileSync(framework, Buffer.concat([marker, wire(0x31, 1)]));
   assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), false);
