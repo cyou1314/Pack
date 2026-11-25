@@ -37,7 +37,10 @@ def ctl(*args, check=True):
 
 def write_private(path, content):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, 'w') as f: f.write(content)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
 
 def available(port):
     with socket.socket() as s:
@@ -118,8 +121,16 @@ def save_install_state(state):
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:
             json.dump(state, stream, ensure_ascii=False, sort_keys=True)
             stream.write(chr(10))
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temp, STATE_PATH)
         os.chmod(STATE_PATH, 0o600)
+        try:
+            directory_fd = os.open(base, os.O_RDONLY)
+            try: os.fsync(directory_fd)
+            finally: os.close(directory_fd)
+        except OSError:
+            pass
     except BaseException:
         try: temp.unlink()
         except OSError: pass
@@ -146,7 +157,7 @@ def is_managed_root(root, role):
                 and marker.get('root') == str(root)
                 and len(txid) == 32
                 and all(ch in '0123456789abcdef' for ch in txid))
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         return False
 
 
@@ -155,10 +166,14 @@ def rollback_managed_agents():
         plist = agents/(label+'.plist')
         if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
             service = f'gui/{uid}/{label}'
-            if ctl('print', service, check=False).returncode == 0:
-                if ctl('bootout', service, check=False).returncode != 0:
-                    continue
-            plist.unlink()
+            try:
+                if ctl('print', service, check=False).returncode == 0:
+                    if ctl('bootout', service, check=False).returncode != 0:
+                        continue
+                plist.unlink()
+            except OSError:
+                # Leave the plist for a later explicit uninstall retry.
+                continue
 
 
 def remove_program_files(root, names):
@@ -305,7 +320,10 @@ def install():
         except BaseException as exc:
             # Stop only agents positively identified as Pack-owned. Keep
             # databases, tokens, config, attachments and engine data intact.
-            rollback_managed_agents()
+            try:
+                rollback_managed_agents()
+            except Exception:
+                print('Warning: one or more Pack services could not be rolled back.', file=sys.stderr)
             state['phase'] = 'failed'
             state['updated_at'] = int(time.time())
             state['error_type'] = type(exc).__name__
@@ -351,7 +369,10 @@ def uninstall():
         state = load_install_state(strict=False)
         managed_agents = set()
         blocked_agents = set()
-        for kind, label in labels.items():
+        agents_safe = not agents.is_symlink() and (not path_exists(agents) or agents.is_dir())
+        if not agents_safe:
+            blocked_agents.update(labels.keys())
+        for kind, label in (labels.items() if agents_safe else ()):
             plist = agents/(label+'.plist')
             service = f'gui/{uid}/{label}'
             if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
