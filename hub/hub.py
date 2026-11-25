@@ -4175,6 +4175,55 @@ def build_server():
                 conn.close()
 
         @mcp.tool
+        def collaboration_route_preview(mode: str, worker_count: int = 1,
+                                        max_calls: int = 5, allow_unknown_quota: bool = False) -> dict:
+            """Owner-only deterministic text routing preview; never creates a run."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, require_executor
+            from collaboration_policy import suggest_roles
+            conn = db()
+            try:
+                _owner(conn,me["id"])
+                now = _now()
+                candidates = []
+                providers = {"openai":"api","gemini-api":"api","volcengine":"api",
+                             "chatgpt":"native","gemini":"native","doubao":"native"}
+                rows = conn.execute("""
+                    SELECT e.member_id,e.provider,e.access_kind,e.account_ref,
+                           m.last_heartbeat,m.quota_week_used_pct,m.quota_updated_at,
+                           (SELECT COUNT(*) FROM tasks t WHERE t.assignee=m.id
+                            AND t.status IN ('open','claimed','working','review')) AS queue,
+                           EXISTS(SELECT 1 FROM collaboration_steps s
+                             JOIN collaboration_runs r ON r.id=s.run_id
+                             WHERE s.member=CAST(e.member_id AS TEXT) AND r.status='active'
+                               AND r.deadline>? AND s.status IN ('pending','running')) AS active_plan
+                    FROM collaboration_executors e JOIN members m ON m.id=e.member_id
+                    WHERE e.owner_id=? AND e.revoked=0 ORDER BY e.member_id
+                    """,(now,me["id"])).fetchall()
+                for row in rows:
+                    try:
+                        require_executor(conn,row[0])
+                    except ValueError:
+                        continue
+                    if providers.get(row[1]) != row[2]:
+                        continue
+                    online = row[4] is not None and 0 <= now-row[4] <= RELAY_HEARTBEAT_FRESH
+                    fresh = (row[5] is not None and 0 <= row[5] <= 100
+                             and row[6] is not None and 0 <= now-row[6] <= RELAY_QUOTA_FRESH)
+                    state = ("available" if row[5]<RELAY_QUOTA_HEADROOM else "limited") if fresh else "unknown"
+                    candidates.append(dict(member_id=row[0],provider=row[1],access_kind=row[2],
+                        account_ref=row[3],online=online,queue=row[7],active_plan=bool(row[8]),
+                        quota_state=state,quota_pct=row[5] if fresh else None))
+                suggestion = suggest_roles(mode=mode,candidates=candidates,worker_count=worker_count,
+                    max_calls=max_calls,allow_unknown_quota=allow_unknown_quota)
+                return {"mode":mode,"suggestion":suggestion,"candidates":[
+                    {k:v for k,v in c.items() if k!="account_ref"} for c in candidates],
+                    "requires_owner_confirmation":True,"capability_scope":"text_candidate_only"}
+            finally:
+                conn.close()
+
+        @mcp.tool
         def collaboration_create(room: str, request_key: str, body: str, mode: str,
                                  leader: int, deadline: float, workers: list[int] | None = None,
                                  reviewer: int | None = None, max_calls: int = 5) -> dict:

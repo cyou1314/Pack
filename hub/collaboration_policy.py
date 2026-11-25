@@ -75,3 +75,45 @@ def role_for_step(key):
     if key in ("work-0", "work-1", "work-2"):
         return "worker"
     raise ValueError("invalid collaboration step")
+
+
+def suggest_roles(*, mode, candidates, worker_count=1, max_calls=5, allow_unknown_quota=False):
+    """Deterministic owner preview; never creates a run or invokes a model."""
+    if (type(worker_count) is not int or type(allow_unknown_quota) is not bool
+            or type(max_calls) is not int or not 1 <= max_calls <= 8):
+        raise ValueError("invalid routing options")
+    if mode == "focus":
+        needed, calls = 1, 1
+    elif mode == "compare" and 1 <= worker_count <= 2:
+        needed, calls = 1 + worker_count, 2 + worker_count
+    elif mode == "team" and 1 <= worker_count <= 3:
+        needed = calls = 2 + worker_count
+    else:
+        raise ValueError("invalid routing mode or worker count")
+    if calls > max_calls:
+        raise ValueError("call budget exceeded")
+    eligible = [c for c in candidates if c["online"] and c["queue"] == 0
+                and not c["active_plan"]
+                and (c["quota_state"] == "available" or
+                     allow_unknown_quota and c["quota_state"] == "unknown")]
+    # Prefer observed headroom; do not pretend to rank model intelligence.
+    eligible.sort(key=lambda c: (c["quota_state"] != "available",
+                    c["quota_pct"] if c["quota_state"] == "available" else 101,
+                    c["member_id"]))
+    selected, refs = [], set()
+    for c in eligible:
+        if c["account_ref"] in refs:
+            continue
+        refs.add(c["account_ref"])
+        selected.append(c)
+        if len(selected) == needed:
+            break
+    if len(selected) != needed:
+        return None
+    ids = [str(c["member_id"]) for c in selected]
+    workers = tuple(ids[1:-1] if mode == "team" else ids[1:])
+    reviewer = ids[-1] if mode == "team" else None
+    steps = plan_collaboration(actor_role="owner", mode=mode, eligible=set(ids),
+                               leader=ids[0], workers=workers, reviewer=reviewer, max_calls=max_calls)
+    return {"leader": int(ids[0]), "workers": [int(x) for x in workers],
+            "reviewer": int(reviewer) if reviewer else None, "planned_calls": len(steps)}

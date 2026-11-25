@@ -120,3 +120,7 @@ Swift `AgentLocalAccountResolver` 通过现有 `AgentRegistryStore.profile(id:)`
 ## 第十七阶段：固定角色执行规范
 
 Hub 返回 role 与 max_output_tokens：answer/synthesis 4096、worker 3072、analysis/review 2048。Swift/Node 验证 step/role/预算；API 使用用户上限与角色上限的较小值，native 仅提供简洁输出指令，无法强制平台 token 限制。审核、分析、汇总的固定指令区别开，依赖结果仍为不可信数据。Node 429 不再自动标记周额度 100%。生产关闭，真实 Provider 验收仍待完成。
+
+### 只读智能路由预览
+
+owner-only `collaboration_route_preview` 按专用绑定的六种文本候选、在线心跳、空队列、未占用活跃 DAG、新鲜额度筛选。未知额度默认排除，需显式 opt-in；确定性排序及本地账号去重，不推断模型优劣。只读建议，仍需 owner 确认创建，不发授权或调用模型。候选资格不证明已登录、真实能力或费用；预览也不是预约或原子调度，真实创建/执行仍须验证。MCP 回归覆盖未知额度与活跃计划排除。生产仍关闭。

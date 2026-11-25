@@ -274,6 +274,15 @@ def main():
                 assert "error" in outsider("collaboration_executor_bind",binding)
                 assert owner_call("collaboration_executor_bind",binding).get("created") is True
                 members.append(registered)
+            # Routing preview is read-only, quota unknown requires opt-in.
+            for registered in members:
+                assert asyncio.run(call(port,registered["token"],"heartbeat",{})).get("ok") is True
+            preview=owner_call("collaboration_route_preview",{"mode":"compare","max_calls":3})
+            assert preview.get("suggestion") is None,preview
+            preview=owner_call("collaboration_route_preview",{"mode":"compare","max_calls":3,
+                "allow_unknown_quota":True})
+            assert preview.get("suggestion",{}).get("planned_calls")==3,preview
+            assert "error" in outsider("collaboration_route_preview",{"mode":"focus"})
             request={"room":"pack-main","request_key":"f"*32,"body":"managed-private-root-marker",
                 "mode":"compare","leader":members[0]["member_id"],"workers":[members[1]["member_id"]],
                 "deadline":time.time()+600,"max_calls":3}
@@ -289,6 +298,8 @@ def main():
             assert conn.execute("SELECT COUNT(*) FROM collaboration_task_links WHERE run_id=?",(managed,)).fetchone()[0]==2
             steps={x["key"]:x for x in created["steps"]}
             assert steps["final"]["task_id"] is None
+            busy_preview=owner_call("collaboration_route_preview",{"mode":"focus","allow_unknown_quota":True})
+            assert busy_preview.get("suggestion") is None,busy_preview
             def finish_managed(step,registered,result):
                 def execute(name,args):
                     return asyncio.run(call(port,registered["token"],name,args))
@@ -309,6 +320,7 @@ def main():
             final=next(s for s in status["steps"] if s["key"]=="final")
             assert final["task_id"],status
             context=finish_managed(final,members[0],"final result")
+            assert context["role"]=="synthesis" and context["max_output_tokens"]==4096,context
             assert {i["text"] for i in context["items"] if i["kind"]=="dependency_result"}=={"first result","second result"}
             assert owner_call("collaboration_status",{"run_id":managed})["status"]=="succeeded"
             assert owner_call("collaboration_create",request)["status"]=="succeeded"
