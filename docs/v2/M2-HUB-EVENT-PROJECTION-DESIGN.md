@@ -1,6 +1,6 @@
 # M2 Hub Event Projection / Session Recovery Design
 
-状态：设计基线；定义 Hub Inbox 到 Agent Session 读模型的投影边界。migration v7 Schema 已在 PR #50 实现且 Hub、Runtime、Staging / Staging56、macOS CI 全部通过，尚未合入；业务 Projector、Session Read API 和生产 Runtime 接线尚未实现。
+状态：设计基线；定义 Hub Inbox 到 Agent Session 读模型的投影边界。migration v7 Schema 已在 PR #50 实现且全套 CI 通过，尚未合入；内部 Session Projector 已在 PR #51 实现，Hub 单测、快照、默认 Staging、Runtime 和 macOS CI 通过，Staging56 仍在运行；Session Read API 和生产 Runtime 接线尚未实现。
 
 依赖关系：
 - PR #41：已合入 v2 Foundation，提供 Agent Event Inbox / Outbox 基础。
