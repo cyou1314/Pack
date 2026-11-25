@@ -123,7 +123,7 @@ export function createCollaborationRunner({
           !Number.isFinite(claim.lease_expires))
         return {status:'claimUnknown',usage:null};
       const claim_token=claim.claim_token;
-      let account, lease, locked=false, invoked=false, retainLease=false, timer, controller;
+      let account, lease, adapter, locked=false, invoked=false, retainLease=false, timer, controller;
       let usage=null;
       let phase='context_unavailable';
       try {
@@ -137,7 +137,7 @@ export function createCollaborationRunner({
         busy.add(account); locked=true;
         lease=await accountLeases.acquire(account);
         if(typeof lease?.release!=='function') fail('invalid_account_lease');
-        const adapter=await resolveAdapter(destination);
+        adapter=await resolveAdapter(destination);
         if (!adapter || typeof adapter.verifyAccount!=='function' || typeof adapter.execute!=='function' ||
             await adapter.verifyAccount(destination)!==true)
           return await stop(task_id,claim_token,'account_unavailable');
@@ -192,6 +192,10 @@ export function createCollaborationRunner({
         return await stop(task_id,claim_token,phase,usage);
       } finally {
         clearTimeout(timer);
+        if (adapter && !retainLease && typeof adapter.close==='function') {
+          try { await adapter.close(); }
+          catch { retainLease=true; if(account) uncertain.add(account); }
+        }
         if (lease && !retainLease) {
           try { await lease.release(); }
           catch { uncertain.add(account); }

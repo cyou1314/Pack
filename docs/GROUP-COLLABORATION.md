@@ -98,3 +98,9 @@ Swift `AgentLocalAccountResolver` 通过现有 `AgentRegistryStore.profile(id:)`
 新增 Swift AgentOfficialAPIAdapter：OpenAI Responses、Gemini Developer generateContent、火山方舟 Chat Completions，固定 HTTPS 官方地址、显式模型、输出预算、无工具/附件、无应用层自动重试。使用原注册表和 Keychain，按精确 HTTP body SHA-256/URL/目标 profile/deadline 经可信宿主显式授权后读取密钥，仅在本进程 HTTP header 使用；拒绝重定向，ephemeral URLSession，响应读取上限 1 MiB。输出只取完成的文本，不返回思维链；保留 API 返回的 token 用量，缺失则 null。Gemini 输出计量暂按 totalTokenCount - promptTokenCount（包括思考等额外 token，非仅可见文本；非计费结算）。OpenAI store=false 不代表零数据留存。方舟 max_completion_tokens 仅支持兼容模型，不自动退回其他参数。HTTP 不明确失败抛出固定错误，宿主应保留账号租约。新增注入 transport 的离线测试。
 
 参考官方文档：https://developers.openai.com/api/reference/resources/responses/methods/create 、https://ai.google.dev/api/generate-content 、https://docs.volcengine.com/docs/ark/chat-api?lang=zh 。未验证真实 API key、模型兼容性、签名 Keychain、网络重定向实际行为、上游取消与网络层 exactly-once；未连接 Node runner/IPC/生产入口，可信宿主负责租约、审批与结果提交。API 原生工具和多模态仍关闭。
+
+## 第十四阶段：Native Account 单次会话适配契约（未接生产）
+
+新增 `runtime/browser-driver/native-account-adapter.mjs`，复用 BrowserSessions 与 Node Runner：ChatGPT/Gemini/豆包固定 origin 候选，单次验证/执行，可信宿主提供已登记的本地账号证明摘要、当前账号/model/memory/busy 检查、真实页面 driver 和准确发送授权。拒绝登录未完成、挑战、账号/模式/域不符；新建独立空会话（不清除原账号历史或强制临时聊天），按准确发送文本 SHA-256、会话及目标再授权；一次 sendOnce，按新 turnID 等待完成 assistant 文本，不回读旧会话、思维过程或私有记忆，不推算原生 token。取消或发送/回复不明确不重试。Runner 在明确未执行/完成时先关闭 adapter 再释放账号租约，close 失败保留租约，未知执行不强行关闭或重开。Node mock 回归覆盖身份、来源、拒绝授权、旧回复、部分输出及清理顺序。
+
+尚无真实 Provider 页面 driver、登录账号证明采集/登记 UI、会话稳定 ID 映射、实际消息 DOM 与完成检测。固定域只是导航范围，不是所有网络请求的隔离策略；不能承诺保留原生记忆、工具可用性或阻止 provider 原生后台调用。必须遵守各平台条款与授权范围，不绕过登录、验证码、风控和权限。原生执行器未启动、未打包、未连接真实账号；生产入口仍关闭。
