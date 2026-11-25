@@ -200,14 +200,23 @@ def write_agent(kind, args, env, keepalive=False, calendar=False):
     # Exclusive creation closes the check/write race and never truncates an
     # existing LaunchAgent plist, even if another process creates it meanwhile.
     created = False
+    bootstrap_attempted = False
     try:
         with path.open('xb') as f:
             created = True
             plistlib.dump(doc, f)
+        bootstrap_attempted = True
         ctl('bootstrap', f'gui/{uid}', str(path))
     except BaseException:
-        # Remove only the file created by this call; never touch a collision.
-        if created:
+        # Remove only the file created by this call; if bootstrap may have
+        # loaded it despite reporting an error, retain the ownership record.
+        keep_for_recovery = False
+        if created and bootstrap_attempted:
+            try:
+                keep_for_recovery = ctl('print', f'gui/{uid}/{label}', check=False).returncode == 0
+            except OSError:
+                keep_for_recovery = True
+        if created and not keep_for_recovery:
             try: path.unlink()
             except OSError: pass
         raise
@@ -231,7 +240,10 @@ def install():
             phase = previous['phase']
             if phase in ('installing', 'failed'):
                 raise SystemExit('An interrupted Pack installation was found; run uninstall.command to remove Pack program files while preserving data, then inspect before reinstalling.')
-            raise SystemExit(f'Existing Pack installer state ({phase}); refusing to overwrite.')
+            if phase == 'uninstalled' and not any(path_exists(path) for path in (hub, engine, config, socket_dir)):
+                STATE_PATH.unlink()
+            else:
+                raise SystemExit(f'Existing Pack installer state ({phase}); refusing to overwrite.')
 
         for path in (hub, engine, config, socket_dir):
             if path_exists(path):
