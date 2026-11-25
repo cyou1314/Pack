@@ -17,6 +17,8 @@ public enum AgentProviderCatalog {
         .init(id: "muse", displayName: "Muse", modes: [.nativeAccount]),
         .init(id: "chatgpt", displayName: "ChatGPT", modes: [.nativeAccount]),
         .init(id: "openai", displayName: "OpenAI API", modes: [.officialAPI]),
+        .init(id: "gemini", displayName: "Gemini", modes: [.nativeAccount]),
+        .init(id: "gemini-api", displayName: "Gemini API", modes: [.officialAPI]),
         .init(id: "doubao", displayName: "豆包", modes: [.nativeAccount]),
         .init(id: "volcengine", displayName: "火山引擎 API", modes: [.officialAPI])
     ]
