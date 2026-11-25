@@ -252,7 +252,15 @@ def main():
             assert info.get("account_ref")==account and info.get("access_kind")=="api",info
             assert "error" in executor("task_complete",{"task_id":dt,"claim_token":token2,"result":"premature"})
             assert executor("run_start",{"task_id":dt,"claim_token":token2}).get("fence")==1
-            assert executor("task_complete",{"task_id":dt,"claim_token":token2,"result":"dedicated result"}).get("status")=="review"
+            assert "error" in executor("run_finish",{"task_id":dt,"claim_token":token2})
+            invalid={"task_id":dt,"claim_token":token2,"result":"dedicated result",
+                     "provider_usage":{"input_tokens":-1,"output_tokens":3}}
+            assert "error" in executor("task_complete",invalid)
+            assert conn.execute("SELECT status FROM tasks WHERE id=?",(dt,)).fetchone()[0] in ("claimed","working")
+            assert executor("task_complete",{**invalid,"provider_usage":{"input_tokens":4,"output_tokens":3}}).get("status")=="review"
+            assert tuple(conn.execute("SELECT input_tokens,output_tokens FROM collaboration_usage WHERE task_id=?",(dt,)).fetchone())==(4,3)
+            assert "error" in executor("task_complete",invalid)
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_usage WHERE task_id=?",(dt,)).fetchone()[0]==1
             assert dispatch("task_review",{"task_id":dt,"approve":True}).get("status")=="done"
             with write_transaction(conn):
                 assert revoke_executor(conn,actor_id=real_owner,member_id=dm)
@@ -310,7 +318,10 @@ def main():
                 context=execute("collaboration_context_get",args)
                 assert context.get("items",[{}])[0].get("text")==request["body"],context
                 assert execute("run_start",args).get("fence")==1
-                assert execute("task_complete",{**args,"result":result}).get("status")=="review"
+                delivery={**args,"result":result}
+                if step["key"]=="analysis-0":
+                    delivery["provider_usage"]={"input_tokens":7,"output_tokens":2}
+                assert execute("task_complete",delivery).get("status")=="review"
                 assert dispatch("task_review",{"task_id":tid,"approve":True}).get("status")=="done"
                 return context
             finish_managed(steps["analysis-0"],members[0],"first result")
@@ -323,6 +334,12 @@ def main():
             assert context["role"]=="synthesis" and context["max_output_tokens"]==4096,context
             assert {i["text"] for i in context["items"] if i["kind"]=="dependency_result"}=={"first result","second result"}
             assert owner_call("collaboration_status",{"run_id":managed})["status"]=="succeeded"
+            ledger=owner_call("collaboration_usage_get",{"run_id":managed})
+            assert ledger["registered_attempts"]==3 and ledger["reported_submissions"]==3,ledger
+            assert ledger["metered_attempts"]==1 and ledger["unmetered_registered_attempts"]==2,ledger
+            assert ledger["reported_input_tokens"]==7 and ledger["reported_output_tokens"]==2,ledger
+            assert ledger["cost"] is None and "managed-private-root-marker" not in str(ledger),ledger
+            assert "error" in outsider("collaboration_usage_get",{"run_id":managed})
             assert owner_call("collaboration_create",request)["status"]=="succeeded"
             invalid={**request,"request_key":"e"*32,"max_calls":2}
             assert "error" in owner_call("collaboration_create",invalid)

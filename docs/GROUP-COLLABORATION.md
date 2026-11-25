@@ -124,3 +124,7 @@ Hub 返回 role 与 max_output_tokens：answer/synthesis 4096、worker 3072、an
 ### 只读智能路由预览
 
 owner-only `collaboration_route_preview` 按专用绑定的六种文本候选、在线心跳、空队列、未占用活跃 DAG、新鲜额度筛选。未知额度默认排除，需显式 opt-in；确定性排序及本地账号去重，不推断模型优劣。只读建议，仍需 owner 确认创建，不发授权或调用模型。候选资格不证明已登录、真实能力或费用；预览也不是预约或原子调度，真实创建/执行仍须验证。MCP 回归覆盖未知额度与活跃计划排除。生产仍关闭。
+
+## 第十八阶段：协作用量账本（Hub）
+
+新增 opt-in `collaboration_usage`，仅专用执行身份、有效 claim 与单次 running Run 登记可写；交付或 block 同事务落账，重复提交不能二次记账，非法计量整笔回滚。原生不接受 Token 数值，未知 null；未登记、登记未报告、提交、停止分别展示。owner-only `collaboration_usage_get` 返回每步骤、执行登记、Hub 耗时、已报告 Token 小计及覆盖率；不是 Provider 核验账单，注册次数不等于调用次数，不推算费用。专用身份禁止独立 run_finish，避免提前关闭登记再交付；专用 block 不再自动标记周额度 100%。不改变旧成员原有工具语义。生产 schema 尚未启用，旧 opt-in 开发库需显式 initialize 升级；真实 API/原生验收及价格版本、缓存/推理分项、结算对账仍待完成。

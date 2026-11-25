@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS collaboration_task_links (
     PRIMARY KEY(run_id, step_key),
     FOREIGN KEY(run_id, step_key) REFERENCES collaboration_steps(run_id, step_key)
 );
+CREATE TABLE IF NOT EXISTS collaboration_usage (
+    task_id INTEGER PRIMARY KEY REFERENCES collaboration_task_links(task_id),
+    execution_id INTEGER NOT NULL UNIQUE,
+    outcome TEXT NOT NULL CHECK(outcome IN ('submitted','stopped')),
+    input_tokens INTEGER CHECK(input_tokens BETWEEN 0 AND 1000000000),
+    output_tokens INTEGER CHECK(output_tokens BETWEEN 0 AND 1000000000),
+    reported_at REAL NOT NULL,
+    CHECK((input_tokens IS NULL) = (output_tokens IS NULL))
+);
 CREATE TABLE IF NOT EXISTS collaboration_requests (
     owner_id INTEGER NOT NULL,
     request_key TEXT NOT NULL,

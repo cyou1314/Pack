@@ -1338,7 +1338,7 @@ def _collaboration_privileged(me):
 
 COLLABORATION_EXECUTOR_TOOLS = frozenset({
     "heartbeat", "task_list", "task_claim", "collaboration_context_get", "collaboration_executor_info",
-    "run_start", "run_finish", "task_update", "task_complete", "task_block",
+    "run_start", "task_update", "task_complete", "task_block",
 })
 
 
@@ -1399,6 +1399,66 @@ def _collaboration_managed_request(conn, run_id):
     return conn.execute(
         "SELECT owner_id,source_message_id,body FROM collaboration_requests WHERE run_id=?",
         (run_id,)).fetchone()
+
+
+def _collaboration_record_usage(conn, task_id, me, claim_token, outcome, usage, now):
+    """Record executor-reported metering, never a verified Provider bill."""
+    binding = _collaboration_executor_binding(conn,me["id"])
+    if binding is None:
+        if usage is not None:
+            raise ValueError("collaboration usage requires dedicated executor")
+        return
+    if usage is not None:
+        if (binding[2] != "api" or type(usage) is not dict
+                or set(usage) != {"input_tokens","output_tokens"}
+                or any(type(v) is not int or not 0 <= v <= 1000000000 for v in usage.values())):
+            raise ValueError("invalid collaboration usage")
+    run = conn.execute(
+        "SELECT id FROM runs WHERE task_id=? AND member_id=? AND claim_token=? "
+        "AND status='running' AND fence=1",(task_id,me["id"],claim_token)).fetchone()
+    if not run:
+        if usage is not None or outcome == "submitted":
+            raise ValueError("collaboration: live execution registration required")
+        return
+    conn.execute(
+        "INSERT INTO collaboration_usage(task_id,execution_id,outcome,input_tokens,output_tokens,reported_at)"
+        " VALUES(?,?,?,?,?,?)",(task_id,run[0],outcome,
+            None if usage is None else usage["input_tokens"],
+            None if usage is None else usage["output_tokens"],now))
+
+
+def _collaboration_usage_snapshot(conn, run_id):
+    """Bounded per-DAG ledger; no prices or raw content."""
+    rows = conn.execute("""
+        SELECT s.step_key,s.role,s.status,s.member,l.task_id,e.provider,e.access_kind,
+               r.id,r.status,r.outcome,r.started_at,r.ended_at,
+               u.outcome,u.input_tokens,u.output_tokens,u.reported_at
+        FROM collaboration_steps s
+        LEFT JOIN collaboration_task_links l ON l.run_id=s.run_id AND l.step_key=s.step_key
+        LEFT JOIN collaboration_executors e ON e.member_id=CAST(s.member AS INTEGER)
+        LEFT JOIN runs r ON r.task_id=l.task_id AND r.fence=1
+        LEFT JOIN collaboration_usage u ON u.execution_id=r.id
+        WHERE s.run_id=? ORDER BY s.step_key
+        """,(run_id,)).fetchall()
+    items = []
+    for x in rows:
+        known = x[13] is not None and x[14] is not None
+        items.append(dict(step_key=x[0],role=x[1],step_status=x[2],member_id=int(x[3]),
+            task_id=x[4],provider=x[5],access_kind=x[6],execution_id=x[7],
+            execution_status=x[8],execution_outcome=x[9],
+            execution_seconds=max(0,x[11]-x[10]) if x[10] is not None and x[11] is not None else None,
+            report_state=x[12] if x[12] is not None else ("unreported" if x[7] is not None else "not_registered"),
+            usage_source="executor_reported" if known else "unknown",
+            input_tokens=x[13],output_tokens=x[14],reported_at=x[15]))
+    measured = [i for i in items if i["usage_source"] == "executor_reported"]
+    registered = sum(i["execution_id"] is not None for i in items)
+    return {"run_id":run_id,"registered_attempts":registered,
+            "reported_submissions":sum(i["report_state"]=="submitted" for i in items),
+            "reported_stops":sum(i["report_state"]=="stopped" for i in items),
+            "metered_attempts":len(measured),"unmetered_registered_attempts":registered-len(measured),
+            "reported_input_tokens":sum(i["input_tokens"] for i in measured) if measured else None,
+            "reported_output_tokens":sum(i["output_tokens"] for i in measured) if measured else None,
+            "cost":None,"cost_state":"not_calculated","items":items}
 
 
 def _collaboration_public_snapshot(conn, run_id):
@@ -4301,6 +4361,22 @@ def build_server():
                 conn.close()
 
         @mcp.tool
+        def collaboration_usage_get(run_id: str) -> dict:
+            """Owner-only per-run metering, with explicit unknown coverage."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                _owner(conn,me["id"])
+                request = _collaboration_managed_request(conn,run_id)
+                if not request or request[0] != me["id"]:
+                    raise ValueError("collaboration run unavailable")
+                return _collaboration_usage_snapshot(conn,run_id)
+            finally:
+                conn.close()
+
+        @mcp.tool
         def collaboration_cancel(run_id: str) -> dict:
             me = authenticate()
             require(me,"member")
@@ -4363,7 +4439,8 @@ def build_server():
 
     @mcp.tool
     def task_complete(task_id: int, claim_token: str, result: str,
-                      envelope: dict | None = None, attachment_ids: str = "") -> dict:
+                      envelope: dict | None = None, attachment_ids: str = "",
+                      provider_usage: dict | None = None) -> dict:
         """持有人交活：状态转 review，等调度员验收关单。
         可选 envelope（结构化交活信封，合成清单第 2 项）：
           {verdict: "done"|"partial"|"failed"（必填）, summary: 一句话（必填，
@@ -4387,7 +4464,8 @@ def build_server():
             if _collaboration_executor_binding(conn,me["id"]) is not None:
                 from collaboration_context import read_context
                 read_context(conn,task_id,member_id=me["id"],now=_now())
-                if not conn.execute("SELECT 1 FROM runs WHERE task_id=? AND member_id=? AND claim_token=?",
+                if not conn.execute("SELECT 1 FROM runs WHERE task_id=? AND member_id=? AND claim_token=? "
+                                    "AND status='running' AND fence=1",
                                     (task_id,me["id"],claim_token)).fetchone():
                     raise ValueError("collaboration: execution not registered")
                 if len(result.encode("utf-8")) > 16*1024:
@@ -4414,6 +4492,8 @@ def build_server():
             if cur.rowcount != 1:
                 conn.close()
                 raise ValueError("not the current holder (claim_token mismatch)")
+            if linked is not None or provider_usage is not None:
+                _collaboration_record_usage(conn,task_id,me,claim_token,"submitted",provider_usage,now)
             _close_run(conn, task_id, "completed", me["name"])
             _desktop_release_for_task(conn, task_id, me["name"], "complete")
             t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -4464,7 +4544,8 @@ def build_server():
             conn.close()
 
     @mcp.tool
-    def task_block(task_id: int, claim_token: str, reason: str, fail_class: str = "") -> dict:
+    def task_block(task_id: int, claim_token: str, reason: str, fail_class: str = "",
+                   provider_usage: dict | None = None) -> dict:
         """持有人报卡住：状态转 blocked 并说明原因，等调度员处理。
         可选 fail_class 自报失败类别（合成清单第 3 项）：quota=额度/限流、
         transient=网络/上游抖动、task=任务本身问题（如输入缺失）；
@@ -4483,7 +4564,12 @@ def build_server():
                 raise ValueError("forbidden: task is outside the bound room")
             now = _now()
             linked = _collaboration_link(conn, task_id)
+            if provider_usage is not None and linked is None:
+                raise ValueError("collaboration usage requires a linked task")
             if linked is not None:
+                _collaboration_record_usage(conn,task_id,me,claim_token,"stopped",provider_usage,now)
+                if _collaboration_executor_binding(conn,me["id"]) is not None and fc == "quota":
+                    fc = "task"
                 _collaboration_stop(conn, linked, "failed", me["name"], "task_block", now)
                 conn.execute("UPDATE tasks SET result=?,fail_class=? WHERE id=?", (reason, fc, task_id))
                 if fc == "quota":
