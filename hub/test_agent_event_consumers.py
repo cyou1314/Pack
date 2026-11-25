@@ -115,11 +115,15 @@ class AgentEventConsumerTests(unittest.TestCase):
                 "agent_event_consumer_leases",
                 "agent_event_consumer_lease_items",
             }.issubset(tables))
+            version6 = connection.execute(
+                "SELECT version,name FROM hub_schema_migrations WHERE version=6"
+            ).fetchone()
+            self.assertEqual((version6["version"], version6["name"]), (6, "agent_event_consumer_leases"))
             self.assertEqual(
                 connection.execute(
-                    "SELECT version,name FROM hub_schema_migrations ORDER BY version"
-                ).fetchall()[-1]["version"],
-                6,
+                    "SELECT COUNT(*) FROM hub_schema_migrations WHERE version=7"
+                ).fetchone()[0],
+                1,
             )
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
             indexes = {
@@ -145,7 +149,7 @@ class AgentEventConsumerTests(unittest.TestCase):
             )
             original = migrations.MIGRATIONS
             try:
-                migrations.MIGRATIONS = original[:-1]
+                migrations.MIGRATIONS = original[:-2]
                 hub.init(context)
                 connection = context.connect()
                 try:
@@ -210,6 +214,16 @@ class AgentEventConsumerTests(unittest.TestCase):
                             "SELECT COUNT(*) FROM hub_schema_migrations WHERE version=6"
                         ).fetchone()[0],
                         1,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM hub_schema_migrations WHERE version=7"
+                        ).fetchone()[0],
+                        1,
+                    )
+                    self.assertIn(
+                        "last_inbox_seq",
+                        {row["name"] for row in connection.execute("PRAGMA table_info(agent_sessions)")},
                     )
                 finally:
                     connection.close()
