@@ -8,10 +8,24 @@ DIR="${PACK_BACKUP_DIR:-$HUB/backups}"
 STAMP="${1:-}"
 
 if [ -z "$STAMP" ]; then
-  latest="$(ls -1t "$DIR"/pack-*.db 2>/dev/null | head -1 || true)"
-  [ -n "$latest" ] || { echo "no database backup found in $DIR" >&2; exit 1; }
-  STAMP="${latest##*/pack-}"
-  STAMP="${STAMP%.db}"
+  latest=""
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    candidate_stamp="${candidate##*/pack-}"
+    candidate_stamp="${candidate_stamp%.db}"
+    if [ -f "$DIR/attachments-$candidate_stamp.tar.gz" ] \
+        && [ -f "$DIR/manifest-$candidate_stamp.sha256" ]; then
+      latest="$candidate"
+      STAMP="$candidate_stamp"
+      break
+    fi
+  done < <(ls -1t "$DIR"/pack-*.db 2>/dev/null || true)
+  [ -n "$latest" ] || { echo "no complete database backup found in $DIR" >&2; exit 1; }
+fi
+
+if [[ ! "$STAMP" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]; then
+  echo "invalid backup stamp" >&2
+  exit 1
 fi
 
 DB="$DIR/pack-$STAMP.db"
