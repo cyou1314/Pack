@@ -45,6 +45,7 @@ jobs:
           python hub/test_reply_watcher.py
           python hub/test_resolve_mention.py
           python hub/test_db_query_indexes.py
+          python hub/test_task_lifecycle_guards.py
           python installer/test_manager_paths.py
           bash app/test-make-bundle.sh
       - name: Default staging regression
