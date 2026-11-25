@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import secrets
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -283,6 +284,142 @@ def claim_agent_events(
             connection.close()
 
 
+def _require_active_transaction(connection) -> None:
+    if not connection.in_transaction:
+        raise RuntimeError("agent_event_transaction_required")
+
+
+def _finite_timestamp(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("invalid_now")
+    timestamp = float(value)
+    if not math.isfinite(timestamp):
+        raise ValueError("invalid_now")
+    return timestamp
+
+
+def ack_agent_events_in_transaction(
+    connection,
+    principal: ConsumerPrincipal,
+    lease_id: str,
+    lease_token: str,
+    *,
+    through_inbox_seq: int,
+    now: float,
+) -> dict[str, Any]:
+    """ACK a contiguous Lease prefix inside the caller's SQLite transaction.
+
+    This helper never opens, commits, rolls back, or closes the connection.
+    Projection side effects and cursor advancement can therefore share one
+    transaction without an ACK-after-projection crash window.
+    """
+    _require_active_transaction(connection)
+    consumer_id = _require_principal(principal)
+    lease_id = _required_text(lease_id, "lease_id", max_length=128)
+    lease_token = _valid_token(lease_token)
+    through_inbox_seq = _bounded_int(
+        through_inbox_seq, "through_inbox_seq", 1, (1 << 63) - 1,
+    )
+    now = _finite_timestamp(now)
+
+    lease = connection.execute(
+        "SELECT * FROM agent_event_consumer_leases WHERE lease_id=?",
+        (lease_id,),
+    ).fetchone()
+    if lease is None or lease["consumer_id"] != consumer_id:
+        raise AgentEventLeaseUnauthorized("agent_event_lease_unauthorized")
+    _authorize_agent(connection, consumer_id, lease["agent_id"])
+    if not _lease_token_matches(lease, lease_token):
+        raise AgentEventLeaseUnauthorized("agent_event_lease_unauthorized")
+
+    status = lease["status"]
+    acked_through = int(lease["acked_through_inbox_seq"])
+    item = connection.execute(
+        """SELECT acked_at FROM agent_event_consumer_lease_items
+           WHERE lease_id=? AND inbox_seq=?""",
+        (lease_id, through_inbox_seq),
+    ).fetchone()
+
+    if status == "completed":
+        retry_until = lease["ack_retry_until"]
+        if (retry_until is None or now > float(retry_until)
+                or through_inbox_seq > acked_through
+                or item is None or item["acked_at"] is None):
+            raise AgentEventLeaseExpired("agent_event_lease_expired")
+        cursor = _cursor_value(connection, consumer_id, lease["agent_id"])
+        return {
+            "status": "completed",
+            "acked_inbox_seq": cursor,
+            "idempotent": True,
+        }
+
+    if status != "active" or float(lease["expires_at"]) <= now:
+        raise AgentEventLeaseExpired("agent_event_lease_expired")
+
+    cursor = _cursor_value(connection, consumer_id, lease["agent_id"])
+    if cursor != acked_through:
+        raise RuntimeError("agent_event_consumer_cursor_mismatch")
+
+    if through_inbox_seq <= acked_through:
+        if item is None or item["acked_at"] is None:
+            raise ValueError("agent_event_ack_not_in_lease")
+        return {
+            "status": "active",
+            "acked_inbox_seq": cursor,
+            "idempotent": True,
+        }
+
+    if item is None or through_inbox_seq > int(lease["through_inbox_seq"]):
+        raise ValueError("agent_event_ack_not_in_lease")
+
+    connection.execute(
+        """UPDATE agent_event_consumer_lease_items SET acked_at=?
+           WHERE lease_id=? AND inbox_seq<=? AND acked_at IS NULL""",
+        (now, lease_id, through_inbox_seq),
+    )
+    connection.execute(
+        """UPDATE agent_event_consumer_cursors
+           SET acked_inbox_seq=?,updated_at=?
+           WHERE consumer_id=? AND agent_id=? AND acked_inbox_seq=?""",
+        (
+            through_inbox_seq, now, consumer_id, lease["agent_id"],
+            acked_through,
+        ),
+    )
+    if connection.execute("SELECT changes()").fetchone()[0] != 1:
+        raise RuntimeError("agent_event_consumer_cursor_race")
+    remaining = int(connection.execute(
+        """SELECT COUNT(*) FROM agent_event_consumer_lease_items
+           WHERE lease_id=? AND acked_at IS NULL""",
+        (lease_id,),
+    ).fetchone()[0])
+    if remaining == 0:
+        connection.execute(
+            """UPDATE agent_event_consumer_leases SET
+                acked_through_inbox_seq=?,status='completed',
+                completed_at=?,ack_retry_until=?,closed_at=?
+               WHERE lease_id=? AND status='active'""",
+            (
+                through_inbox_seq, now,
+                now + ACK_RETRY_WINDOW_SECONDS, now, lease_id,
+            ),
+        )
+        status = "completed"
+    else:
+        connection.execute(
+            """UPDATE agent_event_consumer_leases
+               SET acked_through_inbox_seq=?
+               WHERE lease_id=? AND status='active'""",
+            (through_inbox_seq, lease_id),
+        )
+        status = "active"
+    return {
+        "status": status,
+        "acked_inbox_seq": through_inbox_seq,
+        "idempotent": False,
+    }
+
+
 def ack_agent_events(
     context,
     principal: ConsumerPrincipal,
@@ -291,123 +428,78 @@ def ack_agent_events(
     *,
     through_inbox_seq: int,
 ) -> dict[str, Any]:
-    """Advance only the acknowledged prefix of the caller's current lease."""
-    consumer_id = _require_principal(principal)
-    lease_id = _required_text(lease_id, "lease_id", max_length=128)
-    lease_token = _valid_token(lease_token)
-    through_inbox_seq = _bounded_int(
-        through_inbox_seq, "through_inbox_seq", 1, (1 << 63) - 1,
-    )
-
+    """Transaction-owning compatibility wrapper for Consumer ACK."""
     with context.lock:
         connection = context.connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            lease = connection.execute(
-                "SELECT * FROM agent_event_consumer_leases WHERE lease_id=?",
-                (lease_id,),
-            ).fetchone()
-            if lease is None or lease["consumer_id"] != consumer_id:
-                raise AgentEventLeaseUnauthorized("agent_event_lease_unauthorized")
-            _authorize_agent(connection, consumer_id, lease["agent_id"])
-            if not _lease_token_matches(lease, lease_token):
-                raise AgentEventLeaseUnauthorized("agent_event_lease_unauthorized")
-
-            now = float(context.clock())
-            status = lease["status"]
-            acked_through = int(lease["acked_through_inbox_seq"])
-            item = connection.execute(
-                """SELECT acked_at FROM agent_event_consumer_lease_items
-                   WHERE lease_id=? AND inbox_seq=?""",
-                (lease_id, through_inbox_seq),
-            ).fetchone()
-
-            if status == "completed":
-                retry_until = lease["ack_retry_until"]
-                if (retry_until is None or now > float(retry_until)
-                        or through_inbox_seq > acked_through
-                        or item is None or item["acked_at"] is None):
-                    raise AgentEventLeaseExpired("agent_event_lease_expired")
-                cursor = _cursor_value(connection, consumer_id, lease["agent_id"])
-                connection.commit()
-                return {
-                    "status": "completed",
-                    "acked_inbox_seq": cursor,
-                    "idempotent": True,
-                }
-
-            if status != "active" or float(lease["expires_at"]) <= now:
-                raise AgentEventLeaseExpired("agent_event_lease_expired")
-
-            cursor = _cursor_value(connection, consumer_id, lease["agent_id"])
-            if cursor != acked_through:
-                raise RuntimeError("agent_event_consumer_cursor_mismatch")
-
-            if through_inbox_seq <= acked_through:
-                if item is None or item["acked_at"] is None:
-                    raise ValueError("agent_event_ack_not_in_lease")
-                connection.commit()
-                return {
-                    "status": "active",
-                    "acked_inbox_seq": cursor,
-                    "idempotent": True,
-                }
-
-            if item is None or through_inbox_seq > int(lease["through_inbox_seq"]):
-                raise ValueError("agent_event_ack_not_in_lease")
-
-            connection.execute(
-                """UPDATE agent_event_consumer_lease_items SET acked_at=?
-                   WHERE lease_id=? AND inbox_seq<=? AND acked_at IS NULL""",
-                (now, lease_id, through_inbox_seq),
+            result = ack_agent_events_in_transaction(
+                connection,
+                principal,
+                lease_id,
+                lease_token,
+                through_inbox_seq=through_inbox_seq,
+                now=float(context.clock()),
             )
-            connection.execute(
-                """UPDATE agent_event_consumer_cursors
-                   SET acked_inbox_seq=?,updated_at=?
-                   WHERE consumer_id=? AND agent_id=? AND acked_inbox_seq=?""",
-                (
-                    through_inbox_seq, now, consumer_id, lease["agent_id"],
-                    acked_through,
-                ),
-            )
-            if connection.execute("SELECT changes()").fetchone()[0] != 1:
-                raise RuntimeError("agent_event_consumer_cursor_race")
-            remaining = int(connection.execute(
-                """SELECT COUNT(*) FROM agent_event_consumer_lease_items
-                   WHERE lease_id=? AND acked_at IS NULL""",
-                (lease_id,),
-            ).fetchone()[0])
-            if remaining == 0:
-                connection.execute(
-                    """UPDATE agent_event_consumer_leases SET
-                        acked_through_inbox_seq=?,status='completed',
-                        completed_at=?,ack_retry_until=?,closed_at=?
-                       WHERE lease_id=? AND status='active'""",
-                    (
-                        through_inbox_seq, now,
-                        now + ACK_RETRY_WINDOW_SECONDS, now, lease_id,
-                    ),
-                )
-                status = "completed"
-            else:
-                connection.execute(
-                    """UPDATE agent_event_consumer_leases
-                       SET acked_through_inbox_seq=?
-                       WHERE lease_id=? AND status='active'""",
-                    (through_inbox_seq, lease_id),
-                )
-                status = "active"
             connection.commit()
-            return {
-                "status": status,
-                "acked_inbox_seq": through_inbox_seq,
-                "idempotent": False,
-            }
+            return result
         except Exception:
             connection.rollback()
             raise
         finally:
             connection.close()
+
+
+def release_agent_event_lease_in_transaction(
+    connection,
+    principal: ConsumerPrincipal,
+    lease_id: str,
+    lease_token: str,
+    *,
+    now: float,
+) -> dict[str, Any]:
+    """Release a Lease inside the caller's transaction without advancing cursor."""
+    _require_active_transaction(connection)
+    consumer_id = _require_principal(principal)
+    lease_id = _required_text(lease_id, "lease_id", max_length=128)
+    lease_token = _valid_token(lease_token)
+    now = _finite_timestamp(now)
+
+    lease = connection.execute(
+        "SELECT * FROM agent_event_consumer_leases WHERE lease_id=?",
+        (lease_id,),
+    ).fetchone()
+    if lease is None or lease["consumer_id"] != consumer_id:
+        raise AgentEventLeaseUnauthorized("agent_event_lease_unauthorized")
+    _authorize_agent(connection, consumer_id, lease["agent_id"])
+    if not _lease_token_matches(lease, lease_token):
+        raise AgentEventLeaseUnauthorized("agent_event_lease_unauthorized")
+
+    status = lease["status"]
+    if status in ("released", "expired"):
+        return {
+            "status": status,
+            "cursor": _cursor_value(connection, consumer_id, lease["agent_id"]),
+        }
+    if status == "completed":
+        return {
+            "status": "completed",
+            "cursor": _cursor_value(connection, consumer_id, lease["agent_id"]),
+        }
+
+    new_status = "expired" if float(lease["expires_at"]) <= now else "released"
+    connection.execute(
+        """UPDATE agent_event_consumer_leases
+           SET status=?,closed_at=?
+           WHERE lease_id=? AND status='active'""",
+        (new_status, now, lease_id),
+    )
+    if connection.execute("SELECT changes()").fetchone()[0] != 1:
+        raise RuntimeError("agent_event_lease_state_race")
+    return {
+        "status": new_status,
+        "cursor": _cursor_value(connection, consumer_id, lease["agent_id"]),
+    }
 
 
 def release_agent_event_lease(
@@ -416,48 +508,20 @@ def release_agent_event_lease(
     lease_id: str,
     lease_token: str,
 ) -> dict[str, Any]:
-    """Release an active lease without advancing its Consumer cursor."""
-    consumer_id = _require_principal(principal)
-    lease_id = _required_text(lease_id, "lease_id", max_length=128)
-    lease_token = _valid_token(lease_token)
-
+    """Transaction-owning compatibility wrapper for Lease release."""
     with context.lock:
         connection = context.connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            lease = connection.execute(
-                "SELECT * FROM agent_event_consumer_leases WHERE lease_id=?",
-                (lease_id,),
-            ).fetchone()
-            if lease is None or lease["consumer_id"] != consumer_id:
-                raise AgentEventLeaseUnauthorized("agent_event_lease_unauthorized")
-            _authorize_agent(connection, consumer_id, lease["agent_id"])
-            if not _lease_token_matches(lease, lease_token):
-                raise AgentEventLeaseUnauthorized("agent_event_lease_unauthorized")
-
-            status = lease["status"]
-            if status in ("released", "expired"):
-                connection.commit()
-                return {"status": status, "cursor": _cursor_value(
-                    connection, consumer_id, lease["agent_id"],
-                )}
-            if status == "completed":
-                connection.commit()
-                return {"status": "completed", "cursor": _cursor_value(
-                    connection, consumer_id, lease["agent_id"],
-                )}
-
-            now = float(context.clock())
-            new_status = "expired" if float(lease["expires_at"]) <= now else "released"
-            connection.execute(
-                """UPDATE agent_event_consumer_leases
-                   SET status=?,closed_at=?
-                   WHERE lease_id=? AND status='active'""",
-                (new_status, now, lease_id),
+            result = release_agent_event_lease_in_transaction(
+                connection,
+                principal,
+                lease_id,
+                lease_token,
+                now=float(context.clock()),
             )
-            cursor = _cursor_value(connection, consumer_id, lease["agent_id"])
             connection.commit()
-            return {"status": new_status, "cursor": cursor}
+            return result
         except Exception:
             connection.rollback()
             raise
