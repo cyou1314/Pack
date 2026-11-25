@@ -118,7 +118,7 @@ async def run_checks(port, dispatcher_token, a_token, b_token):
 
     # Content-addressed attachments are verified on read and repaired on
     # re-upload if the stored blob has been corrupted.
-    payload = b"\\x89PNG\\r\\n\\x1a\\npack-attachment-test"
+    payload = b"\x89PNG\r\n\x1a\npack-attachment-test"
     encoded = base64.b64encode(payload).decode("ascii")
     uploaded = await member_a("attachment_put", {
         "room": "pack-main", "filename": "guard.png", "mime": "image/png",
