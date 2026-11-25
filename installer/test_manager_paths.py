@@ -46,6 +46,18 @@ def main():
         env["PACK_INSTALL_TEST_ROOT"] = str(test_root)
 
         test = inspect(env)
+        url_policy = subprocess.run(
+            [sys.executable, "-c",
+             "import manager; "
+             "assert manager.is_allowed_hub_url('http://127.0.0.1:18795/mcp'); "
+             "assert manager.is_allowed_hub_url('http://localhost:18795/mcp'); "
+             "assert manager.is_allowed_hub_url('https://sub.run.pinggy-free.link/mcp'); "
+             "assert not manager.is_allowed_hub_url('https://attacker.example/mcp'); "
+             "assert not manager.is_allowed_hub_url('https://sub.pinggy-free.link/mcp?'); "
+             "assert not manager.is_allowed_hub_url('http://@127.0.0.1:18795/mcp')"],
+            cwd=HERE, env=env, text=True, capture_output=True,
+        )
+        assert url_policy.returncode == 0, url_policy.stderr
         assert pathlib.Path(test["agents"]) == test_root / "LaunchAgents", test
         assert pathlib.Path(test["agents"]) != home / "Library" / "LaunchAgents", test
         assert pathlib.Path(test["hub"]) == test_root / "local-hub", test
