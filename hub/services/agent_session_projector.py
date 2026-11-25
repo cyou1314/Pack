@@ -431,6 +431,8 @@ def _apply_message_completed(
     received_at: float,
 ) -> tuple[str, str | None]:
     session = _load_bound_session(connection, agent_id, event)
+    if session["status"] != "active":
+        _block("session_not_active")
     payload = _event_payload(event)
     item_id = _event_text(payload.get("itemId"), "item_id")
     text_available, text_included, byte_length, digest, phase = _completion_metadata(payload)
