@@ -58,3 +58,7 @@ hub.py 已接入现有 task_cancel、sweep_once、member_remove 和 _auto_relay 
 ## 第六阶段：实际认领及审核路径（测试启用）
 
 Hub task_claim 在同一事务内预留一次协作预算，失败回滚；持有人路径对已绑定任务检查 run 状态、截止时间、租约，并使用写事务；run_start 对已登记过的协作任务拒绝再次登记。task_review 通过时同步成功步骤、拒绝时终止整个 run；明确 partial/failed 的信封不得作为成功批准。task_block 直接结束协作并保留失败类别，quota 保留耗尽事实；task_transfer、task_accept_transfer、task_release 禁止对绑定任务操作。真实 MCP fixture 增加认领、重复登记、交活、审核、失败等测试。仍仅在测试显式初始化账本，未开放生产创建；当前认领仅校验现有成员身份/房间等基本边界，真实 Provider readiness、结果共享授权、审核语义、Provider 内部调用计量、实际取消传播、打包等仍待验收。run_start 的一次登记不等于保证一次模型调用；外部执行体必须遵循预算协议。
+
+## 第七阶段：macOS 安装包兼容性
+
+build-dmg.sh 和 manager.py 的程序文件白名单已纳入四个协作模块，新增构建/安装前文件检查、staging 导入检查、重装残留检查、卸载清理及 Ubuntu/macOS CI 安装事务回归。保留现有数据库、账号凭证、附件及配置，不复制整个 Hub 目录。当前不启用协作 schema，不改变生产功能；安装事务测试为隔离 mock，不等于真实 DMG 构建或签名/安装验收。仍需要固定外部 Engine 与审核锁，且不支持将已启用协作数据的数据库降级到旧 Hub。

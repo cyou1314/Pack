@@ -27,6 +27,13 @@ else:
     app_path = pathlib.Path('/Applications/Pack.app')
     socket_dir = base/'l2-ipc'
 labels = {kind: prefix+'-'+kind for kind in ('hub','watch','backup','engine')}
+# Keep this exact allowlist in sync with build-dmg.sh; the regression test
+# checks both lists. Never copy the whole Hub directory (it can hold secrets).
+HUB_PROGRAM_FILES = (
+    'hub.py', 'room_watch.py', 'backup-db.sh', 'verify-backup.sh',
+    'collaboration_policy.py', 'collaboration_store.py',
+    'collaboration_dispatch.py', 'collaboration_guard.py',
+)
 INSTALLER_MARKER = 'com.cyou.pack.installer.v1'
 OWNER_MARKER = '.pack-installer-owner.json'
 STATE_PATH = base/'.pack-install-state.json'
@@ -207,11 +214,8 @@ def validate_reinstall_data():
             raise ValueError('owner credential mismatch')
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         raise SystemExit('Preserved Pack credentials/config are invalid; refusing reinstall.')
-    program_paths = (
-        hub/'python', hub/'hub.py', hub/'room_watch.py',
-        hub/'backup-db.sh', hub/'verify-backup.sh',
-        engine/'app', engine/'Electron.app',
-    )
+    program_paths = (hub/'python', *(hub/name for name in HUB_PROGRAM_FILES),
+                     engine/'app', engine/'Electron.app')
     if any(path_exists(path) for path in program_paths):
         raise SystemExit('Pack program files still exist; run uninstall.command before reinstalling.')
     for path in (hub/'attachments', engine/'data', engine/'data'/'local'):
@@ -302,7 +306,18 @@ async def setup_owner():
     write_private(hub/'.owner_token',owner)
     write_private(config,json.dumps({'hubUrl':f'http://127.0.0.1:{hp}/mcp','token':token,'ownerToken':owner}))
 
+def validate_hub_payload():
+    root = BUNDLE/'hub'
+    if root.is_symlink() or not root.is_dir():
+        raise SystemExit('Missing or unsafe Hub payload directory.')
+    for name in HUB_PROGRAM_FILES:
+        path = root/name
+        if path.is_symlink() or not path.is_file():
+            raise SystemExit(f'Missing or unsafe Hub program file: {name}')
+
+
 def install():
+    validate_hub_payload()
     ensure_base_directory()
     lock_fd = acquire_install_lock()
     try:
@@ -360,7 +375,7 @@ def install():
                 os.chmod(engine, 0o700)
 
             shutil.copytree(BUNDLE/'python', hub/'python', symlinks=True)
-            for name in ('hub.py', 'room_watch.py', 'backup-db.sh', 'verify-backup.sh'):
+            for name in HUB_PROGRAM_FILES:
                 shutil.copy2(BUNDLE/'hub'/name, hub/name)
             shutil.copytree(BUNDLE/'engine'/'app', engine/'app', symlinks=True)
             subprocess.run(['/usr/bin/ditto', str(BUNDLE/'engine'/'Electron.app'),
@@ -493,8 +508,7 @@ def uninstall():
             engine_owned = False
 
         if hub_owned:
-            remove_program_files(hub, ('python', 'hub.py', 'room_watch.py',
-                                       'backup-db.sh', 'verify-backup.sh'))
+            remove_program_files(hub, ('python', *HUB_PROGRAM_FILES))
         if engine_owned:
             remove_program_files(engine, ('app', 'Electron.app'))
         if ('engine' not in blocked_agents
