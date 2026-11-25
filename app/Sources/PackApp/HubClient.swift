@@ -208,6 +208,24 @@ actor HubClient {
         return try JSONSerialization.data(withJSONObject: result)
     }
 
+    // Owner workspace uses its own credential, never logs private tool
+    // errors or retries publication automatically. Legacy Hub remains valid.
+    func ownerWorkspaceCall(name: String, args: [String: Any]) async throws -> Data {
+        let allowed: Set<String> = ["collaboration_workspace", "collaboration_result_get",
+                                    "collaboration_usage_get", "collaboration_publish"]
+        guard allowed.contains(name) else { throw HubError.badResponse("invalid workspace call") }
+        do {
+            let result = try await callOnce(name: name, args: args)
+            let data = try JSONSerialization.data(withJSONObject: result)
+            guard data.count <= 1_048_576 else { throw HubError.badResponse("workspace response too large") }
+            return data
+        } catch {
+            // Reset the MCP session for the next explicit user action only.
+            sessionId = nil
+            throw HubError.badResponse("workspace request failed")
+        }
+    }
+
     func call(name: String, args: [String: Any] = [:]) async throws -> [String: Any] {
         do {
             return try await callOnce(name: name, args: args)

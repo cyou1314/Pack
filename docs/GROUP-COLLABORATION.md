@@ -134,3 +134,7 @@ Swift API host 与 Node runner 将已解析的 input/output tokens 随 task_comp
 ## 第十九阶段：协作消息聚合与显式成果发布
 
 新 managed run 只保留一条房间请求占位，派发、续租进度、交付不再额外插入群聊 task_card/report；任务状态、用量及审计仍保留，普通旧任务和既有历史不改。owner-only `collaboration_workspace` 按不可变 source ID 游标分页（最大50），投影各步骤的任务状态、结果可用性、发布状态，不含原始正文。`collaboration_result_get` 支持群主单步检查（review/done）和已审核的最终结果，最终结果附 SHA-256。`collaboration_publish` 仅允许同一群主确认精确摘要后将已完成最终文本发布到原未归档房间，单 run 单 publication 事务幂等，不发布中间结果；使用非 chat 类型避免 room_watch 的 owner @ 派单。发布明确使正文对正常房间读者可见，不能自动撤回已读取或转发的内容；现阶段不提供撤销发布。MCP 回归覆盖进度去刷屏、私有检查、摘要拒绝、重复发布、房间可见性。App 尚未接入专用卡片 UI，不进行旧消息迁移或生产 schema 启用。
+
+## 第二十阶段：macOS 协作工作台首批接线
+
+现有侧栏新增「协作」，绑定当前房间与 Hub generation，owner-only 独立请求（无 dispatcher fallback、无自动重放发布、无私有错误日志），手动刷新/游标分页、步骤状态、单步和最终成果纯文本查看、已报告用量和未知计量、明确确认后按 SHA-256 发布。切换房间/中枢、断连、离开页面清除私有临时状态；旧 Hub 缺少工具时显示不可用，不影响原有页面。新增 PackCore Codable 模型及解码回归。尚未实现 Agent 管理、创建表单、审核/取消按钮、实时状态更新、群聊内聚合卡片；未在真实 macOS GUI 操作验收，生产 schema 保持关闭。

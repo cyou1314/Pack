@@ -169,7 +169,7 @@ final class AppState: ObservableObject {
     private var manualHubURLSaved = false
     private var lastHubDiscoveryUptime: TimeInterval?
     private var discoveryInProgress = false
-    private var clientGeneration = 0
+    @Published private(set) var clientGeneration = 0
     private var consecutiveRefreshFailures = 0
     private let hubDiscoveryInterval: TimeInterval = 60
     private let hubDiscoveryTimeout: TimeInterval = 5
@@ -791,6 +791,20 @@ final class AppState: ObservableObject {
         let room = currentRoom; let argument = catalogArgument
         act("已从模板创建任务") { try await $0.call(name: "template_fire", args: ["name": name, "arg": argument, "room": room]) }
         showCatalog = false; catalogArgument = ""
+    }
+
+    var collaborationScope: String { "\(clientGeneration):\(roomGeneration):\(currentRoom)" }
+    var collaborationOwnerAvailable: Bool { connected && ownerClient != nil }
+
+    func collaborationOwnerRequest<T: Decodable>(_ name: String, args: [String: Any],
+                                                  scope: String, as type: T.Type) async throws -> T {
+        guard scope == collaborationScope, collaborationOwnerAvailable, let ownerClient else {
+            throw HubError.badResponse("collaboration owner unavailable")
+        }
+        let bytes = try await ownerClient.ownerWorkspaceCall(name: name, args: args)
+        guard !Task.isCancelled, scope == collaborationScope, collaborationOwnerAvailable,
+              self.ownerClient === ownerClient else { throw CancellationError() }
+        return try JSONDecoder().decode(type, from: bytes)
     }
 
     func selectRoom(_ room: String) {
