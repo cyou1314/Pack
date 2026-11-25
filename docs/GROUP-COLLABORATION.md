@@ -80,3 +80,9 @@ build-dmg.sh 和 manager.py 的程序文件白名单已纳入四个协作模块�
 新增内部 executor binding：真实 owner 为新成员固定 provider、native/api 模式与本地随机 UUID 账号引用；不接受密钥、Cookie 或邮箱作引用，绑定不可修改/复用，撤销后保留限制，不降级为普通成员。所有 MCP 工具入口追加默认拒绝白名单（heartbeat、自己的 task_list、claim、context_get、run_start/finish、update、complete/block），与原 external/access_mode 闸叠加。专用成员只列当前已授权绑定卡，认领前重验 grant 与来源，run_start/complete 再验；交付要求已登记 run，文本和 envelope 分别限制 16 KiB。真实 MCP 测试覆盖旧工具拒绝、无授权不消耗预算、绑定读取、正常交付和撤销。
 
 此为测试环境的专用身份协议，不是实际 Provider 登录验证。UUID 仅本地逻辑引用，未来可信 adapter 必须验证真实账号/session/Keychain 绑定。暂未提供公开 provisioning/revoke API，撤销阻止新调用不代表中断已发出的模型请求或自动关闭所有活跃 run。普通旧成员仍可参与测试协作，生产入口仍关闭；启用前应强制专用身份、事务化创建/撤销、工具旁路审计及运行时接入。
+
+## 第十一阶段：Provider-neutral Runtime 执行契约（离线验证）
+
+新增 `runtime/collaboration-runner.mjs`：复用 Swift `AgentProfile` provider/mode/UUID credential reference 契约，不引入第二份账号数据。可信宿主注入 no-retry Hub transport、profile resolver、adapter resolver 与对精确请求 SHA-256/目标账号的显式出口授权。流程 claim → context_get → 核对账号/模式/能力 → 真实本地账号检查回调 → 出口授权 → run_start → context_get 复验 → 单次 adapter.execute → task_complete。失败按固定原因 block，不传播原始上游异常；交付响应不明时不重发、不擅自改卡。超时 AbortSignal 与调用结果不明触发进程内账号隔离；不能保证上游取消、不能跨进程恢复。明确 API token usage 或 unknown(null)，没有估算费用或伪造原生平台用量。新增 Node mock 回归覆盖双模式、越权、授权拒绝、变更、超时及交付不确定。Hub context 返回 deadline 供 runner 限制调用窗口。
+
+**仍未接入实际 Provider**：resolver/verifyAccount/authorizeEgress/execute 均为可信宿主注入契约，mock 验证不代表真实账号验证、网络取消或一次模型请求。现有 runtime.mjs 和 installer 不启动此 runner；旧 runtime 工具自动重试不可直接用于本协议。真实接线前需实现本机单写者、持久化不确定调用隔离、可信的 Keychain/浏览器账号解析、出站授权与无重试 transport、用量审计和取消传播。Provider catalog 是候选，不是已实现适配器；保持生产协作关闭。

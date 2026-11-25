@@ -256,7 +256,7 @@ def _validated_grant(conn,run_id,key,row,member_id,provider):
     if [i["sha256"] for i in items] != [d for _,_,d in manifest]:
         raise ValueError("collaboration context source changed")
     result = {"run_id":run_id,"step_key":key,"provider":provider,
-              "items":items,"max_bytes":MAX_BYTES}
+              "items":items,"max_bytes":MAX_BYTES,"deadline":row[3]}
     if binding is not None:
         result.update(access_kind=binding[2],account_ref=binding[3])
     return result
