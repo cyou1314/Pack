@@ -165,6 +165,22 @@ def is_managed_root(root, role):
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         return False
 
+def is_allowed_hub_url(value):
+    try:
+        url = urlsplit(value)
+        if (url.username or url.password or url.query or url.fragment
+                or url.path != '/mcp'):
+            return False
+        if url.scheme == 'http':
+            return url.hostname in ('127.0.0.1', 'localhost', '::1') and url.port == hp
+        if url.scheme == 'https':
+            return (bool(url.hostname) and url.hostname.endswith('.pinggy-free.link')
+                    and url.port in (None, 443))
+        return False
+    except (TypeError, ValueError):
+        return False
+
+
 def validate_reinstall_data():
     """Allow an upgrade only into Pack-marked roots with intact credentials."""
     if not is_managed_root(hub, 'hub') or not is_managed_root(engine, 'engine'):
@@ -174,8 +190,10 @@ def validate_reinstall_data():
             raise SystemExit(f'Reinstall requires the preserved credential/config file: {path}')
     try:
         config_data = json.loads(config.read_text(encoding='utf-8'))
-        if not isinstance(config_data, dict) or not isinstance(config_data.get('hubUrl'), str):
-            raise ValueError('missing hubUrl')
+        if (not isinstance(config_data, dict)
+                or not isinstance(config_data.get('hubUrl'), str)
+                or not is_allowed_hub_url(config_data['hubUrl'])):
+            raise ValueError('missing or untrusted hubUrl')
         dispatcher = (hub/'.dispatcher_token').read_text(encoding='utf-8').strip()
         owner = (hub/'.owner_token').read_text(encoding='utf-8').strip()
         if not dispatcher or not owner:
