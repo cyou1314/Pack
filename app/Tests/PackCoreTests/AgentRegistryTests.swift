@@ -64,6 +64,26 @@ final class AgentRegistryTests: XCTestCase {
         }
     }
 
+    func testStoreRejectsSymlinkAndNonPrivateDirectory() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: false,
+                               attributes: [.posixPermissions: 0o755])
+        defer { try? fm.removeItem(at: directory) }
+        XCTAssertThrowsError(try AgentRegistryStore(directory: directory)) {
+            XCTAssertEqual($0 as? AgentRegistryError, .unsafeStorage)
+        }
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let external = directory.appendingPathComponent("other.json")
+        try Data("preserve".utf8).write(to: external)
+        let target = directory.appendingPathComponent("agent-registry.json")
+        try fm.createSymbolicLink(at: target, withDestinationURL: external)
+        XCTAssertThrowsError(try AgentRegistryStore(directory: directory)) {
+            XCTAssertEqual($0 as? AgentRegistryError, .unsafeStorage)
+        }
+        XCTAssertEqual(try Data(contentsOf: external), Data("preserve".utf8))
+    }
+
     func testStorePersistsAndRejectsCorruptSnapshot() async throws {
         let fm = FileManager.default
         let directory = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)

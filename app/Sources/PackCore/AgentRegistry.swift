@@ -117,6 +117,15 @@ public actor AgentRegistryStore {
     private let file: URL
     private var registry: AgentRegistry
 
+    private static func attributesIfPresent(_ url: URL) throws -> [FileAttributeKey: Any]? {
+        do {
+            return try FileManager.default.attributesOfItem(atPath: url.path)
+        } catch let error as CocoaError
+            where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return nil
+        }
+    }
+
     /// Caller supplies a dedicated, already-created private directory.
     /// Never creates or modifies existing application data on initialization.
     public init(directory: URL, providers: [AgentProvider] = AgentProviderCatalog.candidates) throws {
@@ -128,7 +137,7 @@ public actor AgentRegistryStore {
               mode.intValue & 0o077 == 0 else { throw AgentRegistryError.unsafeStorage }
         let target = directory.appendingPathComponent("agent-registry.json", isDirectory: false)
         self.file = target
-        if let attrs = try? fm.attributesOfItem(atPath: target.path) {
+        if let attrs = try Self.attributesIfPresent(target) {
             guard attrs[.type] as? FileAttributeType == .typeRegular else {
                 throw AgentRegistryError.unsafeStorage
             }
@@ -141,8 +150,7 @@ public actor AgentRegistryStore {
     public func list() -> [AgentProfile] { registry.profiles }
 
     private func persist(_ next: AgentRegistry) throws {
-        let fm = FileManager.default
-        if let attrs = try? fm.attributesOfItem(atPath: file.path),
+        if let attrs = try Self.attributesIfPresent(file),
            attrs[.type] as? FileAttributeType != .typeRegular {
             throw AgentRegistryError.unsafeStorage
         }
