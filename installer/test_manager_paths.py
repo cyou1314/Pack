@@ -287,6 +287,7 @@ saved_attachments.rename(attachments_path)
 assert list(external_attachments.iterdir()) == []
 
 manager.install()
+assert manager.base.stat().st_mode & 0o777 == 0o700
 state = manager.load_install_state()
 assert state["phase"] == "completed", state
 assert manager.config.read_text() == saved_config
