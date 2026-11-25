@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {listActiveTasks, approvalDecision, validHost, isHubNetworkFailure} from '../runtime-helpers.mjs';
+import {listActiveTasks, approvalDecision, validHost, isHubNetworkFailure, isHubRetryableFailure} from '../runtime-helpers.mjs';
 import {classifyChat} from '../chat-policy.mjs';
 
 test('active tasks paginate beyond 100 and preserve room and ownership', async()=>{
@@ -26,4 +26,12 @@ test('socket failure is retryable and HTTP business response is not', async()=>{
  let requests=0;const server=http.createServer((req,res)=>{requests++;if(requests===2){req.socket.destroy();return;}res.end('ok')});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
  try {const url=`http://127.0.0.1:${server.address().port}`;assert.equal(await (await fetch(url)).text(),'ok');let retried=false;try {await fetch(url)} catch(e){assert.equal(isHubNetworkFailure(e),true);retried=true;}assert.equal(retried,true);assert.equal(await (await fetch(url)).text(),'ok');assert.equal(isHubNetworkFailure(Error('tool error 400')),false)} finally {server.closeAllConnections();await new Promise(r=>server.close(r))}
+});
+
+test('Hub retries transient HTTP failures but not business errors',()=> {
+ assert.equal(isHubRetryableFailure(Object.assign(Error('hub HTTP 503'),{hubNetworkFailure:true})),true);
+ assert.equal(isHubRetryableFailure(Error('hub HTTP 429')),true);
+ assert.equal(isHubRetryableFailure(Error('hub HTTP 400')),false);
+ assert.equal(isHubRetryableFailure(Error('invalid_envelope')),false);
+ assert.equal(isHubRetryableFailure(new TypeError('fetch failed')),true);
 });
