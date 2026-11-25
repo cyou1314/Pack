@@ -201,49 +201,119 @@ async def setup_owner():
     write_private(config,json.dumps({'hubUrl':f'http://127.0.0.1:{hp}/mcp','token':token,'ownerToken':owner}))
 
 def install():
-    if hub.exists() or engine.exists() or config.exists(): raise SystemExit('Existing service data or App config found; refusing to overwrite.')
-    if not available(hp) or not available(ep): raise SystemExit('A required local port is in use; refusing to proceed.')
-    for label in labels.values():
-        if ctl('print',f'gui/{uid}/{label}',check=False).returncode == 0: raise SystemExit('A service label is already in use.')
-    ensure_agent_paths_available()
-    if socket_dir.exists(): raise SystemExit('Existing handoff socket directory; refusing to overwrite.')
-    os.umask(0o077); hub.mkdir(parents=True,mode=0o700); engine.mkdir(parents=True,mode=0o700); agents.mkdir(parents=True,exist_ok=True)
-    shutil.copytree(BUNDLE/'python',hub/'python',symlinks=True)
-    for name in ('hub.py','room_watch.py','backup-db.sh','verify-backup.sh'): shutil.copy2(BUNDLE/'hub'/name,hub/name)
-    shutil.copytree(BUNDLE/'engine'/'app',engine/'app',symlinks=True)
-    subprocess.run(['/usr/bin/ditto',str(BUNDLE/'engine'/'Electron.app'),str(engine/'Electron.app')],check=True)
-    (hub/'attachments').mkdir(mode=0o700); (engine/'data'/'local').mkdir(parents=True,mode=0o700); socket_dir.mkdir(parents=True,mode=0o700)
-    py=hub/'python/bin/python3'; common={'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost','PYTHONUNBUFFERED':'1'}
+    ensure_base_directory()
+    lock_fd = acquire_install_lock()
     try:
-        write_agent('hub',[py,hub/'hub.py','serve'],{**common,'PACK_HUB_HOST':'127.0.0.1','PACK_HUB_PORT':str(hp)},True)
-        for _ in range(120):
-            try:
-                with socket.create_connection(('127.0.0.1',hp),timeout=.3): break
-            except OSError: time.sleep(.25)
-        else: raise RuntimeError('Local hub did not start')
-        os.environ['NO_PROXY']=os.environ['no_proxy']='127.0.0.1,localhost'
-        asyncio.run(setup_owner())
-        write_agent('watch',[py,hub/'room_watch.py'],{**common,'PACK_WATCH_URL':f'http://127.0.0.1:{hp}/mcp'},True)
-        write_agent('backup',['/bin/bash',hub/'backup-db.sh'],{},calendar=True)
-        env={'PACK_ENGINE_ROAMING':str(engine/'data'),'PACK_ENGINE_LOCAL':str(engine/'data/local'),
-             'PACK_ENGINE_PORT':str(ep),'PACK_L2_SOCKET_DIR':str(socket_dir)}
-        write_agent('engine',[engine/'Electron.app/Contents/MacOS/Electron',engine/'app'],env,True)
-        for _ in range(120):
-            try:
-                with socket.create_connection(('127.0.0.1',ep),timeout=.3): break
-            except OSError: time.sleep(.25)
-        else: raise RuntimeError('Local engine did not start')
-    except Exception:
-        # Roll back only LaunchAgents whose files this installer can identify
-        # as Pack-owned. Do not unload a same-named third-party/user service.
+        previous = load_install_state()
+        if previous:
+            phase = previous['phase']
+            if phase in ('installing', 'failed'):
+                raise SystemExit('An interrupted Pack installation was found; run uninstall.command to remove Pack program files while preserving data, then inspect before reinstalling.')
+            raise SystemExit(f'Existing Pack installer state ({phase}); refusing to overwrite.')
+
+        for path in (hub, engine, config, socket_dir):
+            if path_exists(path):
+                raise SystemExit(f'Existing service data or App config found; refusing to overwrite: {path}')
+        if agents.is_symlink():
+            raise SystemExit(f'LaunchAgents directory must not be a symlink: {agents}')
+        if not available(hp) or not available(ep):
+            raise SystemExit('A required local port is in use; refusing to proceed.')
         for label in labels.values():
-            plist = agents/(label+'.plist')
-            if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
-                ctl('bootout',f'gui/{uid}/{label}',check=False)
-                plist.unlink()
-        raise
-    print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
-    print('Open Pack to migrate the private local credentials into Keychain.')
+            if ctl('print', f'gui/{uid}/{label}', check=False).returncode == 0:
+                raise SystemExit('A service label is already in use.')
+        ensure_agent_paths_available()
+
+        state = {
+            'schema_version': 1,
+            'transaction_id': uuid.uuid4().hex,
+            'phase': 'installing',
+            'hub': str(hub),
+            'engine': str(engine),
+            'started_at': int(time.time()),
+            'updated_at': int(time.time()),
+        }
+        save_install_state(state)
+        previous_umask = os.umask(0o077)
+        try:
+            # Ownership markers are written immediately after exclusive root
+            # creation. They let uninstall recover a transaction interrupted
+            # before the first LaunchAgent was installed.
+            hub.mkdir(mode=0o700)
+            write_root_marker(hub, 'hub', state['transaction_id'])
+            engine.mkdir(mode=0o700)
+            write_root_marker(engine, 'engine', state['transaction_id'])
+
+            shutil.copytree(BUNDLE/'python', hub/'python', symlinks=True)
+            for name in ('hub.py', 'room_watch.py', 'backup-db.sh', 'verify-backup.sh'):
+                shutil.copy2(BUNDLE/'hub'/name, hub/name)
+            shutil.copytree(BUNDLE/'engine'/'app', engine/'app', symlinks=True)
+            subprocess.run(['/usr/bin/ditto', str(BUNDLE/'engine'/'Electron.app'),
+                            str(engine/'Electron.app')], check=True)
+            (hub/'attachments').mkdir(mode=0o700)
+            (engine/'data'/'local').mkdir(parents=True, mode=0o700)
+            socket_dir.mkdir(mode=0o700)
+            write_root_marker(socket_dir, 'socket', state['transaction_id'])
+            agents.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if agents.is_symlink() or not agents.is_dir():
+                raise RuntimeError('LaunchAgents path is not a real directory')
+
+            py = hub/'python/bin/python3'
+            common = {'NO_PROXY':'127.0.0.1,localhost',
+                      'no_proxy':'127.0.0.1,localhost',
+                      'PYTHONUNBUFFERED':'1'}
+            write_agent('hub', [py, hub/'hub.py', 'serve'],
+                        {**common, 'PACK_HUB_HOST':'127.0.0.1', 'PACK_HUB_PORT':str(hp)}, True)
+            for _ in range(120):
+                try:
+                    with socket.create_connection(('127.0.0.1', hp), timeout=.3):
+                        break
+                except OSError:
+                    time.sleep(.25)
+            else:
+                raise RuntimeError('Local hub did not start')
+
+            os.environ['NO_PROXY'] = os.environ['no_proxy'] = '127.0.0.1,localhost'
+            asyncio.run(setup_owner())
+            write_agent('watch', [py, hub/'room_watch.py'],
+                        {**common, 'PACK_WATCH_URL':f'http://127.0.0.1:{hp}/mcp'}, True)
+            write_agent('backup', ['/bin/bash', hub/'backup-db.sh'], {}, calendar=True)
+            env = {'PACK_ENGINE_ROAMING':str(engine/'data'),
+                   'PACK_ENGINE_LOCAL':str(engine/'data/local'),
+                   'PACK_ENGINE_PORT':str(ep),
+                   'PACK_L2_SOCKET_DIR':str(socket_dir)}
+            write_agent('engine', [engine/'Electron.app/Contents/MacOS/Electron',
+                                   engine/'app'], env, True)
+            for _ in range(120):
+                try:
+                    with socket.create_connection(('127.0.0.1', ep), timeout=.3):
+                        break
+                except OSError:
+                    time.sleep(.25)
+            else:
+                raise RuntimeError('Local engine did not start')
+
+            state['phase'] = 'completed'
+            state['updated_at'] = int(time.time())
+            save_install_state(state)
+        except BaseException as exc:
+            # Stop only agents positively identified as Pack-owned. Keep
+            # databases, tokens, config, attachments and engine data intact.
+            rollback_managed_agents()
+            state['phase'] = 'failed'
+            state['updated_at'] = int(time.time())
+            state['error_type'] = type(exc).__name__
+            try:
+                save_install_state(state)
+            except Exception:
+                print('Warning: could not persist failed installer state.', file=sys.stderr)
+            raise
+        finally:
+            os.umask(previous_umask)
+
+        print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
+        print('Open Pack to migrate the private local credentials into Keychain.')
+    finally:
+        release_install_lock()
 
 def is_managed_agent(path, label):
     """Accept current marked plists and exact legacy Pack plists only."""
