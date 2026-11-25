@@ -130,3 +130,7 @@ owner-only `collaboration_route_preview` 按专用绑定的六种文本候选、
 新增 opt-in `collaboration_usage`，仅专用执行身份、有效 claim 与单次 running Run 登记可写；交付或 block 同事务落账，重复提交不能二次记账，非法计量整笔回滚。原生不接受 Token 数值，未知 null；未登记、登记未报告、提交、停止分别展示。owner-only `collaboration_usage_get` 返回每步骤、执行登记、Hub 耗时、已报告 Token 小计及覆盖率；不是 Provider 核验账单，注册次数不等于调用次数，不推算费用。专用身份禁止独立 run_finish，避免提前关闭登记再交付；专用 block 不再自动标记周额度 100%。不改变旧成员原有工具语义。生产 schema 尚未启用，旧 opt-in 开发库需显式 initialize 升级；真实 API/原生验收及价格版本、缓存/推理分项、结算对账仍待完成。
 
 Swift API host 与 Node runner 将已解析的 input/output tokens 随 task_complete/task_block 同一次提交；缺失时省略字段，原生始终未知。测试覆盖真实 Hub 的非法值回滚、重复提交不重复计量、混合已知/未知用量，以及两执行通道的交付参数。未增加实际价格查询或费用估算。
+
+## 第十九阶段：协作消息聚合与显式成果发布
+
+新 managed run 只保留一条房间请求占位，派发、续租进度、交付不再额外插入群聊 task_card/report；任务状态、用量及审计仍保留，普通旧任务和既有历史不改。owner-only `collaboration_workspace` 按不可变 source ID 游标分页（最大50），投影各步骤的任务状态、结果可用性、发布状态，不含原始正文。`collaboration_result_get` 支持群主单步检查（review/done）和已审核的最终结果，最终结果附 SHA-256。`collaboration_publish` 仅允许同一群主确认精确摘要后将已完成最终文本发布到原未归档房间，单 run 单 publication 事务幂等，不发布中间结果；使用非 chat 类型避免 room_watch 的 owner @ 派单。发布明确使正文对正常房间读者可见，不能自动撤回已读取或转发的内容；现阶段不提供撤销发布。MCP 回归覆盖进度去刷屏、私有检查、摘要拒绝、重复发布、房间可见性。App 尚未接入专用卡片 UI，不进行旧消息迁移或生产 schema 启用。

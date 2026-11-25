@@ -1474,6 +1474,47 @@ def _collaboration_public_snapshot(conn, run_id):
     return out
 
 
+def _collaboration_workspace_snapshot(conn, run_id):
+    """Owner-only projection; no prompt/result bodies in room metadata."""
+    out = _collaboration_public_snapshot(conn,run_id)
+    request = conn.execute(
+        "SELECT q.source_message_id,r.room_id,r.plan FROM collaboration_requests q "
+        "JOIN collaboration_runs r ON r.id=q.run_id WHERE q.run_id=?",(run_id,)).fetchone()
+    if not request:
+        raise ValueError("collaboration run unavailable")
+    out.update(source_message_id=request[0],room_id=request[1],mode=json.loads(request[2])["mode"])
+    tasks = {r[0]:r for r in conn.execute("""
+        SELECT t.id,t.status,t.updated_at,t.result FROM tasks t
+        JOIN collaboration_task_links l ON l.task_id=t.id WHERE l.run_id=?
+        """,(run_id,))}
+    for step in out["steps"]:
+        t = tasks.get(step["task_id"])
+        step.update(task_status=t[1] if t else None,updated_at=t[2] if t else None,
+                    has_result=bool(t and t[1] in ("review","done") and t[3]))
+    final = next((s for s in out["steps"] if s["key"] in ("answer","final")),None)
+    publication = conn.execute(
+        "SELECT message_id,published_at FROM collaboration_publications WHERE run_id=?",
+        (run_id,)).fetchone()
+    out["publication"] = dict(message_id=publication[0],published_at=publication[1]) if publication else None
+    out["final_result_available"] = bool(out["status"]=="succeeded" and final and
+        final["status"]=="succeeded" and final["task_status"]=="done" and final["has_result"])
+    return out
+
+
+def _collaboration_final_result(conn, run_id):
+    """Only return the approved terminal result, never intermediate output."""
+    row = conn.execute("""
+        SELECT t.result,r.room_id FROM collaboration_runs r
+        JOIN collaboration_steps s ON s.run_id=r.id AND s.step_key IN ('answer','final')
+        JOIN collaboration_task_links l ON l.run_id=s.run_id AND l.step_key=s.step_key
+        JOIN tasks t ON t.id=l.task_id
+        WHERE r.id=? AND r.status='succeeded' AND s.status='succeeded' AND t.status='done'
+        """,(run_id,)).fetchone()
+    if not row or not isinstance(row[0],str) or not row[0].strip() or len(row[0].encode("utf-8"))>16*1024:
+        raise ValueError("approved final collaboration result unavailable")
+    return row
+
+
 def _collaboration_dispatch_ready(conn, run_id, now):
     """Managed run only. Caller holds a write transaction; no model calls."""
     from collaboration_context import _owner, require_executor, grant_context, _required_results
@@ -1503,10 +1544,8 @@ def _collaboration_dispatch_ready(conn, run_id, now):
             " VALUES(?,?,?,?,?,'open',?,?)",
             (room[0],"Collaboration "+role,"[Authorized context required]",owner_id,member_id,now,now)).lastrowid
         bind_task(conn,run_id,key,task_id=task_id,member_id=member_id,now=now)
-        conn.execute(
-            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at)"
-            " VALUES(?,?,'task_card',?,?,?)",
-            (room[0],owner_id,f"任务#{task_id}: [Collaboration step ready]",task_id,now))
+        # Managed runs retain one room marker; task rows + audit are the
+        # source of truth for the separate workspace projection.
         audit(conn,"owner","collaboration_dispatch",f"task {task_id} run={run_id} step={key}")
         count += 1
     return count
@@ -4194,8 +4233,12 @@ def build_server():
             if cur.rowcount != 1:
                 conn.close()
                 raise ValueError("not the current holder (claim_token mismatch)")
-            if note and _collaboration_link(conn, task_id) is not None:
-                # A progress notification is public metadata, not private context.
+            linked = _collaboration_link(conn,task_id)
+            if linked is not None and _collaboration_managed_request(conn,linked):
+                # Lease renewal remains effective; repeated notes do not create
+                # chat messages or persist arbitrary model text.
+                note = ""
+            elif note and linked is not None:
                 note = "[Collaboration progress updated]"
             if note:
                 t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -4361,6 +4404,104 @@ def build_server():
                 conn.close()
 
         @mcp.tool
+        def collaboration_workspace(room: str, before_source_id: int = 0, limit: int = 20) -> dict:
+            """Owner-only room projection, ordered by immutable creation cursor."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                rm = conn.execute("SELECT id FROM rooms WHERE name=?",(room,)).fetchone()
+                if not rm:
+                    raise ValueError("collaboration room unavailable")
+                limit = max(1,min(int(limit),50))
+                rows = conn.execute("""
+                    SELECT q.run_id,q.source_message_id FROM collaboration_requests q
+                    JOIN collaboration_runs r ON r.id=q.run_id
+                    WHERE q.owner_id=? AND r.room_id=? AND (?=0 OR q.source_message_id<?)
+                    ORDER BY q.source_message_id DESC LIMIT ?
+                    """,(me["id"],rm[0],before_source_id,before_source_id,limit+1)).fetchall()
+                page = rows[:limit]
+                return {"room":room,"runs":[_collaboration_workspace_snapshot(conn,r[0]) for r in page],
+                        "next_before_source_id":page[-1][1] if len(rows)>limit else None}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_result_get(run_id: str, step_key: str = "") -> dict:
+            """Owner reads approved final result, or one step for inspection."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                request = _collaboration_managed_request(conn,run_id)
+                if not request or request[0] != me["id"]:
+                    raise ValueError("collaboration run unavailable")
+                if not step_key:
+                    text,_ = _collaboration_final_result(conn,run_id)
+                    import hashlib
+                    return {"run_id":run_id,"result":text,"approved":True,
+                            "sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()}
+                row = conn.execute("""
+                    SELECT t.id,t.status,t.result,s.role FROM collaboration_task_links l
+                    JOIN tasks t ON t.id=l.task_id
+                    JOIN collaboration_steps s ON s.run_id=l.run_id AND s.step_key=l.step_key
+                    WHERE l.run_id=? AND l.step_key=? AND t.status IN ('review','done')
+                    """,(run_id,step_key)).fetchone()
+                if not row or not isinstance(row[2],str) or len(row[2].encode("utf-8"))>16*1024:
+                    raise ValueError("collaboration step result unavailable")
+                return {"run_id":run_id,"step_key":step_key,"task_id":row[0],
+                        "approved":row[1]=="done","result":row[2],"role":row[3]}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_publish(run_id: str, expected_sha256: str) -> dict:
+            """Explicit owner release of the exact approved final text to its room."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            from collaboration_store import write_transaction
+            import hashlib
+            conn = db()
+            try:
+                with write_transaction(conn):
+                    _owner(conn,me["id"])
+                    request = _collaboration_managed_request(conn,run_id)
+                    if not request or request[0] != me["id"]:
+                        raise ValueError("collaboration run unavailable")
+                    text,room_id = _collaboration_final_result(conn,run_id)
+                    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    if expected_sha256 != digest:
+                        raise ValueError("collaboration result digest mismatch")
+                    existing = conn.execute(
+                        "SELECT message_id,result_sha256 FROM collaboration_publications WHERE run_id=?",
+                        (run_id,)).fetchone()
+                    if existing:
+                        if existing[1]!=digest:
+                            raise ValueError("collaboration publication conflict")
+                        return {"run_id":run_id,"message_id":existing[0],"published":True}
+                    if not conn.execute("SELECT 1 FROM rooms WHERE id=? AND archived_at IS NULL",
+                                        (room_id,)).fetchone():
+                        raise ValueError("collaboration room unavailable")
+                    now = _now()
+                    mid = conn.execute(
+                        "INSERT INTO messages(room_id,author_id,kind,body,created_at) "
+                        "VALUES(?,?,'collaboration_result',?,?)",(room_id,me["id"],text,now)).lastrowid
+                    conn.execute(
+                        "INSERT INTO collaboration_publications(run_id,message_id,result_sha256,published_at)"
+                        " VALUES(?,?,?,?)",(run_id,mid,digest,now))
+                    audit(conn,me["name"],"collaboration_publish",f"run {run_id} message={mid}")
+                    return {"run_id":run_id,"message_id":mid,"published":True}
+            finally:
+                conn.close()
+
+        @mcp.tool
         def collaboration_usage_get(run_id: str) -> dict:
             """Owner-only per-run metering, with explicit unknown coverage."""
             me = authenticate()
@@ -4497,12 +4638,14 @@ def build_server():
             _close_run(conn, task_id, "completed", me["name"])
             _desktop_release_for_task(conn, task_id, me["name"], "complete")
             t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
-            cur = conn.execute(
-                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
-                (t["room_id"], me["id"],
-                 f"任务#{task_id}: [Collaboration result submitted]" if linked is not None
-                 else f"交活 任务#{task_id}: {stored}", task_id, now))
-            mid = cur.lastrowid
+            mid = None
+            if linked is None or not _collaboration_managed_request(conn,linked):
+                cur = conn.execute(
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
+                    (t["room_id"], me["id"],
+                     f"任务#{task_id}: [Collaboration result submitted]" if linked is not None
+                     else f"交活 任务#{task_id}: {stored}", task_id, now))
+                mid = cur.lastrowid
             n_att = 0
             if attachment_ids:
                 # 交活绑附件（staging46）：与 room_post 同口径、同事务；

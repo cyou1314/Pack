@@ -299,6 +299,13 @@ def main():
             assert created.get("status")=="active",created
             managed=created["run_id"]
             assert owner_call("collaboration_create",request)==created
+            workspace=owner_call("collaboration_workspace",{"room":"pack-main"})
+            card=next(x for x in workspace["runs"] if x["run_id"]==managed)
+            assert card["mode"]=="compare" and not card["final_result_available"],card
+            assert "managed-private-root-marker" not in str(workspace)
+            assert "error" in outsider("collaboration_workspace",{"room":"pack-main"})
+            assert "error" in owner_call("collaboration_result_get",{"run_id":managed})
+            assert "error" in owner_call("collaboration_publish",{"run_id":managed,"expected_sha256":"a"*64})
             assert "error" in owner_call("collaboration_create",{**request,"body":"different"})
             assert "error" in outsider("collaboration_status",{"run_id":managed})
             assert "managed-private-root-marker" not in str(outsider("room_read_new",{"room":"pack-main","limit":200}))
@@ -318,10 +325,14 @@ def main():
                 context=execute("collaboration_context_get",args)
                 assert context.get("items",[{}])[0].get("text")==request["body"],context
                 assert execute("run_start",args).get("fence")==1
+                for _ in range(3):
+                    assert execute("task_update",{**args,"note":"private repeated progress"}).get("status")=="working"
                 delivery={**args,"result":result}
                 if step["key"]=="analysis-0":
                     delivery["provider_usage"]={"input_tokens":7,"output_tokens":2}
                 assert execute("task_complete",delivery).get("status")=="review"
+                inspected=owner_call("collaboration_result_get",{"run_id":managed,"step_key":step["key"]})
+                assert inspected["result"]==result and inspected["approved"] is False,inspected
                 assert dispatch("task_review",{"task_id":tid,"approve":True}).get("status")=="done"
                 return context
             finish_managed(steps["analysis-0"],members[0],"first result")
@@ -334,6 +345,25 @@ def main():
             assert context["role"]=="synthesis" and context["max_output_tokens"]==4096,context
             assert {i["text"] for i in context["items"] if i["kind"]=="dependency_result"}=={"first result","second result"}
             assert owner_call("collaboration_status",{"run_id":managed})["status"]=="succeeded"
+            assert conn.execute("""SELECT COUNT(*) FROM messages m
+                JOIN collaboration_task_links l ON l.task_id=m.task_id WHERE l.run_id=?""",(managed,)).fetchone()[0]==0
+            workspace=owner_call("collaboration_workspace",{"room":"pack-main"})
+            card=next(x for x in workspace["runs"] if x["run_id"]==managed)
+            assert card["final_result_available"] and card["publication"] is None,card
+            final_result=owner_call("collaboration_result_get",{"run_id":managed})
+            assert final_result["result"]=="final result" and final_result["approved"],final_result
+            assert "error" in outsider("collaboration_result_get",{"run_id":managed})
+            assert "error" in owner_call("collaboration_publish",{"run_id":managed,"expected_sha256":"0"*64})
+            publish_args={"run_id":managed,"expected_sha256":final_result["sha256"]}
+            assert "error" in outsider("collaboration_publish",publish_args)
+            published=owner_call("collaboration_publish",publish_args)
+            assert published.get("published") is True,published
+            assert owner_call("collaboration_publish",publish_args)==published
+            row=conn.execute("SELECT kind,body,task_id FROM messages WHERE id=?",(published["message_id"],)).fetchone()
+            assert tuple(row)==("collaboration_result","final result",None),tuple(row)
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_publications WHERE run_id=?",(managed,)).fetchone()[0]==1
+            assert "first result" not in str(outsider("room_read_new",{"room":"pack-main","limit":200}))
+            assert "final result" in str(outsider("room_read_new",{"room":"pack-main","limit":200}))
             ledger=owner_call("collaboration_usage_get",{"run_id":managed})
             assert ledger["registered_attempts"]==3 and ledger["reported_submissions"]==3,ledger
             assert ledger["metered_attempts"]==1 and ledger["unmetered_registered_attempts"]==2,ledger

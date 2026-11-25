@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS collaboration_requests (
     body TEXT NOT NULL,
     PRIMARY KEY(owner_id,request_key)
 );
+CREATE TABLE IF NOT EXISTS collaboration_publications (
+    run_id TEXT PRIMARY KEY REFERENCES collaboration_runs(id),
+    message_id INTEGER NOT NULL UNIQUE,
+    result_sha256 TEXT NOT NULL,
+    published_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS collaboration_executors (
     member_id INTEGER PRIMARY KEY,
     owner_id INTEGER NOT NULL,
