@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import {completeWithEnvelope, discoverPublishedHub, settleTaskMemory, loadTaskMemory, transferFromReply, transferInstructions} from './pack-contracts.mjs';
 import {classifyChat, quotaAllowsChat} from './chat-policy.mjs';
-import {listActiveTasks, approvalDecision, validHost, isHubNetworkFailure} from './runtime-helpers.mjs';
+import {listActiveTasks, approvalDecision, validHost, isHubNetworkFailure, isHubRetryableFailure} from './runtime-helpers.mjs';
 import {parseQuotaSnapshot, quotaDue} from './quota-policy.mjs';
 /**
  * Pack Mac runtime v1 (stage B1) - hosted member agent (absent).
@@ -67,7 +67,11 @@ async function rpc(method, params) {
     if (isHubNetworkFailure(e)) e.hubNetworkFailure = true;
     throw e;
   }
-  if (!res.ok) throw new Error(`hub HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(`hub HTTP ${res.status}`);
+    if ([408, 425, 429].includes(res.status) || res.status >= 500) error.hubNetworkFailure = true;
+    throw error;
+  }
   const sid = res.headers.get("mcp-session-id");
   if (sid) sessionId = sid;
   let text;
@@ -302,6 +306,20 @@ async function completeSafely(task, claimToken, receipt, expectedAttempt = task.
         }
         if (!current || !["claimed", "working"].includes(current.status) || current.assignee !== cfg.memberName || current.attempts !== expectedAttempt) {
           console.error(`task ${task.id} no longer held; saved receipt retained`);
+          return;
+        }
+        if (!isHubRetryableFailure(e)) {
+          try {
+            await tool("task_block", {
+              task_id: task.id, claim_token: claimToken, fail_class: "unknown",
+              reason: `交付校验失败: ${e.message}`,
+            });
+            receipt.state = "blocked";
+            saveReceipts();
+            console.error(`task ${task.id} blocked after non-retryable delivery error`);
+          } catch (blockError) {
+            console.error(`task ${task.id} block after delivery error failed:`, blockError.message);
+          }
           return;
         }
       } catch (checkError) {
