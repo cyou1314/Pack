@@ -32,7 +32,13 @@ function cookieEncryptionEnabled(frameworkPath) {
         const absolutePosition = chunkStart + index;
         searchFrom = index + 1;
         if (absolutePosition <= lastPosition) continue;
-        if (index + marker.length + 4 > chunk.length) break;
+        if (index + marker.length + 4 > chunk.length) {
+          if (offset < size) break;
+          found++;
+          enabled = false;
+          lastPosition = absolutePosition;
+          continue;
+        }
         const start = index + marker.length;
         found++;
         enabled = chunk[start] === 1 && chunk[start + 1] >= 2 && chunk[start + 3] === 0x31;
