@@ -106,7 +106,13 @@ def install():
             except OSError: time.sleep(.25)
         else: raise RuntimeError('Local engine did not start')
     except Exception:
-        for label in labels.values(): ctl('bootout',f'gui/{uid}/{label}',check=False)
+        # Roll back only LaunchAgents whose files this installer can identify
+        # as Pack-owned. Do not unload a same-named third-party/user service.
+        for label in labels.values():
+            plist = agents/(label+'.plist')
+            if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
+                ctl('bootout',f'gui/{uid}/{label}',check=False)
+                plist.unlink()
         raise
     print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
     print('Open Pack to migrate the private local credentials into Keychain.')
