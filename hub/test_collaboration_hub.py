@@ -406,6 +406,39 @@ def main():
             assert denied["status"]=="cancelled" and denied["run_status"]=="failed",denied
             assert "error" in execute_rejected("task_claim",{"task_id":rtid})
 
+            # Atomically provision an account from a client-held secret hash.
+            import secrets
+            provision_token="pk-mem-"+secrets.token_urlsafe(32)
+            provision_args={"provider":"gemini-api","access_kind":"api",
+                "account_ref":"87654321-1234-4234-8234-123456789abc",
+                "token_sha256":hub.hash_token(provision_token)}
+            assert "error" in outsider("collaboration_executor_provision",provision_args)
+            assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"access_kind":"native"})
+            provision=owner_call("collaboration_executor_provision",provision_args)
+            assert provision.get("created") is True and "token" not in provision,provision
+            pmid=provision["member_id"]
+            assert owner_call("collaboration_executor_provision",provision_args)=={**provision,"created":False}
+            assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"token_sha256":"a"*64})
+            assert "error" in owner_call("collaboration_executor_provision",{**provision_args,
+                "account_ref":"87654321-1234-4234-8234-123456789abd"})
+            def provisioned(name,args):
+                return asyncio.run(call(port,provision_token,name,args))
+            assert provisioned("collaboration_executor_info",{})=={
+                "provider":"gemini-api","access_kind":"api","account_ref":provision_args["account_ref"]}
+            assert "error" in provisioned("room_read_new",{"room":"pack-main"})
+            pname=conn.execute("SELECT name FROM members WHERE id=?",(pmid,)).fetchone()[0]
+            assert "error" in dispatch("task_create",{"room":"pack-main","title":"legacy",
+                "body":"legacy","assignee_name":pname})
+            pplan=owner_call("collaboration_create",{**focus,"request_key":"b"*32,"leader":pmid})
+            assert pplan.get("status")=="active",pplan
+            assert "error" in outsider("collaboration_executor_revoke",{"member_id":pmid})
+            revoked=owner_call("collaboration_executor_revoke",{"member_id":pmid})
+            assert revoked=={"member_id":pmid,"revoked":True},revoked
+            assert owner_call("collaboration_executor_revoke",{"member_id":pmid})==revoked
+            assert owner_call("collaboration_status",{"run_id":pplan["run_id"]})["status"]=="failed"
+            assert "error" in provisioned("collaboration_executor_info",{})
+            assert "error" in owner_call("collaboration_executor_provision",provision_args)
+
             removed, removed_task = fixture(conn, room, owner, member, 4, now, deadline=now+600)
             unbound, _ = fixture(conn, room, owner, member, 5, now, deadline=now+600, create_card=False)
             result = dispatch("member_remove", {"name": "collab-fixture-member"})

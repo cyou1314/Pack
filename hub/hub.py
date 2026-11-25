@@ -1226,14 +1226,15 @@ def _auto_relay(conn, t, from_name, reason_label):
     if pend:
         return None
     now = _now()
-    cand = conn.execute(
+    candidates = conn.execute(
         """SELECT * FROM members WHERE role='member' AND removed_at IS NULL AND (kind IS NULL OR kind<>'external') AND name<>? AND name<>'owner'
              AND last_heartbeat IS NOT NULL AND last_heartbeat>=?
              AND quota_updated_at IS NOT NULL AND quota_updated_at>=?
              AND quota_week_used_pct IS NOT NULL AND quota_week_used_pct<?
-           ORDER BY quota_week_used_pct ASC LIMIT 1""",
+           ORDER BY quota_week_used_pct ASC""",
         (from_name, now - RELAY_HEARTBEAT_FRESH, now - RELAY_QUOTA_FRESH,
-         RELAY_QUOTA_HEADROOM)).fetchone()
+         RELAY_QUOTA_HEADROOM)).fetchall()
+    cand = next((c for c in candidates if _collaboration_executor_binding(conn,c["id"]) is None),None)
     if not cand:
         return None
     conn.execute("SAVEPOINT pack_auto_relay")
@@ -3894,6 +3895,9 @@ def build_server():
                     raise ValueError(
                         f"permanent: executor-pinned tasks cannot be assigned"
                         f" to external member {assignee_name}")
+            if _collaboration_executor_binding(conn,a["id"]) is not None:
+                conn.close()
+                raise ValueError("permanent: dedicated executor requires collaboration task")
             assignee = a["id"]
         now = time.time()
         cur = conn.execute(
@@ -4267,6 +4271,82 @@ def build_server():
         ).fetchone() is not None
     context_conn.close()
     if context_enabled:
+        @mcp.tool
+        def collaboration_executor_provision(provider: str, access_kind: str, account_ref: str,
+                                             token_sha256: str) -> dict:
+            """Atomically create a restricted executor; the client retains the random secret."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, register_executor, require_executor
+            from collaboration_store import write_transaction
+            import uuid
+            providers = {"openai":"api","gemini-api":"api","volcengine":"api",
+                         "chatgpt":"native","gemini":"native","doubao":"native"}
+            if providers.get(provider) != access_kind or not re.fullmatch(r"[a-f0-9]{64}",token_sha256):
+                raise ValueError("invalid executor provision parameters")
+            try:
+                if str(uuid.UUID(account_ref)) != account_ref:
+                    raise ValueError("invalid account reference")
+            except (TypeError,ValueError,AttributeError):
+                raise ValueError("invalid account reference") from None
+            name = "pack-agent-" + account_ref.replace("-","")
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    _owner(conn,me["id"])
+                    rows = conn.execute("""
+                        SELECT e.member_id,e.owner_id,e.provider,e.access_kind,e.revoked,
+                               m.name,m.token_hash,m.removed_at
+                        FROM collaboration_executors e JOIN members m ON m.id=e.member_id
+                        WHERE e.account_ref=?
+                        """,(account_ref,)).fetchall()
+                    if rows:
+                        row = rows[0]
+                        if (len(rows)!=1 or tuple(row[1:5])!=(me["id"],provider,access_kind,0)
+                                or row[5]!=name or row[6]!=token_sha256 or row[7] is not None):
+                            raise ValueError("executor provision conflict")
+                        require_executor(conn,row[0])
+                        return {"member_id":row[0],"provider":provider,"access_kind":access_kind,
+                                "account_ref":account_ref,"created":False}
+                    if conn.execute("SELECT 1 FROM members WHERE token_hash=? OR name=?",
+                                    (token_sha256,name)).fetchone():
+                        raise ValueError("executor provision conflict")
+                    av = avatar_for(name)
+                    av.update(_avatar_combo(name,_used_combos(conn)))
+                    mid = conn.execute(
+                        "INSERT INTO members(name,role,token_hash,created_at,avatar,provider,login_state)"
+                        " VALUES(?,'member',?,?,?,?,?)",
+                        (name,token_sha256,_now(),json.dumps(av),provider,"pending")).lastrowid
+                    register_executor(conn,actor_id=me["id"],member_id=mid,provider=provider,
+                                      access_kind=access_kind,account_ref=account_ref)
+                    audit(conn,me["name"],"collaboration_executor_provision",f"member {mid}")
+                    return {"member_id":mid,"provider":provider,"access_kind":access_kind,
+                            "account_ref":account_ref,"created":True}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_executor_revoke(member_id: int) -> dict:
+            """Owner revokes a dedicated identity and stops its active plans."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, executor_binding, revoke_executor
+            from collaboration_store import write_transaction
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    _owner(conn,me["id"])
+                    binding = executor_binding(conn,member_id)
+                    if not binding or binding[0]!=me["id"]:
+                        raise ValueError("executor unavailable")
+                    changed = revoke_executor(conn,actor_id=me["id"],member_id=member_id)
+                    _collaboration_remove_member(conn,member_id,me["name"],_now())
+                    if changed:
+                        audit(conn,me["name"],"collaboration_executor_revoke",f"member {member_id}")
+                    return {"member_id":member_id,"revoked":True}
+            finally:
+                conn.close()
+
         @mcp.tool
         def collaboration_executor_bind(member_id: int, provider: str, access_kind: str, account_ref: str) -> dict:
             """Owner-only binding of a fresh dispatcher-registered dedicated member."""

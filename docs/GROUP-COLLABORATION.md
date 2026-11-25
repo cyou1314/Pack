@@ -150,3 +150,7 @@ macOS 协作工作台添加新建入口：私有任务正文、Focus/Compare/Tea
 ## 第二十三阶段：Agent 双模式本地档案与凭证配置
 
 侧栏新增独立 Agent 账号页面，原有 Hub 成员入口及 Muse 交接不改。ChatGPT/Gemini/豆包原生与 OpenAI/Gemini/火山引擎 API 分模式创建 UUID 档案；仅 chat 能力，native provider-managed memory 为期望边界而非已验证状态，API 记忆暂 disabled。采用 ~/.pack/agents-v2 私有目录和协作进程锁，单进程共享 manager；需要既有 ~/.pack 目录，拒绝不安全目录/文件及第二 writer。先创建元数据后单独 insert-only Keychain 配置，拒绝覆盖；不导出密钥、不发网络请求、不存原始密钥进 JSON。状态只表示本机凭证存在/缺失/不可读，不表示 API 可用。未接原生登录、Hub 专用成员原子 provision、模型验证、删除/轮换或执行宿主。真实签名 Keychain 与 GUI 未验收；生产协作 schema 仍关闭。
+
+## 第二十四阶段：专用执行身份原子 provision（Hub）
+
+新增 owner-only collaboration_executor_provision：固定六种 provider/mode、canonical UUID、客户端高熵令牌 SHA-256；同一事务插入成员与专用绑定，名称由 UUID 派生。原参数幂等返回身份，不回传明文或哈希；同 UUID/不同哈希、跨模式、占用 token hash、已撤销身份拒绝。客户端必须先持久保存随机令牌并通过专用身份验证，哈希不是可登录凭证；旧 bind 接口保留兼容。新增 owner-only revoke，永久停用专用身份并关闭相关活跃 DAG，不能保证已经出站的 Provider 请求终止。普通 task_create 和自动接力排除专用身份，后续仍需审计全部旧写入路径。未接本地 provisioning UI/令牌 vault，未启用生产 schema。
