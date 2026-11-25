@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   hub:
@@ -105,32 +105,6 @@ jobs:
           python hub/test_policy_helpers.py
       - name: Verify MCP and SQLite contract snapshots
         run: python hub/export_contracts.py --check
-      - name: Export generated contract snapshots for temporary diagnostics
-        if: always()
-        run: python hub/export_contracts.py --print > pack-contracts-debug.json
-      - name: Upload generated contract snapshots for temporary diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pack-contracts-debug
-          path: pack-contracts-debug.json
-          if-no-files-found: ignore
-          retention-days: 1
-      - name: Write generated contracts to temporary branch
-        if: always()
-        run: python hub/export_contracts.py --write
-      - name: Commit generated contracts to temporary branch
-        if: always()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add hub/contracts/*.json
-          if git diff --cached --quiet; then
-            echo "No generated contract changes"
-            exit 0
-          fi
-          git commit -m "chore: export generated contract snapshots"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
       - name: Default staging regression
         run: PY=python ./run-all-suites.sh
       - name: Staging56 access-mode and migration regression
