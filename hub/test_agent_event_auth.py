@@ -154,7 +154,7 @@ class AgentEventGatewayTests(unittest.TestCase):
         )
         self.assertEqual(capabilities["event_envelope_version"], 2)
         self.assertIn("hubSessionId", capabilities["supported_fields"])
-        self.assertIn("agent-session-binding-v1", capabilities["features"])
+        self.assertIn("hub-session-id-envelope-v1", capabilities["features"])
 
         with self.assertRaises(PermissionError):
             get_agent_event_capabilities(
