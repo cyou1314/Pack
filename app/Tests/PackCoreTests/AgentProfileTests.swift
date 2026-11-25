@@ -47,6 +47,36 @@ final class AgentProfileTests: XCTestCase {
         }
     }
 
+    func testAPICannotUseProviderManagedMemoryEvenWithPackContext() {
+        let profile = AgentProfile(
+            providerID: "openai",
+            displayName: "OpenAI API",
+            mode: .officialAPI,
+            credentialReference: AgentCredentialReference(
+                kind: .apiKey, vaultKey: "provider-api-key:openai:primary"),
+            contextBoundary: .packWorkspace,
+            memoryBoundary: .providerManaged
+        )
+        XCTAssertThrowsError(try profile.validate()) { error in
+            XCTAssertEqual(error as? AgentProfileValidationError, .memoryBoundaryMismatch)
+        }
+    }
+
+    func testNativeAccountCannotClaimPackManagedMemory() {
+        let profile = AgentProfile(
+            providerID: "chatgpt",
+            displayName: "ChatGPT native",
+            mode: .nativeAccount,
+            credentialReference: AgentCredentialReference(
+                kind: .nativeSession, vaultKey: "native-session:chatgpt:main"),
+            contextBoundary: .providerAccount,
+            memoryBoundary: .packManaged
+        )
+        XCTAssertThrowsError(try profile.validate()) { error in
+            XCTAssertEqual(error as? AgentProfileValidationError, .memoryBoundaryMismatch)
+        }
+    }
+
     func testNativeAccountCannotUseAPIKeyReference() {
         let profile = AgentProfile(
             providerID: "doubao",
