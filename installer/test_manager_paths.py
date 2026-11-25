@@ -251,6 +251,41 @@ config_data.pop("token", None)
 config_data.pop("ownerToken", None)
 manager.config.write_text(json.dumps(config_data), encoding="utf-8")
 saved_config = manager.config.read_text()
+
+# Reinstall must reject symlinked database and attachment paths without
+# following them or mutating their external targets.
+db_path = manager.hub / "pack.db"
+db_contents = db_path.read_text()
+external_db = manager.base / "external-db-target"
+external_db.write_text("external-data")
+db_path.unlink()
+db_path.symlink_to(external_db)
+try:
+    manager.validate_reinstall_data()
+except SystemExit as exc:
+    assert "database path is unsafe" in str(exc)
+else:
+    raise AssertionError("symlinked database was accepted for reinstall")
+db_path.unlink()
+db_path.write_text(db_contents)
+assert external_db.read_text() == "external-data"
+
+attachments_path = manager.hub / "attachments"
+saved_attachments = manager.hub / "attachments-preserved"
+external_attachments = manager.base / "external-attachments"
+external_attachments.mkdir()
+attachments_path.rename(saved_attachments)
+attachments_path.symlink_to(external_attachments, target_is_directory=True)
+try:
+    manager.validate_reinstall_data()
+except SystemExit as exc:
+    assert "data path is unsafe" in str(exc)
+else:
+    raise AssertionError("symlinked attachments directory was accepted")
+attachments_path.unlink()
+saved_attachments.rename(attachments_path)
+assert list(external_attachments.iterdir()) == []
+
 manager.install()
 state = manager.load_install_state()
 assert state["phase"] == "completed", state
