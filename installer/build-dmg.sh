@@ -5,9 +5,11 @@ PYROOT="${PACK_BUILD_PYTHON_ROOT:-$HOME/.cache/codex-runtimes/codex-primary-runt
 VENV="${PACK_BUILD_VENV:-$HOME/.pack/local-hub/.venv}"
 ENGINE="${PACK_BUILD_ENGINE:-$HOME/pack-headless-l2}"
 OUT="${1:-$HOME/commander-work/Pack-local-installer.dmg}"
-[ ! -e "$OUT" ] || { echo 'Output exists; choose a new path.' >&2; exit 1; }
+ENGINE_LOCK="${PACK_BUILD_ENGINE_LOCK:-$ROOT/installer/engine.lock.json}"
+[ ! -e "$OUT" ] && [ ! -L "$OUT" ] || { echo 'Output exists; choose a new path.' >&2; exit 1; }
 
 fail() { echo "Pack DMG preflight failed: $*" >&2; exit 1; }
+[ -f "$ENGINE_LOCK" ] && [ ! -L "$ENGINE_LOCK" ] || fail "missing approved Engine lock: $ENGINE_LOCK (see installer/BUILDING.md)"
 for cmd in rsync ditto codesign hdiutil swift git; do
   command -v "$cmd" >/dev/null 2>&1 || fail "missing macOS build tool: $cmd"
 done
@@ -32,13 +34,15 @@ codesign --verify --deep --strict "$ENGINE/Electron.app" || fail "Electron bundl
 "$VENV/bin/python" -m pip freeze | sort | diff -u "$ROOT/installer/python-requirements.lock" -
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-installer-stage.XXXXXX")"
 PACK_COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-ENGINE_COMMIT="$(git -C "$ENGINE" rev-parse HEAD 2>/dev/null || echo unpinned-external-source)"
+cp "$ENGINE_LOCK" "$STAGE/engine.lock.json"
+ENGINE_COMMIT="$("$PYROOT/bin/python3" "$ROOT/installer/engine-lock.py" verify --engine "$ENGINE" --lock "$STAGE/engine.lock.json")"
 ENGINE_VERSION="$("$PYROOT/bin/python3" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version","unknown"))' "$ENGINE/app/package.json")"
 cat > "$STAGE/BUILD-INFO.txt" <<EOF
 Pack commit: $PACK_COMMIT
-Engine commit: $ENGINE_COMMIT
+Engine source revision (declared in lock): $ENGINE_COMMIT
+Engine payload: SHA-256 lock verified
 Engine package version: $ENGINE_VERSION
-L2 handoff contract: verified
+L2 handoff contract: static marker check
 Electron cookie encryption: enabled
 Python runtime: 3.12
 Built UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -54,6 +58,9 @@ rsync -a --exclude='pip' --exclude='pip-*' --exclude='__pycache__' "$VENV/lib/py
 for f in hub.py room_watch.py backup-db.sh verify-backup.sh; do cp "$ROOT/hub/$f" "$STAGE/hub/$f"; done
 for f in headless.cjs gateway-page.js package.json; do cp "$ENGINE/app/$f" "$STAGE/engine/app/$f"; done
 ditto "$ENGINE/Electron.app" "$STAGE/engine/Electron.app"
+"$PYROOT/bin/python3" "$ROOT/installer/engine-lock.py" verify --engine "$STAGE/engine" --lock "$STAGE/engine.lock.json" >/dev/null
+"$PYROOT/bin/python3" "$ROOT/runtime/l2-handoff/verify-electron.py" "$STAGE/engine/Electron.app"
+codesign --verify --deep --strict "$STAGE/engine/Electron.app"
 /usr/libexec/PlistBuddy -c 'Add :PackInstallerMarker string com.cyou.pack.installer.v1' "$STAGE/Pack.app/Contents/Info.plist"
 codesign --force --sign - "$STAGE/Pack.app" >/dev/null
 codesign --verify --deep --strict "$STAGE/Pack.app"

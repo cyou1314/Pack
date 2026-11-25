@@ -21,7 +21,7 @@ Agent 接入必须保留两种明确模式，添加 Agent 时由用户选择：
 | 原生登录 | `MemberLoginWebView` 目前只注册 Muse；数据存储按成员名隔离 | ChatGPT、豆包等 Provider 尚未接入 |
 | 会话交接 | App 将 Muse Cookie 暂存到 device-only Keychain，再经本机 Unix socket 交给 Engine | 协议与外部 Engine 的一致性仍需验收 |
 | Hub | 本地 SQLite、MCP 工具、成员、任务、消息、附件、额度与审计 | 已有基础；继续强化状态机和恢复 |
-| Engine | DMG 构建从外部 `pack-headless-l2` 目录取 Electron 与 headless 源码 | 源码未纳入 Pack Git 仓库，干净克隆无法独立复现完整 DMG |
+| Engine | DMG 构建从外部 `pack-headless-l2` 目录取 Electron 与 headless 源码 | 源码未纳入 Pack Git 仓库；DMG 已要求经审核的 Engine 产物锁，但实际锁仍待真实产物生成，干净克隆无法独立复现完整 DMG |
 | Runtime 目录 | 有独立 Node Runtime、Muse4AI Bridge、L2 handoff 参考实现与测试 | 当前 DMG 构建不打包该目录；不能把它的测试通过等同于已验证外部 Engine |
 | API 接入 | 仓库中有 Muse4AI Bridge 相关代码 | 尚无统一的官方 API Provider 注册、凭证和任务适配层 |
 | 安装器 | Hub、Engine、App 的 macOS 安装包；支持卸载保留数据与受验证的安全重装 | 完整跨 Mac 凭证迁移和恢复尚未完成 |

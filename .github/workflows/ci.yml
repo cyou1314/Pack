@@ -47,6 +47,7 @@ jobs:
           python hub/test_db_query_indexes.py
           python hub/test_task_lifecycle_guards.py
           python installer/test_manager_paths.py
+          python installer/test_engine_lock.py
           python -m py_compile runtime/l2-handoff/prepare-electron.py runtime/l2-handoff/verify-electron.py runtime/l2-handoff/test_prepare_electron.py runtime/l2-handoff/test_verify_electron.py
           python runtime/l2-handoff/test_prepare_electron.py
           python runtime/l2-handoff/test_verify_electron.py
@@ -90,6 +91,8 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r hub/requirements-ci.txt
       - name: Hub SQLite migration and query-plan smoke
         run: python hub/test_db_query_indexes.py
+      - name: Engine payload lock regression
+        run: python installer/test_engine_lock.py
       - name: App bundle output path safety
         run: bash app/test-make-bundle.sh
       - name: Swift unit tests
