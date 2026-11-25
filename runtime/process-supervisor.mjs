@@ -17,6 +17,7 @@ export function runBoundedProcess(command, args = [], options = {}) {
     signal,
     timeoutMs = 6 * 60_000,
     maxOutputBytes = 8 * 1024 * 1024,
+    maxInputBytes = 8 * 1024 * 1024,
     cwd,
     env,
   } = options;
@@ -26,8 +27,18 @@ export function runBoundedProcess(command, args = [], options = {}) {
     return Promise.reject(new TypeError('invalid_process_command'));
   }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1
-      || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1) {
+      || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1
+      || !Number.isSafeInteger(maxInputBytes) || maxInputBytes < 1) {
     return Promise.reject(new RangeError('invalid_process_limits'));
+  }
+  let inputBuffer;
+  try {
+    inputBuffer = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  } catch {
+    return Promise.reject(new TypeError('invalid_process_input'));
+  }
+  if (inputBuffer.length > maxInputBytes) {
+    return Promise.reject(codedError('driver_input_limit'));
   }
   if (signal?.aborted) return Promise.reject(codedError('driver_aborted'));
 
@@ -107,7 +118,7 @@ export function runBoundedProcess(command, args = [], options = {}) {
     timeout = setTimeout(() => terminate(codedError('driver_timeout')), timeoutMs);
     timeout.unref?.();
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
-    try { child.stdin.end(input); }
+    try { child.stdin.end(inputBuffer); }
     catch { terminate(codedError('driver_stdin_error')); }
   });
 }
