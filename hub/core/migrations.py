@@ -556,6 +556,7 @@ _AGENT_SESSION_PROJECTION_V7 = Migration(
                 ON DELETE RESTRICT,
             UNIQUE(session_id, provider_run_id),
             CHECK(last_inbox_seq >= first_inbox_seq),
+            CHECK(status!='running' OR started_at IS NOT NULL),
             CHECK((status='running' AND ended_at IS NULL)
                 OR (status!='running' AND ended_at IS NOT NULL))
         )""",
@@ -586,7 +587,6 @@ _AGENT_SESSION_PROJECTION_V7 = Migration(
             FOREIGN KEY(inbox_seq, agent_id)
                 REFERENCES agent_event_inbox(inbox_seq, agent_id)
                 ON DELETE RESTRICT,
-            CHECK(last_attempt_at >= first_attempt_at),
             CHECK((outcome='blocked' AND projected_at IS NULL)
                 OR (outcome!='blocked' AND projected_at IS NOT NULL))
         )""",
