@@ -8,7 +8,7 @@ MARKER = b"dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX"
 
 
 def verify(app):
-    framework = pathlib.Path(app) / "Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+    framework = pathlib.Path(app) / "Contents/Frameworks/Electron Framework.framework/Electron Framework"
     if not framework.is_file():
         raise SystemExit(f"missing Electron Framework: {framework}")
     with framework.open("rb") as stream:
