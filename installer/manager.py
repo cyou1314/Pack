@@ -338,34 +338,60 @@ def is_managed_agent(path, label):
 
 
 def uninstall():
-    owned_install = False
-    for label in labels.values():
+    state = load_install_state(strict=False)
+    managed_agents = set()
+    blocked_agents = set()
+    for kind, label in labels.items():
         plist = agents/(label+'.plist')
-        # Never unload or remove a same-named service unless its plist is
-        # positively identified as Pack-owned.
         if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
-            owned_install = True
-            ctl('bootout',f'gui/{uid}/{label}',check=False)
+            ctl('bootout', f'gui/{uid}/{label}', check=False)
             plist.unlink()
-    if owned_install:
-        # Program files only. Database, tokens, config, attachments and engine data stay.
-        for name in ('python','hub.py','room_watch.py','backup-db.sh','verify-backup.sh'):
-            p=hub/name
-            if p.is_symlink(): p.unlink()
-            elif p.is_dir(): shutil.rmtree(p)
-            elif p.is_file(): p.unlink()
-        for name in ('app','Electron.app'):
-            p=engine/name
-            if p.is_symlink(): p.unlink()
-            elif p.is_dir(): shutil.rmtree(p)
-    else:
-        print('No Pack-owned LaunchAgent found; preserving local program files.')
+            managed_agents.add(kind)
+        elif ctl('print', f'gui/{uid}/{label}', check=False).returncode == 0:
+            # A colliding but unverified loaded label must not be disrupted by
+            # deleting files from underneath it.
+            blocked_agents.add(kind)
+
+    hub_owned = (not hub.is_symlink()
+                 and (is_managed_root(hub, 'hub')
+                      or bool(managed_agents.intersection({'hub', 'watch', 'backup'}))))
+    engine_owned = (not engine.is_symlink()
+                    and (is_managed_root(engine, 'engine') or 'engine' in managed_agents))
+    if blocked_agents.intersection({'hub', 'watch', 'backup'}):
+        hub_owned = False
+    if 'engine' in blocked_agents:
+        engine_owned = False
+
+    if hub_owned:
+        remove_program_files(hub, ('python', 'hub.py', 'room_watch.py',
+                                   'backup-db.sh', 'verify-backup.sh'))
+    if engine_owned:
+        remove_program_files(engine, ('app', 'Electron.app'))
+    if is_managed_root(socket_dir, 'socket') and not socket_dir.is_symlink():
+        shutil.rmtree(socket_dir)
+
+    if not hub_owned and not engine_owned:
+        print('No Pack-owned program root found; preserving local program files.')
+
     if app_path.is_dir() and not app_path.is_symlink():
         try:
-            with (app_path/'Contents/Info.plist').open('rb') as f: info=plistlib.load(f)
-            if info.get('PackInstallerMarker') == 'com.cyou.pack.installer.v1': shutil.rmtree(app_path); print('Installed Pack App removed.')
-            else: print('App not removed: installer marker missing.')
-        except (OSError,plistlib.InvalidFileException): print('App not removed: could not verify installer marker.')
+            with (app_path/'Contents/Info.plist').open('rb') as f:
+                info = plistlib.load(f)
+            if info.get('PackInstallerMarker') == INSTALLER_MARKER:
+                shutil.rmtree(app_path)
+                print('Installed Pack App removed.')
+            else:
+                print('App not removed: installer marker missing.')
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            print('App not removed: could not verify installer marker.')
+
+    if state:
+        state['phase'] = 'uninstalled'
+        state['updated_at'] = int(time.time())
+        try:
+            save_install_state(state)
+        except OSError:
+            print('Warning: could not update installer state after uninstall.', file=sys.stderr)
     print(f'Data preserved: {hub}, {engine}/data, {config}')
 
 if __name__ == '__main__':
