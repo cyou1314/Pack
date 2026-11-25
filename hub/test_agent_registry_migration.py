@@ -650,7 +650,7 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                 migrations.MIGRATIONS = original
                 connection.close()
 
-    def test_v7_preflight_fails_closed_on_blank_provider_session_binding(self):
+    def test_v7_preflight_fails_closed_on_blank_or_padded_provider_session_binding(self):
         with tempfile.TemporaryDirectory(prefix="pack-agent-session-projection-blank-") as directory:
             connection = self._database(directory)
             original = migrations.MIGRATIONS
@@ -662,11 +662,15 @@ class AgentRegistryMigrationTests(unittest.TestCase):
                         agent_id,provider_id,display_name,status,created_at,updated_at
                     ) VALUES('agent-blank','codex','Blank Agent','active',1,1)"""
                 )
-                connection.execute(
+                connection.executemany(
                     """INSERT INTO agent_sessions(
                         session_id,agent_id,room_id,provider_session_id,status,
                         last_event_sequence,created_at,updated_at
-                    ) VALUES('hub-session-blank','agent-blank',1,'   ','active',0,1,1)"""
+                    ) VALUES(?,?,1,?,'active',0,1,1)""",
+                    [
+                        ("hub-session-blank", "agent-blank", "   "),
+                        ("hub-session-padded", "agent-blank", "\tprovider-thread"),
+                    ],
                 )
                 connection.commit()
                 migrations.MIGRATIONS = original
