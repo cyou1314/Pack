@@ -9,6 +9,22 @@ process.env.PACK_L2_SOCKET_DIR = temp;
 const { cookieDetails, startHandoff } = require('./engine.cjs');
 test.after(() => fs.rmdirSync(temp));
 
+test('runtime verifies exactly one enabled Electron cookie-encryption fuse', () => {
+  const framework = path.join(temp, 'Electron Framework.fixture');
+  const marker = Buffer.from('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX');
+  const wire = (state, version = 2) => Buffer.from([1, version, 0, state]);
+  fs.writeFileSync(framework, Buffer.concat([Buffer.from('prefix'), marker, wire(0x31), Buffer.from('suffix')]));
+  assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), true);
+  fs.writeFileSync(framework, Buffer.concat([Buffer.from('prefix'), marker, wire(0x30), Buffer.from('suffix')]));
+  assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), false);
+  fs.writeFileSync(framework, Buffer.concat([marker, wire(0x31), marker]));
+  assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), false);
+  fs.writeFileSync(framework, Buffer.concat([marker, wire(0x31, 1)]));
+  assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), false);
+  fs.unlinkSync(framework);
+  assert.equal(require('./engine.cjs').cookieEncryptionEnabled(framework), false);
+});
+
 test('only Muse cookies are accepted and attributes survive', () => {
   const c = cookieDetails({ name: 'dummy', value: 'fixture', domain: '.muse.ai', path: '/', secure: true, httpOnly: true, sameSite: 'Strict', expirationDate: 2000000000 });
   assert.equal(c.url, 'https://muse.ai/');
