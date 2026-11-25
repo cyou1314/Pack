@@ -1,6 +1,6 @@
 # M2 Hub Event Projection / Session Recovery Design
 
-状态：设计基线；定义 Hub Inbox 到 Agent Session 读模型的投影边界。尚未实现 migration v7、业务 Projector、Session Read API 或生产 Runtime 接线。
+状态：设计基线；定义 Hub Inbox 到 Agent Session 读模型的投影边界。migration v7 Schema 已在 PR #50 实现但尚未合入；业务 Projector、Session Read API 和生产 Runtime 接线尚未实现。
 
 依赖关系：
 - PR #41：已合入 v2 Foundation，提供 Agent Event Inbox / Outbox 基础。
@@ -92,7 +92,7 @@ migration v7 只新增 Agent Session 投影所需的最小数据结构，采用 
 - 新增 last_inbox_seq INTEGER NOT NULL DEFAULT 0，记录该 Session 最近成功投影的 Hub Inbox 序号。
 - 保留 session_id 作为 Hub Session 主键，provider_session_id 保存 Provider 原生 ID。
 - 对 (agent_id, provider_session_id) 建立非 NULL 部分唯一索引前，必须先审计历史重复值。
-- 迁移前置检查使用 SELECT agent_id,provider_session_id,COUNT(*) ... GROUP BY agent_id,provider_session_id HAVING COUNT(*)>1。发现重复时必须 fail closed，输出冲突范围并停止迁移；不得自动删除、覆盖或合并旧 Session。
+- 迁移前置检查会 fail closed：按 Agent 检查重复 Provider Session ID，并拒绝空值、首尾空白或超过 160 字符的非规范绑定。错误信息只输出冲突组数和必要的 Agent ID，不输出 Provider Session ID；不得自动删除、覆盖、修剪或合并旧 Session。
 - 真实 Mac 数据库尚未完成只读 Shadow preflight，因此不能宣称历史唯一性已验证。CI fixture 只能证明迁移逻辑，不代替用户数据库审计。
 
 ### 4.2 agent_session_messages
@@ -252,8 +252,8 @@ Session Read API 是读模型查询，不是 Inbox Consumer；读取分页不得
 2. 先让 PR #47 M2a Session Binding 最新 CI 全绿，再合入 Foundation；确认 hubSessionId / sessionId 语义和能力协商契约稳定。
 3. 对可访问的数据库副本执行 provider_session_id 重复值只读审计；真实 Mac 数据库必须在备份副本和 Shadow preflight 中单独核验。
 4. 定稿 Codex event payload validators 和 Session / Provider ID 映射规则。
-5. additive migration v7：last_inbox_seq、Agent Session Messages、Agent Session Runs、Projection Receipts、Projection Resolutions。
-6. 拆分 ACK / Release 事务 helper，保留旧包装 API。
+5. PR #50 已实现 additive migration v7：last_inbox_seq、Agent Session Messages、Agent Session Runs、Projection Receipts、Projection Resolutions；待完整 CI 通过并按依赖顺序合入。
+6. PR #49 已拆分 ACK / Release 事务 helper，保留旧包装 API；后续 Projector 必须复用事务内 helper。
 7. 实现 hub-session-projector，先支持 session.created、message.delta / completed 和 run.started / completed / failed / interrupted。
 8. 加入真实 SQLite 事务故障注入、重复投影、跨 Agent 隔离、blocked / skip 和 migration 回归。
 9. 后续独立设计 Session Read API、Tool / Approval 投影与 generation rebuild；通过权限和安全验收后再接 SwiftUI。
