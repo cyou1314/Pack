@@ -61,6 +61,7 @@ struct PackConfig {
             } else if readStatus == errSecItemNotFound, let fileValue {
                 var addQuery = query
                 addQuery[kSecValueData as String] = Data(fileValue.utf8)
+                addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
                 let added = SecItemAdd(addQuery as CFDictionary, nil)
                 var verified: CFTypeRef?
                 let check = added == errSecSuccess ? SecItemCopyMatching(readQuery as CFDictionary, &verified) : added
@@ -109,6 +110,13 @@ actor HubClient {
     private var cfg: PackConfig
     private var sessionId: String?
     private var rpcId = 0
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration, delegate: NoHubRedirects(), delegateQueue: nil)
+    }()
 
     init(cfg: PackConfig) { self.cfg = cfg }
 
@@ -123,6 +131,8 @@ actor HubClient {
         }
         var req = URLRequest(url: url)
         req.timeoutInterval = 20
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         req.setValue("close", forHTTPHeaderField: "Connection")
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -130,7 +140,7 @@ actor HubClient {
         req.setValue("Bearer \(cfg.token)", forHTTPHeaderField: "Authorization")
         if let sid = sessionId { req.setValue(sid, forHTTPHeaderField: "mcp-session-id") }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw HubError.badResponse("no http response") }
         if isNotification { return (data, http) }
         if http.statusCode != 200 { throw HubError.badResponse("http \(http.statusCode)") }
@@ -199,4 +209,15 @@ actor HubClient {
         }
     }
 
+}
+
+/// Hub requests carry dispatcher credentials. Never follow redirects, even
+/// when the original host passed the Pack URL allowlist.
+private final class NoHubRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
 }
