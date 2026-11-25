@@ -11,7 +11,7 @@ final class PackHubURLPolicyTests: XCTestCase {
     func testAllowsPackPinggyTunnel() {
         XCTAssertTrue(PackHubURLPolicy.isAllowed(
             "https://uejim-2a04-4e41-8-1eea--a5a-9eea.run.pinggy-free.link/mcp"))
-        XCTAssertTrue(PackHubURLPolicy.isAllowed("https://pinggy-free.link/mcp"))
+        XCTAssertFalse(PackHubURLPolicy.isAllowed("https://pinggy-free.link/mcp"))
         XCTAssertTrue(PackHubURLPolicy.isAllowed("https://subdomain.pinggy-free.link:443/mcp"))
     }
 
