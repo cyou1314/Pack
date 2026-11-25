@@ -126,17 +126,17 @@ def is_managed_agent(path, label):
         return False
     if doc.get('Label') != label or doc.get('WorkingDirectory') != str(hub):
         return False
-    if doc.get('PackInstallerMarker') == INSTALLER_MARKER:
-        return True
-    # Backward compatibility for LaunchAgents created before the marker was
-    # introduced. Match the complete command, not just the service label.
+    # Match the complete command for both marked and legacy plists. The marker
+    # is an additional ownership signal, never a substitute for path checks.
     expected = {
         labels['hub']: [str(hub/'python/bin/python3'), str(hub/'hub.py'), 'serve'],
         labels['watch']: [str(hub/'python/bin/python3'), str(hub/'room_watch.py')],
         labels['backup']: ['/bin/bash', str(hub/'backup-db.sh')],
         labels['engine']: [str(engine/'Electron.app/Contents/MacOS/Electron'), str(engine/'app')],
     }
-    return doc.get('ProgramArguments') == expected.get(label)
+    if doc.get('ProgramArguments') != expected.get(label):
+        return False
+    return doc.get('PackInstallerMarker') in (None, INSTALLER_MARKER)
 
 
 def uninstall():
