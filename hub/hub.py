@@ -3247,11 +3247,7 @@ def build_server():
 
     @mcp.tool
     def attachment_put(room: str, filename: str, mime: str, data_base64: str) -> dict:
-        """上传一张图片附件（staging39 / D18，v1 只收图片）。mime 须为
-        image/png、image/jpeg、image/webp、image/gif 之一，且与文件魔数
-        一致；单文件 ≤10MB；同房间附件总量软顶 500MB。文件按 sha256 内容
-        寻址存储、相同内容只存一份。返回 attachment_id，之后用 room_post 的
-        attachment_ids 把它绑到一条消息上（只能绑自己的、未绑定的）。"""
+        """Upload an image with content-addressed, durable storage and strict quota checks."""
         me = authenticate()
         require(me)
         if mime not in ATTACH_MIME_EXT:
@@ -3268,16 +3264,10 @@ def build_server():
             raise ValueError("attachment too large")
         ext = _is_external(me)
         if ext and len(data) > EXT_ATTACH_MAX_BYTES:
-            # 件二 external 独立配额之一：单文件 ≤5MB（既有成员仍走
-            # 上面的全员 10MB 口径）。staging51 红队修复：按定稿
-            # 「超限硬拒并写审计」口径，抛错前补写一条与锁内其它
-            # 配额超限同名的 external_attachment_quota 审计——此处
-            # 尚未进 _lock、无既有连接，用独立短事务落审计再抛错。
             aconn = db()
             try:
                 audit(aconn, me["name"], "external_attachment_quota",
-                      f"room {room} size {len(data)}:"
-                      " single file cap exceeded (5MB)")
+                      f"room {room} size {len(data)}: single file cap exceeded (5MB)")
                 aconn.commit()
             finally:
                 aconn.close()
@@ -3286,71 +3276,73 @@ def build_server():
             raise ValueError("mime does not match file content")
         sha = hashlib.sha256(data).hexdigest()
         name = (filename or "").replace("/", "_").replace("\\", "_")[:120]
+
         with _lock:
             conn = db()
-            r = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
-            if not r:
+            try:
+                room_row = conn.execute("SELECT id FROM rooms WHERE name=?", (room,)).fetchone()
+                if not room_row:
+                    raise ValueError(f"no such room: {room}")
+                if ext:
+                    if room_row["id"] != me["bound_room_id"]:
+                        raise ValueError(
+                            "forbidden: external members may only upload to their bound room")
+                    day_n = conn.execute(
+                        "SELECT COUNT(*) AS n FROM attachments"
+                        " WHERE uploader_id=? AND created_at>=?",
+                        (me["id"], time.time() - 86400)).fetchone()["n"]
+                    mine = conn.execute(
+                        "SELECT COALESCE(SUM(size),0) AS s FROM attachments"
+                        " WHERE uploader_id=?", (me["id"],)).fetchone()["s"]
+                    why = None
+                    if day_n >= EXT_ATTACH_DAILY_UPLOADS:
+                        why = f"daily upload cap reached ({EXT_ATTACH_DAILY_UPLOADS}/day)"
+                    elif mine + len(data) > EXT_ATTACH_MEMBER_QUOTA:
+                        why = "member attachment quota exceeded (50MB total)"
+                    if why:
+                        audit(conn, me["name"], "external_attachment_quota",
+                              f"room {room} size {len(data)}: {why}")
+                        conn.commit()
+                        raise ValueError(f"external attachment quota: {why}")
+
+                total = conn.execute(
+                    "SELECT COALESCE(SUM(size),0) AS s FROM attachments WHERE room_id=?",
+                    (room_row["id"],)).fetchone()["s"]
+                if total + len(data) > ATTACH_ROOM_QUOTA:
+                    raise ValueError("room attachment quota exceeded")
+
+                path = _attach_path(sha, mime)
+                if os.path.islink(ATTACH_DIR):
+                    raise ValueError("attachment storage root must not be a symlink")
+                os.makedirs(ATTACH_DIR, mode=0o700, exist_ok=True)
+                os.chmod(ATTACH_DIR, 0o700)
+                parent = os.path.dirname(path)
+                os.makedirs(parent, mode=0o700, exist_ok=True)
+                if os.path.islink(parent):
+                    raise ValueError("attachment shard directory must not be a symlink")
+                os.chmod(parent, 0o700)
+
+                valid_existing = False
+                if os.path.lexists(path) and not os.path.islink(path) and os.path.isfile(path):
+                    with open(path, "rb") as existing:
+                        current = existing.read(ATTACH_MAX_BYTES + 1)
+                    valid_existing = (len(current) == len(data)
+                                      and hashlib.sha256(current).hexdigest() == sha)
+                if valid_existing:
+                    os.chmod(path, 0o600)
+                else:
+                    _write_attachment_atomic(path, data)
+
+                cur = conn.execute(
+                    "INSERT INTO attachments(sha256,mime,size,original_name,uploader_id,room_id,message_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)",
+                    (sha, mime, len(data), name, me["id"], room_row["id"], time.time()))
+                aid = cur.lastrowid
+                audit(conn, me["name"], "attachment_put",
+                      f"attachment {aid} room {room} size {len(data)}")
+                conn.commit()
+                return {"attachment_id": aid, "sha256": sha, "size": len(data), "mime": mime}
+            finally:
                 conn.close()
-                raise ValueError(f"no such room: {room}")
-            if ext:
-                if r["id"] != me["bound_room_id"]:
-                    conn.close()
-                    raise ValueError(
-                        "forbidden: external members may only upload to their bound room")
-                # 件二 external 独立配额之二/三：每天（滚动 24h）≤10 次
-                # 上传、名下附件总量（未绑定 + 已绑定合计）≤50MB；
-                # 超限硬拒 + 审计。本段在 _lock 内，计数与落库串行。
-                day_n = conn.execute(
-                    "SELECT COUNT(*) AS n FROM attachments"
-                    " WHERE uploader_id=? AND created_at>=?",
-                    (me["id"], time.time() - 86400)).fetchone()["n"]
-                mine = conn.execute(
-                    "SELECT COALESCE(SUM(size),0) AS s FROM attachments"
-                    " WHERE uploader_id=?", (me["id"],)).fetchone()["s"]
-                why = None
-                if day_n >= EXT_ATTACH_DAILY_UPLOADS:
-                    why = f"daily upload cap reached ({EXT_ATTACH_DAILY_UPLOADS}/day)"
-                elif mine + len(data) > EXT_ATTACH_MEMBER_QUOTA:
-                    why = "member attachment quota exceeded (50MB total)"
-                if why:
-                    audit(conn, me["name"], "external_attachment_quota",
-                          f"room {room} size {len(data)}: {why}")
-                    conn.commit()
-                    conn.close()
-                    raise ValueError(f"external attachment quota: {why}")
-            total = conn.execute(
-                "SELECT COALESCE(SUM(size),0) AS s FROM attachments WHERE room_id=?",
-                (r["id"],)).fetchone()["s"]
-            if total + len(data) > ATTACH_ROOM_QUOTA:
-                conn.close()
-                raise ValueError("room attachment quota exceeded")
-            path = _attach_path(sha, mime)
-            if os.path.islink(ATTACH_DIR):
-                raise ValueError("attachment storage root must not be a symlink")
-            os.makedirs(ATTACH_DIR, mode=0o700, exist_ok=True)
-            os.chmod(ATTACH_DIR, 0o700)
-            parent = os.path.dirname(path)
-            os.makedirs(parent, mode=0o700, exist_ok=True)
-            if os.path.islink(parent):
-                raise ValueError("attachment shard directory must not be a symlink")
-            os.chmod(parent, 0o700)
-            valid_existing = False
-            if os.path.lexists(path) and not os.path.islink(path) and os.path.isfile(path):
-                with open(path, "rb") as existing:
-                    current = existing.read(ATTACH_MAX_BYTES + 1)
-                valid_existing = (len(current) == len(data)
-                                  and hashlib.sha256(current).hexdigest() == sha)
-            if not valid_existing:
-                _write_attachment_atomic(path, data)
-            cur = conn.execute(
-                "INSERT INTO attachments(sha256,mime,size,original_name,uploader_id,room_id,message_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)",
-                (sha, mime, len(data), name, me["id"], r["id"], time.time()))
-            aid = cur.lastrowid
-            audit(conn, me["name"], "attachment_put",
-                  f"attachment {aid} room {room} size {len(data)}")
-            conn.commit()
-            conn.close()
-        return {"attachment_id": aid, "sha256": sha, "size": len(data), "mime": mime}
 
     @mcp.tool
     def attachment_get(attachment_id: int) -> dict:
