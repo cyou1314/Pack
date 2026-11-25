@@ -89,7 +89,30 @@ def main():
         assert "refusing to overwrite" in check.stderr, check.stderr
         assert existing.read_text(encoding="utf-8") == "preserve-existing-plist\\n"
 
-    print("PASS installer test-mode path isolation and LaunchAgent no-clobber")
+        # Uninstall/rollback ownership checks: marked and exact legacy Pack
+        # agents are accepted; a foreign command under a colliding label is not.
+        ownership = subprocess.run(
+            [sys.executable, "-c",
+             "import json, pathlib, plistlib, manager; "
+             "p=pathlib.Path(manager.agents); p.mkdir(parents=True, exist_ok=True); "
+             "label=manager.labels['hub']; "
+             "good={'Label':label,'PackInstallerMarker':manager.INSTALLER_MARKER,"
+             "'WorkingDirectory':str(manager.hub),'ProgramArguments':['foreign']}; "
+             "marked=p/'marked.plist'; marked.write_bytes(plistlib.dumps(good)); "
+             "legacy={'Label':label,'WorkingDirectory':str(manager.hub),"
+             "'ProgramArguments':[str(manager.hub/'python/bin/python3'),"
+             "str(manager.hub/'hub.py'),'serve']}; "
+             "old=p/'legacy.plist'; old.write_bytes(plistlib.dumps(legacy)); "
+             "foreign={'Label':label,'WorkingDirectory':str(manager.hub),"
+             "'ProgramArguments':['/tmp/unrelated-agent']}; "
+             "bad=p/'foreign.plist'; bad.write_bytes(plistlib.dumps(foreign)); "
+             "print(json.dumps([manager.is_managed_agent(marked,label),"
+             "manager.is_managed_agent(old,label),manager.is_managed_agent(bad,label)]))"],
+            cwd=HERE, env=env, text=True, capture_output=True, check=True,
+        )
+        assert json.loads(ownership.stdout) == [True, True, False], ownership.stdout
+
+    print("PASS installer path isolation, no-clobber, and LaunchAgent ownership")
 
 
 if __name__ == "__main__":
