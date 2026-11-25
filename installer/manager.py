@@ -70,6 +70,7 @@ def ensure_base_directory():
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not base.is_dir() or base.stat().st_uid != uid:
         raise SystemExit(f'Install base is not a user-owned directory: {base}')
+    os.chmod(base, 0o700)
 
 
 def acquire_install_lock():
