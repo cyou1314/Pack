@@ -12,25 +12,37 @@ const SERVICE = 'com.cyou.pack.l2-handoff';
 const SOCKET_DIR = process.env.PACK_L2_SOCKET_DIR || path.join(require('node:os').homedir(), '.pack', 'l2-ipc');
 const SOCKET = path.join(SOCKET_DIR, 'handoff.sock');
 
-function cookieEncryptionEnabled() {
-  const framework = path.resolve(process.execPath, '../../Frameworks/Electron Framework.framework/Electron Framework');
+function cookieEncryptionEnabled(frameworkPath) {
+  const framework = frameworkPath || path.resolve(process.execPath, '../../Frameworks/Electron Framework.framework/Electron Framework');
   const marker = Buffer.from('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX');
-  const fd = fs.openSync(framework, 'r');
+  let fd;
+  try { fd = fs.openSync(framework, 'r'); } catch { return false; }
   try {
     const size = fs.fstatSync(fd).size, chunkSize = 1024 * 1024;
-    let tail = Buffer.alloc(0), offset = 0, found = 0, enabled = false;
+    let tail = Buffer.alloc(0), offset = 0, found = 0, enabled = false, lastPosition = -1;
     while (offset < size) {
+      const previousOffset = offset;
       const part = Buffer.alloc(Math.min(chunkSize, size - offset));
       const read = fs.readSync(fd, part, 0, part.length, offset); if (!read) break;
-      offset += read; const chunk = Buffer.concat([tail, part.subarray(0, read)]);
-      const index = chunk.indexOf(marker);
-      if (index >= 0 && index + marker.length + 4 <= chunk.length) {
+      offset += read;
+      const chunk = Buffer.concat([tail, part.subarray(0, read)]);
+      const chunkStart = previousOffset - tail.length;
+      let searchFrom = 0, index;
+      while ((index = chunk.indexOf(marker, searchFrom)) >= 0) {
+        const absolutePosition = chunkStart + index;
+        searchFrom = index + 1;
+        if (absolutePosition <= lastPosition) continue;
+        if (index + marker.length + 4 > chunk.length) break;
         const start = index + marker.length;
-        found++; enabled = chunk[start] === 1 && chunk[start + 1] >= 2 && chunk[start + 3] === 0x31;
+        found++;
+        enabled = chunk[start] === 1 && chunk[start + 1] >= 2 && chunk[start + 3] === 0x31;
+        lastPosition = absolutePosition;
       }
       tail = chunk.subarray(Math.max(0, chunk.length - marker.length - 4));
     }
     return found === 1 && enabled;
+  } catch {
+    return false;
   } finally { fs.closeSync(fd); }
 }
 
@@ -61,7 +73,7 @@ async function handoff(request, deps) {
   if (!proxy || proxy.health !== 'healthy') throw Error('no healthy proxy');
   let bytes, originalError;
   try {
-    const result = await run('/usr/bin/security', ['find-generic-password', '-s', SERVICE, '-a', request.ticket, '-w'], { encoding: 'buffer', timeout: 90000, maxBuffer: 1024 * 1024 });
+    const result = await run('/usr/bin/security', ['find-generic-password', '-s', SERVICE, '-a', request.ticket, '-w'], { encoding: 'buffer', timeout: 90000, maxBuffer: 4 * 1024 * 1024 });
     bytes = result.stdout;
     const decoded = JSON.parse(bytes.toString('utf8'));
     if (!Array.isArray(decoded) || !decoded.length || decoded.length > 500) throw Error('empty cookie set');
