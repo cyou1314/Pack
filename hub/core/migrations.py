@@ -582,6 +582,7 @@ _AGENT_SESSION_PROJECTION_V7 = Migration(
             projected_at REAL,
             PRIMARY KEY(consumer_id, agent_id, inbox_seq),
             UNIQUE(consumer_id, agent_id, event_id),
+            UNIQUE(consumer_id, agent_id, inbox_seq, event_id),
             FOREIGN KEY(inbox_seq, agent_id)
                 REFERENCES agent_event_inbox(inbox_seq, agent_id)
                 ON DELETE RESTRICT,
@@ -609,9 +610,9 @@ _AGENT_SESSION_PROJECTION_V7 = Migration(
                 CHECK(length(trim(actor)) BETWEEN 1 AND 80),
             resolved_at REAL NOT NULL,
             UNIQUE(consumer_id, agent_id, inbox_seq),
-            FOREIGN KEY(consumer_id, agent_id, inbox_seq)
+            FOREIGN KEY(consumer_id, agent_id, inbox_seq, event_id)
                 REFERENCES agent_event_projection_receipts(
-                    consumer_id, agent_id, inbox_seq
+                    consumer_id, agent_id, inbox_seq, event_id
                 ) ON DELETE RESTRICT
         )""",
         """CREATE INDEX idx_agent_event_projection_resolutions_agent_time
@@ -620,7 +621,15 @@ _AGENT_SESSION_PROJECTION_V7 = Migration(
 )
 
 
-MIGRATIONS = (_REGISTRY_V1, _TASK_AUDIT_V2, _TASK_HOTPATH_V3, _AGENT_EVENT_INBOX_V4, _AGENT_EVENT_GATEWAY_V5, _AGENT_EVENT_CONSUMER_V6, _AGENT_SESSION_PROJECTION_V7)
+MIGRATIONS = (
+    _REGISTRY_V1,
+    _TASK_AUDIT_V2,
+    _TASK_HOTPATH_V3,
+    _AGENT_EVENT_INBOX_V4,
+    _AGENT_EVENT_GATEWAY_V5,
+    _AGENT_EVENT_CONSUMER_V6,
+    _AGENT_SESSION_PROJECTION_V7,
+)
 
 
 def apply_migrations(
