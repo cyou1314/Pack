@@ -26,6 +26,7 @@ else:
     app_path = pathlib.Path('/Applications/Pack.app')
     socket_dir = base/'l2-ipc'
 labels = {kind: prefix+'-'+kind for kind in ('hub','watch','backup','engine')}
+INSTALLER_MARKER = 'com.cyou.pack.installer.v1'
 uid = os.getuid()
 
 def ctl(*args, check=True):
@@ -49,7 +50,8 @@ def ensure_agent_paths_available():
 
 def write_agent(kind, args, env, keepalive=False, calendar=False):
     label = labels[kind]
-    doc = {'Label':label,'ProgramArguments':[str(x) for x in args], 'WorkingDirectory':str(hub),
+    doc = {'Label':label,'PackInstallerMarker':INSTALLER_MARKER,
+           'ProgramArguments':[str(x) for x in args], 'WorkingDirectory':str(hub),
            'EnvironmentVariables':env,'Umask':63,
            'StandardOutPath':str(hub/(kind+'.out.log')),'StandardErrorPath':str(hub/(kind+'.err.log'))}
     if keepalive: doc.update(RunAtLoad=True,KeepAlive=True)
@@ -109,11 +111,36 @@ def install():
     print(f'Installed local services; hub 127.0.0.1:{hp}, engine 127.0.0.1:{ep}.')
     print('Open Pack to migrate the private local credentials into Keychain.')
 
+def is_managed_agent(path, label):
+    """Accept current marked plists and exact legacy Pack plists only."""
+    try:
+        with path.open('rb') as f:
+            doc = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return False
+    if doc.get('Label') != label or doc.get('WorkingDirectory') != str(hub):
+        return False
+    if doc.get('PackInstallerMarker') == INSTALLER_MARKER:
+        return True
+    # Backward compatibility for LaunchAgents created before the marker was
+    # introduced. Match the complete command, not just the service label.
+    expected = {
+        labels['hub']: [str(hub/'python/bin/python3'), str(hub/'hub.py'), 'serve'],
+        labels['watch']: [str(hub/'python/bin/python3'), str(hub/'room_watch.py')],
+        labels['backup']: ['/bin/bash', str(hub/'backup-db.sh')],
+        labels['engine']: [str(engine/'Electron.app/Contents/MacOS/Electron'), str(engine/'app')],
+    }
+    return doc.get('ProgramArguments') == expected.get(label)
+
+
 def uninstall():
     for label in labels.values():
-        ctl('bootout',f'gui/{uid}/{label}',check=False)
-        plist=agents/(label+'.plist')
-        if plist.is_file(): plist.unlink()
+        plist = agents/(label+'.plist')
+        # Never unload or remove a same-named service unless its plist is
+        # positively identified as Pack-owned.
+        if plist.is_file() and not plist.is_symlink() and is_managed_agent(plist, label):
+            ctl('bootout',f'gui/{uid}/{label}',check=False)
+            plist.unlink()
     # Program files only. Database, tokens, config, attachments and engine data stay.
     for name in ('python','hub.py','room_watch.py','backup-db.sh','verify-backup.sh'):
         p=hub/name
