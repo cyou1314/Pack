@@ -198,7 +198,7 @@ actor HubClient {
     // Dedicated execution never replays a mutation on session/transport error.
     // Do not route through the legacy reconnect/retry and logging path.
     func collaborationCallOnce(name: String, arguments: Data) async throws -> Data {
-        let allowed: Set<String> = ["collaboration_executor_info", "task_claim",
+        let allowed: Set<String> = ["collaboration_executor_info", "collaboration_executor_identity", "task_claim",
             "collaboration_context_get", "run_start", "task_complete", "task_block"]
         guard allowed.contains(name),
               let args = try JSONSerialization.jsonObject(with: arguments) as? [String: Any] else {
@@ -214,7 +214,9 @@ actor HubClient {
         let allowed: Set<String> = ["collaboration_workspace", "collaboration_result_get",
                                     "collaboration_usage_get", "collaboration_publish", "collaboration_route_preview",
                                     "collaboration_create", "collaboration_request_lookup",
-                                    "collaboration_review", "collaboration_cancel", "collaboration_status"]
+                                    "collaboration_review", "collaboration_cancel", "collaboration_status",
+                                    "collaboration_instance_info", "collaboration_executor_status",
+                                    "collaboration_executor_provision", "collaboration_executor_revoke"]
         guard allowed.contains(name) else { throw HubError.badResponse("invalid workspace call") }
         do {
             let result = try await callOnce(name: name, args: args)

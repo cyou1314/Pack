@@ -418,6 +418,9 @@ def main():
             assert "error" in outsider("collaboration_executor_provision",provision_args)
             assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"access_kind":"native"})
             assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"instance_id":"0"*32})
+            status_args={"instance_id":instance,"account_ref":provision_args["account_ref"]}
+            assert owner_call("collaboration_executor_status",status_args)["state"]=="unbound"
+            assert "error" in outsider("collaboration_executor_status",status_args)
             provision=owner_call("collaboration_executor_provision",provision_args)
             assert provision.get("created") is True and "token" not in provision,provision
             pmid=provision["member_id"]
@@ -428,6 +431,12 @@ def main():
             def provisioned(name,args):
                 return asyncio.run(call(port,provision_token,name,args))
             assert provisioned("collaboration_instance_info",{})=={"instance_id":instance}
+            assert provisioned("collaboration_executor_identity",{})=={
+                **status_args,"member_id":pmid,"provider":"gemini-api","access_kind":"api"}
+            assert "error" in outsider("collaboration_executor_identity",{})
+            bound=owner_call("collaboration_executor_status",status_args)
+            assert bound["state"]=="bound" and bound["member_id"]==pmid,bound
+            assert "token" not in str(bound)
             assert provisioned("collaboration_executor_info",{})=={
                 "provider":"gemini-api","access_kind":"api","account_ref":provision_args["account_ref"]}
             assert "error" in provisioned("room_read_new",{"room":"pack-main"})
@@ -436,10 +445,14 @@ def main():
                 "body":"legacy","assignee_name":pname})
             pplan=owner_call("collaboration_create",{**focus,"request_key":"b"*32,"leader":pmid})
             assert pplan.get("status")=="active",pplan
-            assert "error" in outsider("collaboration_executor_revoke",{"member_id":pmid})
-            revoked=owner_call("collaboration_executor_revoke",{"member_id":pmid})
-            assert revoked=={"member_id":pmid,"revoked":True},revoked
-            assert owner_call("collaboration_executor_revoke",{"member_id":pmid})==revoked
+            revoke_args={**status_args,"member_id":pmid}
+            assert "error" in outsider("collaboration_executor_revoke",revoke_args)
+            assert "error" in owner_call("collaboration_executor_revoke",{**revoke_args,"instance_id":"0"*32})
+            assert "error" in owner_call("collaboration_executor_revoke",{**revoke_args,"account_ref":"wrong"})
+            revoked=owner_call("collaboration_executor_revoke",revoke_args)
+            assert revoked=={**revoke_args,"revoked":True},revoked
+            assert owner_call("collaboration_executor_revoke",revoke_args)==revoked
+            assert owner_call("collaboration_executor_status",status_args)["state"]=="revoked"
             assert owner_call("collaboration_status",{"run_id":pplan["run_id"]})["status"]=="failed"
             assert "error" in provisioned("collaboration_executor_info",{})
             assert "error" in owner_call("collaboration_executor_provision",provision_args)

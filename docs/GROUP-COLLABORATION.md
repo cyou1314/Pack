@@ -158,3 +158,7 @@ macOS 协作工作台添加新建入口：私有任务正文、Focus/Compare/Tea
 ### Hub 实例及本机专用令牌 enrollment
 
 opt-in schema 新增持久随机 instance_id（备份克隆同身份，需运维注意），owner 与专用执行身份可查询；provision 在同一事务验证实例 ID，回执携带该 ID。PackCore `AgentExecutorEnrollment` 用独立 device-only Keychain service、实例/Provider/UUID 隔离账户，生成 256-bit 随机令牌，先 insert-only 保存再提交 SHA-256；失败/进程替换按原密钥重试，拒绝不同实例或身份回执，必须经专用 token 验证回调。测试使用内存后端和模拟网络，不代表真实签名 Keychain 或真实 Hub 端到端。尚未将 coordinator 接到 App UI 或运行循环，不启用生产 schema。
+
+## 第二十五阶段：macOS 专用身份绑定入口
+
+Agent 档案卡新增 Hub 身份绑定 sheet。只读 owner status 查询实例及档案，明确确认后创建；独立专用令牌认证同时校验数据库 ID、成员 ID、Provider、模式、档案 UUID。状态查询不创建令牌、不发送心跳；绑定及撤销采用捕获的 owner client/URL，服务端校验实例及档案，不自动重放。新增 owner status、dedicated identity，撤销要求实例/档案/成员三元组，已撤销不能重新绑定。异常结果先查询，保留原 Keychain 令牌，不自动替换或删除。仍未接入 Provider 真实验证、执行循环、持续在线状态或生产 schema；本轮为 opt-in UI 接线，旧 Hub 显示不可用。

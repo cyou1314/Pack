@@ -9,6 +9,8 @@ private let localAgentAccounts = AgentAccountManager(
         .appendingPathComponent("agents-v2",isDirectory:true))
 
 struct AgentAccountsView: View {
+    @ObservedObject var state: AppState
+    @State private var bindingTarget: AgentAccountSummary?
     @State private var accounts: [AgentAccountSummary] = []
     @State private var note = ""
     @State private var loaded = false
@@ -43,6 +45,9 @@ struct AgentAccountsView: View {
         .task { await refresh() }
         .onDisappear { generation = UUID(); accounts = []; loaded = false; busy = false }
         .sheet(isPresented:$adding,onDismiss:{ Task { await refresh() } }) { AgentAccountCreateSheet() }
+        .sheet(item:$bindingTarget) { account in
+            AgentBindingSheet(state:state,account:account,scope:state.collaborationScope)
+        }
         .sheet(item:$keyTarget,onDismiss:{ Task { await refresh() } }) { account in
             AgentAccountKeySheet(account:account)
         }
@@ -66,6 +71,10 @@ struct AgentAccountsView: View {
             Text("档案 ID："+profile.id.uuidString.lowercased()).font(DesignTokens.fontSmall).textSelection(.enabled)
             if account.credentialState == .apiKeyMissing {
                 Button("配置 API Key…") { keyTarget = account }.disabled(busy)
+            }
+            if profile.providerID != "muse" {
+                Button("Hub 身份绑定…") { bindingTarget = account }
+                    .disabled(busy || !state.collaborationOwnerAvailable)
             }
         }.padding(DesignTokens.boardCardInset)
         .frame(maxWidth:.infinity,alignment:.leading)

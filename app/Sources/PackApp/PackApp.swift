@@ -795,6 +795,14 @@ final class AppState: ObservableObject {
 
     var collaborationScope: String { "\(clientGeneration):\(roomGeneration):\(currentRoom)" }
     var collaborationOwnerAvailable: Bool { connected && ownerClient != nil }
+    var collaborationHubAddress: String { storedHubURL }
+
+    func executorEnrollmentTransport(scope: String) throws -> AgentEnrollmentTransport {
+        guard scope == collaborationScope, collaborationOwnerAvailable, let ownerClient else {
+            throw HubError.badResponse("owner identity unavailable")
+        }
+        return AgentEnrollmentTransport(owner:ownerClient,url:storedHubURL)
+    }
 
     func collaborationOwnerRequest<T: Decodable>(_ name: String, args: [String: Any],
                                                   scope: String, as type: T.Type) async throws -> T {

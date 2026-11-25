@@ -40,15 +40,24 @@ final class AgentExecutorEnrollmentTests: XCTestCase {
         let first = AgentExecutorEnrollment(backend:backend)
         do {
             _ = try await first.enroll(instance:instance,destination:dest,
-                provision:{ try await fixture.provision($0) },verify:{ await fixture.verify($0,$1,$2) })
+                provision:{ try await fixture.provision($0) },verify:{ token,instance,dest,id in
+                    guard id == 42 else { return false }
+                    return await fixture.verify(token,instance,dest)
+                })
             XCTFail("expected unknown receipt")
         } catch { XCTAssertEqual(error as? AgentEnrollmentError,.receiptMismatch) }
         let replacement = AgentExecutorEnrollment(backend:backend)
         let receipt = try await replacement.enroll(instance:instance,destination:dest,
-            provision:{ try await fixture.provision($0) },verify:{ await fixture.verify($0,$1,$2) })
+            provision:{ try await fixture.provision($0) },verify:{ token,instance,dest,id in
+                    guard id == 42 else { return false }
+                    return await fixture.verify(token,instance,dest)
+                })
         XCTAssertEqual(receipt.memberId,42)
         _ = try await replacement.enroll(instance:other,destination:dest,
-            provision:{ try await fixture.provision($0) },verify:{ await fixture.verify($0,$1,$2) })
+            provision:{ try await fixture.provision($0) },verify:{ token,instance,dest,id in
+                    guard id == 42 else { return false }
+                    return await fixture.verify(token,instance,dest)
+                })
         let requests = await fixture.history()
         XCTAssertEqual(requests.count,3)
         XCTAssertEqual(requests[0],requests[1])

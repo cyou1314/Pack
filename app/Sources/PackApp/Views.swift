@@ -219,7 +219,7 @@ struct ContentView: View {
                         case "approvals": ApprovalsView(state: state)
                         case "settings": SettingsView(state: state)
                         case "members": MemberDirectory(state: state)
-                        case "agent-accounts": AgentAccountsView()
+                        case "agent-accounts": AgentAccountsView(state: state)
                         case "collaboration": CollaborationWorkspaceView(state: state)
                             .id(state.collaborationScope)
                         default: RoomView(state: state)

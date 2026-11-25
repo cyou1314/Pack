@@ -1339,7 +1339,7 @@ def _collaboration_privileged(me):
 
 COLLABORATION_EXECUTOR_TOOLS = frozenset({
     "heartbeat", "task_list", "task_claim", "collaboration_context_get", "collaboration_executor_info",
-    "collaboration_instance_info",
+    "collaboration_instance_info", "collaboration_executor_identity",
     "run_start", "task_update", "task_complete", "task_block",
 })
 
@@ -4349,7 +4349,66 @@ def build_server():
                 conn.close()
 
         @mcp.tool
-        def collaboration_executor_revoke(member_id: int) -> dict:
+        def collaboration_executor_identity() -> dict:
+            """Authenticated dedicated identity, with its database and member ID."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import require_executor
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                binding = require_executor(conn,me["id"])
+                row = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                if not row:
+                    raise ValueError("collaboration instance unavailable")
+                return {"member_id":me["id"],"instance_id":row[0],
+                        "provider":binding[1],"access_kind":binding[2],"account_ref":binding[3]}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_executor_status(instance_id: str, account_ref: str) -> dict:
+            """Owner readback for a specific database/profile; never returns hashes."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, require_executor
+            import uuid
+            try:
+                if str(uuid.UUID(account_ref)) != account_ref:
+                    raise ValueError("invalid account reference")
+            except (ValueError,TypeError,AttributeError):
+                raise ValueError("invalid account reference") from None
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                identity = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                if not identity or identity[0]!=instance_id:
+                    raise ValueError("collaboration instance mismatch")
+                rows = conn.execute("""
+                    SELECT e.member_id,e.provider,e.access_kind,e.revoked,m.removed_at
+                    FROM collaboration_executors e JOIN members m ON m.id=e.member_id
+                    WHERE e.owner_id=? AND e.account_ref=?
+                    """,(me["id"],account_ref)).fetchall()
+                out = {"instance_id":instance_id,"account_ref":account_ref,"state":"unbound",
+                       "member_id":None,"provider":None,"access_kind":None}
+                if len(rows)>1:
+                    raise ValueError("ambiguous executor binding")
+                if rows:
+                    row = rows[0]
+                    state = "revoked" if row[3] or row[4] is not None else "bound"
+                    if state == "bound":
+                        try:
+                            require_executor(conn,row[0])
+                        except ValueError:
+                            state = "unavailable"
+                    out.update(member_id=row[0],provider=row[1],access_kind=row[2],state=state)
+                return out
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_executor_revoke(member_id: int, instance_id: str, account_ref: str) -> dict:
             """Owner revokes a dedicated identity and stops its active plans."""
             me = authenticate()
             require(me,"member")
@@ -4359,14 +4418,15 @@ def build_server():
             try:
                 with _lock, write_transaction(conn):
                     _owner(conn,me["id"])
+                    identity = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
                     binding = executor_binding(conn,member_id)
-                    if not binding or binding[0]!=me["id"]:
+                    if not identity or identity[0]!=instance_id or not binding or binding[0]!=me["id"] or binding[3]!=account_ref:
                         raise ValueError("executor unavailable")
                     changed = revoke_executor(conn,actor_id=me["id"],member_id=member_id)
                     _collaboration_remove_member(conn,member_id,me["name"],_now())
                     if changed:
                         audit(conn,me["name"],"collaboration_executor_revoke",f"member {member_id}")
-                    return {"member_id":member_id,"revoked":True}
+                    return {"member_id":member_id,"instance_id":instance_id,"account_ref":account_ref,"revoked":True}
             finally:
                 conn.close()
 
