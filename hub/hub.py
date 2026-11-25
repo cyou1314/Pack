@@ -1205,28 +1205,38 @@ def _auto_relay(conn, t, from_name, reason_label):
          RELAY_QUOTA_HEADROOM)).fetchone()
     if not cand:
         return None
-    cur = conn.execute(
-        "UPDATE tasks SET status='claimed', assignee=?, claim_token=NULL,"
-        " lease_expires=NULL, next_claim_at=NULL, sched_at=NULL, updated_at=? "
-        "WHERE id=? AND status=? AND assignee IS ? AND claim_token IS ?",
-        (cand["id"], now, t["id"], t["status"], t["assignee"], t["claim_token"]))
-    if cur.rowcount != 1:
-        return None
-    conn.execute(
-        "INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,expires_at)"
-        " VALUES(?,?,?,?,?,?,?,?)",
-        (t["id"], from_name, cand["name"], f"auto-relay: {reason_label}", "auto-relay",
-         now, "pending", now + TRANSFER_ACCEPT_TTL))
-    disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
-    conn.execute(
-        "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'chat',?,?,?)",
-        (t["room_id"], disp["id"] if disp else cand["id"],
-         f"任务#{t['id']} 已自动接力：{from_name} {reason_label} → {cand['name']} 接手"
-         f"（第 {chain + 1} 棒），等其接受",
-         t["id"], now))
-    audit(conn, "auto-relay", "task_auto_relay",
-          f"task {t['id']} {from_name}->{cand['name']} reason={reason_label} chain={chain + 1}")
-    return cand["name"]
+    conn.execute("SAVEPOINT pack_auto_relay")
+    try:
+        cur = conn.execute(
+            "UPDATE tasks SET status='claimed', assignee=?, claim_token=NULL,"
+            " lease_expires=NULL, next_claim_at=NULL, sched_at=NULL, updated_at=? "
+            "WHERE id=? AND status=? AND assignee IS ? AND claim_token IS ?",
+            (cand["id"], now, t["id"], t["status"], t["assignee"], t["claim_token"]))
+        if cur.rowcount != 1:
+            conn.execute("ROLLBACK TO pack_auto_relay")
+            conn.execute("RELEASE pack_auto_relay")
+            return None
+        conn.execute(
+            "INSERT INTO task_transfers(task_id,from_member,to_member,reason,actor,created_at,status,expires_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (t["id"], from_name, cand["name"], f"auto-relay: {reason_label}", "auto-relay",
+             now, "pending", now + TRANSFER_ACCEPT_TTL))
+        disp = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()
+        conn.execute(
+            "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'chat',?,?,?)",
+            (t["room_id"], disp["id"] if disp else cand["id"],
+             f"任务#{t['id']} 已自动接力：{from_name} {reason_label} → {cand['name']} 接手"
+             f"（第 {chain + 1} 棒），等其接受",
+             t["id"], now))
+        audit(conn, "auto-relay", "task_auto_relay",
+              f"task {t['id']} {from_name}->{cand['name']} reason={reason_label} chain={chain + 1}")
+        conn.execute("RELEASE pack_auto_relay")
+        return cand["name"]
+    except Exception:
+        conn.execute("ROLLBACK TO pack_auto_relay")
+        conn.execute("RELEASE pack_auto_relay")
+        raise
+
 
 
 # ---------------- 桌面锁（多成员同机互斥，2026-11-16 群主拍板） ----------------
