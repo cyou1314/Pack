@@ -148,9 +148,13 @@ def main():
             assert owner_reg.get("token"), owner_reg
             real_owner = conn.execute("SELECT id FROM members WHERE name='owner'").fetchone()[0]
             with write_transaction(conn):
+                # Other lifecycle fixtures use synthetic source IDs 1..8.
+                # Allocate a real message ID outside that reserved test range.
                 message = conn.execute(
-                    "INSERT INTO messages(room_id,author_id,kind,body,created_at) VALUES(?,?,'chat',?,?)",
-                    (room,real_owner,"approved context fixture",now)).lastrowid
+                    "SELECT MAX(1000,COALESCE(MAX(id),0))+1 FROM messages").fetchone()[0]
+                conn.execute(
+                    "INSERT INTO messages(id,room_id,author_id,kind,body,created_at) VALUES(?,?,?,'chat',?,?)",
+                    (message,room,real_owner,"approved context fixture",now))
             context_run, context_task = fixture(conn,room,owner,member,message,now,deadline=now+600)
             with write_transaction(conn):
                 assert grant_context(conn,context_run,"answer",actor_id=real_owner,
