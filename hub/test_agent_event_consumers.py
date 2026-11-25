@@ -20,9 +20,11 @@ from services.agent_event_consumers import (
     ConsumerPrincipal,
     _issue_consumer_principal,
     ack_agent_events,
+    ack_agent_events_in_transaction,
     claim_agent_events,
     get_agent_event_consumer_cursor,
     release_agent_event_lease,
+    release_agent_event_lease_in_transaction,
 )
 from services.agent_events import append_agent_event
 
@@ -461,6 +463,160 @@ class AgentEventConsumerTests(unittest.TestCase):
                 self.context, self.principal, lease["lease_id"], lease["lease_token"],
                 through_inbox_seq=True,
             )
+
+    def test_ack_transaction_helper_keeps_caller_transaction_open_until_commit(self):
+        event_seq = self.append()
+        lease = self.claim()
+        connection = self.connect()
+        observer = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            result = ack_agent_events_in_transaction(
+                connection,
+                self.principal,
+                lease["lease_id"],
+                lease["lease_token"],
+                through_inbox_seq=event_seq,
+                now=self.now[0],
+            )
+            self.assertEqual(result["acked_inbox_seq"], event_seq)
+            self.assertTrue(connection.in_transaction)
+
+            visible = observer.execute(
+                """SELECT acked_inbox_seq FROM agent_event_consumer_cursors
+                   WHERE consumer_id='hub-event-projector' AND agent_id='agent-1'"""
+            ).fetchone()
+            self.assertEqual(visible["acked_inbox_seq"], 0)
+
+            connection.commit()
+            self.assertFalse(connection.in_transaction)
+            still_open = connection.execute(
+                "SELECT acked_inbox_seq FROM agent_event_consumer_cursors "
+                "WHERE consumer_id='hub-event-projector' AND agent_id='agent-1'"
+            ).fetchone()
+            self.assertEqual(still_open["acked_inbox_seq"], event_seq)
+        finally:
+            observer.close()
+            connection.close()
+
+    def test_ack_transaction_helper_rolls_back_with_callers_transaction(self):
+        self.append()
+        lease = self.claim()
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            ack_agent_events_in_transaction(
+                connection,
+                self.principal,
+                lease["lease_id"],
+                lease["lease_token"],
+                through_inbox_seq=lease["through_inbox_seq"],
+                now=self.now[0],
+            )
+            connection.rollback()
+        finally:
+            connection.close()
+
+        connection = self.connect()
+        try:
+            cursor = connection.execute(
+                """SELECT acked_inbox_seq FROM agent_event_consumer_cursors
+                   WHERE consumer_id='hub-event-projector' AND agent_id='agent-1'"""
+            ).fetchone()
+            self.assertEqual(cursor["acked_inbox_seq"], 0)
+            lease_row = connection.execute(
+                "SELECT status FROM agent_event_consumer_leases WHERE lease_id=?",
+                (lease["lease_id"],),
+            ).fetchone()
+            self.assertEqual(lease_row["status"], "active")
+            item = connection.execute(
+                "SELECT acked_at FROM agent_event_consumer_lease_items "
+                "WHERE lease_id=? AND inbox_seq=?",
+                (lease["lease_id"], lease["through_inbox_seq"]),
+            ).fetchone()
+            self.assertIsNone(item["acked_at"])
+        finally:
+            connection.close()
+
+    def test_release_transaction_helper_keeps_caller_transaction_open(self):
+        event_seq = self.append()
+        lease = self.claim()
+        connection = self.connect()
+        observer = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            result = release_agent_event_lease_in_transaction(
+                connection,
+                self.principal,
+                lease["lease_id"],
+                lease["lease_token"],
+                now=self.now[0],
+            )
+            self.assertEqual(result, {"status": "released", "cursor": 0})
+            self.assertTrue(connection.in_transaction)
+
+            visible = observer.execute(
+                "SELECT status FROM agent_event_consumer_leases WHERE lease_id=?",
+                (lease["lease_id"],),
+            ).fetchone()
+            self.assertEqual(visible["status"], "active")
+
+            connection.commit()
+            still_open = connection.execute(
+                "SELECT status FROM agent_event_consumer_leases WHERE lease_id=?",
+                (lease["lease_id"],),
+            ).fetchone()
+            self.assertEqual(still_open["status"], "released")
+        finally:
+            observer.close()
+            connection.close()
+
+        redelivered = self.claim()
+        self.assertEqual(redelivered["events"][0]["inbox_seq"], event_seq)
+
+    def test_transaction_helpers_require_caller_owned_transaction(self):
+        event_seq = self.append()
+        lease = self.claim()
+        connection = self.connect()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "agent_event_transaction_required"):
+                ack_agent_events_in_transaction(
+                    connection,
+                    self.principal,
+                    lease["lease_id"],
+                    lease["lease_token"],
+                    through_inbox_seq=event_seq,
+                    now=self.now[0],
+                )
+            with self.assertRaisesRegex(RuntimeError, "agent_event_transaction_required"):
+                release_agent_event_lease_in_transaction(
+                    connection,
+                    self.principal,
+                    lease["lease_id"],
+                    lease["lease_token"],
+                    now=self.now[0],
+                )
+        finally:
+            connection.close()
+
+    def test_transaction_helpers_reject_non_finite_timestamps(self):
+        event_seq = self.append()
+        lease = self.claim()
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            with self.assertRaisesRegex(ValueError, "invalid_now"):
+                ack_agent_events_in_transaction(
+                    connection,
+                    self.principal,
+                    lease["lease_id"],
+                    lease["lease_token"],
+                    through_inbox_seq=event_seq,
+                    now=float("nan"),
+                )
+            connection.rollback()
+        finally:
+            connection.close()
 
     def test_oversized_first_event_blocks_without_creating_lease_or_skipping(self):
         self.append(payload={"large": "x" * 2048})
