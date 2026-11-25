@@ -113,7 +113,107 @@ def main():
         )
         assert json.loads(ownership.stdout) == [True, True, False], ownership.stdout
 
-    print("PASS installer path isolation, no-clobber, and LaunchAgent ownership")
+
+        # Exercise the whole install transaction with a fake payload and
+        # injected failure after Hub startup. No launchctl, ports or Mac app
+        # are touched; uninstall must preserve every generated data item.
+        bundle = home / "fake-bundle"
+        (bundle / "python" / "bin").mkdir(parents=True)
+        (bundle / "python" / "bin" / "python3").write_text("#!/bin/sh\n")
+        (bundle / "hub").mkdir()
+        for name in ("hub.py", "room_watch.py", "backup-db.sh", "verify-backup.sh"):
+            (bundle / "hub" / name).write_text("# fixture\n")
+        (bundle / "engine" / "app").mkdir(parents=True)
+        (bundle / "engine" / "app" / "headless.cjs").write_text("// fixture\n")
+        (bundle / "engine" / "Electron.app" / "Contents" / "MacOS").mkdir(parents=True)
+        (bundle / "engine" / "Electron.app" / "Contents" / "MacOS" / "Electron").write_text("fixture\n")
+        transaction_env = env.copy()
+        transaction_env["PACK_TEST_BUNDLE"] = str(bundle)
+        transaction_script = r"""
+import asyncio, json, os, pathlib, shutil, types, manager
+manager.BUNDLE = pathlib.Path(os.environ["PACK_TEST_BUNDLE"])
+manager.available = lambda port: True
+loaded = set()
+def fake_ctl(*args, check=True):
+    command = args[0]
+    label = args[-1].split("/")[-1]
+    if command == "bootstrap":
+        loaded.add(pathlib.Path(args[-1]).stem)
+        return types.SimpleNamespace(returncode=0)
+    if command == "print":
+        return types.SimpleNamespace(returncode=0 if label in loaded else 1)
+    if command == "bootout":
+        loaded.discard(label)
+        return types.SimpleNamespace(returncode=0)
+    raise AssertionError(args)
+manager.ctl = fake_ctl
+class DummyConnection:
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+manager.socket.create_connection = lambda *args, **kwargs: DummyConnection()
+def fake_run(args, check=True, **kwargs):
+    assert args[0] == "/usr/bin/ditto", args
+    shutil.copytree(args[1], args[2])
+    return types.SimpleNamespace(returncode=0)
+manager.subprocess.run = fake_run
+async def fake_setup_owner():
+    manager.write_private(manager.hub / ".dispatcher_token", "dispatch-token")
+    manager.write_private(manager.hub / ".owner_token", "owner-token")
+    manager.write_private(manager.config, '{"hubUrl":"http://127.0.0.1:18795/mcp"}')
+manager.setup_owner = fake_setup_owner
+original_write_agent = manager.write_agent
+def fail_after_watch(kind, *args, **kwargs):
+    original_write_agent(kind, *args, **kwargs)
+    if kind == "watch":
+        raise RuntimeError("injected transaction failure")
+manager.write_agent = fail_after_watch
+try:
+    manager.install()
+except RuntimeError as exc:
+    assert str(exc) == "injected transaction failure"
+else:
+    raise AssertionError("injected failure was not raised")
+state = manager.load_install_state()
+assert state["phase"] == "failed", state
+assert manager.is_managed_root(manager.hub, "hub")
+assert manager.is_managed_root(manager.engine, "engine")
+assert manager.is_managed_root(manager.socket_dir, "socket")
+assert not loaded, loaded
+assert not (manager.agents / (manager.labels["hub"] + ".plist")).exists()
+assert not (manager.agents / (manager.labels["watch"] + ".plist")).exists()
+assert (manager.hub / ".owner_token").read_text() == "owner-token"
+assert manager.config.is_file()
+# Simulate SIGKILL: the durable journal remains in the installing phase.
+state["phase"] = "installing"
+manager.save_install_state(state)
+try:
+    manager.install()
+except SystemExit as exc:
+    assert "interrupted Pack installation" in str(exc)
+else:
+    raise AssertionError("interrupted transaction was not detected")
+manager.uninstall()
+state = manager.load_install_state()
+assert state["phase"] == "uninstalled", state
+assert not (manager.hub / "python").exists()
+assert not (manager.hub / "hub.py").exists()
+assert not (manager.engine / "app").exists()
+assert not (manager.engine / "Electron.app").exists()
+assert (manager.hub / "attachments").is_dir()
+assert (manager.hub / ".dispatcher_token").read_text() == "dispatch-token"
+assert (manager.hub / ".owner_token").read_text() == "owner-token"
+assert manager.config.is_file()
+assert (manager.engine / "data" / "local").is_dir()
+assert not manager.socket_dir.exists()
+assert not loaded, loaded
+"""
+        transaction = subprocess.run(
+            [sys.executable, "-c", transaction_script],
+            cwd=HERE, env=transaction_env, text=True, capture_output=True,
+        )
+        assert transaction.returncode == 0, transaction.stdout + transaction.stderr
+
+    print("PASS installer path isolation, no-clobber, LaunchAgent ownership, and transaction recovery")
 
 
 if __name__ == "__main__":
