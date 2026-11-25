@@ -1,6 +1,6 @@
 # M2 Hub Event Projection / Session Recovery Design
 
-状态：设计基线；定义 Hub Inbox 到 Agent Session 读模型的投影边界。migration v7 Schema 已在 PR #50 实现但尚未合入；业务 Projector、Session Read API 和生产 Runtime 接线尚未实现。
+状态：设计基线；定义 Hub Inbox 到 Agent Session 读模型的投影边界。migration v7 Schema 已在 PR #50 实现且 Hub、Runtime、Staging / Staging56、macOS CI 全部通过，尚未合入；业务 Projector、Session Read API 和生产 Runtime 接线尚未实现。
 
 依赖关系：
 - PR #41：已合入 v2 Foundation，提供 Agent Event Inbox / Outbox 基础。
@@ -252,7 +252,7 @@ Session Read API 是读模型查询，不是 Inbox Consumer；读取分页不得
 2. 先让 PR #47 M2a Session Binding 最新 CI 全绿，再合入 Foundation；确认 hubSessionId / sessionId 语义和能力协商契约稳定。
 3. 对可访问的数据库副本执行 provider_session_id 重复值只读审计；真实 Mac 数据库必须在备份副本和 Shadow preflight 中单独核验。
 4. 定稿 Codex event payload validators 和 Session / Provider ID 映射规则。
-5. PR #50 已实现 additive migration v7：last_inbox_seq、Agent Session Messages、Agent Session Runs、Projection Receipts、Projection Resolutions；待完整 CI 通过并按依赖顺序合入。
+5. PR #50 已实现 additive migration v7：last_inbox_seq、Agent Session Messages、Agent Session Runs、Projection Receipts、Projection Resolutions；完整 CI 已通过，待按依赖顺序合入。
 6. PR #49 已拆分 ACK / Release 事务 helper，保留旧包装 API；后续 Projector 必须复用事务内 helper。
 7. 实现 hub-session-projector，先支持 session.created、message.delta / completed 和 run.started / completed / failed / interrupted。
 8. 加入真实 SQLite 事务故障注入、重复投影、跨 Agent 隔离、blocked / skip 和 migration 回归。
