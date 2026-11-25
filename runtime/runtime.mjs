@@ -42,6 +42,9 @@ const DRIVER_TIMEOUT_MS = Number.isSafeInteger(cfg.driverTimeoutMs)
 const DRIVER_MAX_OUTPUT_BYTES = Number.isSafeInteger(cfg.driverMaxOutputBytes)
   && cfg.driverMaxOutputBytes >= 64 * 1024 && cfg.driverMaxOutputBytes <= 32 * 1024 * 1024
   ? cfg.driverMaxOutputBytes : 8 * 1024 * 1024;
+const DRIVER_MAX_INPUT_BYTES = Number.isSafeInteger(cfg.driverMaxInputBytes)
+  && cfg.driverMaxInputBytes >= 64 * 1024 && cfg.driverMaxInputBytes <= 32 * 1024 * 1024
+  ? cfg.driverMaxInputBytes : 8 * 1024 * 1024;
 // approval marker tag, built from char codes to survive any encoding path
 const NEED_TAG = String.fromCharCode(0x3010, 0x9700, 0x6279, 0x51c6, 0x3011);
 
@@ -170,6 +173,7 @@ async function runDriver(message, signal, chat = null) {
     cwd: DIR,
     timeoutMs: DRIVER_TIMEOUT_MS,
     maxOutputBytes: DRIVER_MAX_OUTPUT_BYTES,
+    maxInputBytes: DRIVER_MAX_INPUT_BYTES,
   });
   if (result.code !== 0) throw new Error(`driver_exit_${result.code ?? result.signal ?? "unknown"}`);
   const line = (result.stdout + newline + result.stderr).split(newline)
