@@ -185,6 +185,10 @@ class AgentSessionProjectorTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["acked_inbox_seq"], sequences[-1])
         self.assertEqual(result["processed_count"], 5)
+        retry_result = self.process(lease)
+        self.assertEqual(retry_result["status"], "completed")
+        self.assertTrue(retry_result["idempotent"])
+        self.assertEqual(retry_result["acked_inbox_seq"], sequences[-1])
 
         session_row = self.rows(
             """SELECT provider_session_id,status,last_inbox_seq
@@ -477,6 +481,111 @@ class AgentSessionProjectorTests(unittest.TestCase):
             tuple(receipt),
             ("applied", "completion_text_mismatch"),
         )
+
+    def test_run_interrupted_finalizes_message_and_resumed_session_can_reactivate(self):
+        session = self.create_session()
+        provider_session_id = "provider-thread-1"
+        self.append_session_created(session, provider_session_id)
+        self.append(
+            "run.started",
+            hub_session_id=session["hub_session_id"],
+            session_id=provider_session_id,
+            run_id="provider-run-1",
+            payload={},
+        )
+        self.append(
+            "message.delta",
+            hub_session_id=session["hub_session_id"],
+            session_id=provider_session_id,
+            run_id="provider-run-1",
+            payload={"itemId": "item-1", "delta": "partial"},
+        )
+        interrupted_seq = self.append(
+            "run.interrupted",
+            hub_session_id=session["hub_session_id"],
+            session_id=provider_session_id,
+            run_id="provider-run-1",
+            payload={},
+        )
+        result = self.process(self.claim())
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["acked_inbox_seq"], interrupted_seq)
+        run = self.rows(
+            """SELECT status FROM agent_session_runs
+               WHERE session_id=? AND provider_run_id='provider-run-1'""",
+            (session["hub_session_id"],),
+        )[0]
+        message = self.rows(
+            """SELECT status,completed_at FROM agent_session_messages
+               WHERE session_id=? AND provider_message_id='item-1'""",
+            (session["hub_session_id"],),
+        )[0]
+        session_row = self.rows(
+            "SELECT status FROM agent_sessions WHERE session_id=?",
+            (session["hub_session_id"],),
+        )[0]
+        self.assertEqual(run["status"], "interrupted")
+        self.assertEqual(tuple(message), ("interrupted", None))
+        self.assertEqual(session_row["status"], "interrupted")
+
+        resumed_seq = self.append(
+            "session.created",
+            hub_session_id=session["hub_session_id"],
+            session_id=provider_session_id,
+            payload={
+                "providerSessionId": provider_session_id,
+                "resumed": True,
+            },
+        )
+        resumed = self.process(self.claim())
+        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual(resumed["acked_inbox_seq"], resumed_seq)
+        session_row = self.rows(
+            "SELECT status,last_inbox_seq FROM agent_sessions WHERE session_id=?",
+            (session["hub_session_id"],),
+        )[0]
+        self.assertEqual(tuple(session_row), ("active", resumed_seq))
+
+    def test_run_failed_finalizes_only_streaming_messages_as_failed(self):
+        session = self.create_session()
+        provider_session_id = "provider-thread-1"
+        self.append_session_created(session, provider_session_id)
+        self.append(
+            "run.started",
+            hub_session_id=session["hub_session_id"],
+            session_id=provider_session_id,
+            run_id="provider-run-1",
+            payload={},
+        )
+        self.append(
+            "message.delta",
+            hub_session_id=session["hub_session_id"],
+            session_id=provider_session_id,
+            run_id="provider-run-1",
+            payload={"itemId": "item-1", "delta": "partial"},
+        )
+        failed_seq = self.append(
+            "run.failed",
+            hub_session_id=session["hub_session_id"],
+            session_id=provider_session_id,
+            run_id="provider-run-1",
+            payload={},
+        )
+        result = self.process(self.claim())
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["acked_inbox_seq"], failed_seq)
+        run = self.rows(
+            """SELECT status FROM agent_session_runs
+               WHERE session_id=? AND provider_run_id='provider-run-1'""",
+            (session["hub_session_id"],),
+        )[0]
+        message = self.rows(
+            """SELECT status,completed_at FROM agent_session_messages
+               WHERE session_id=? AND provider_message_id='item-1'""",
+            (session["hub_session_id"],),
+        )[0]
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(tuple(message), ("failed", None))
 
     def test_duplicate_provider_session_binding_blocks_second_session(self):
         first = self.create_session()
