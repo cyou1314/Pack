@@ -58,6 +58,7 @@ import re
 import secrets
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -278,7 +279,35 @@ def _sniff_image_mime(data: bytes):
 
 
 def _attach_path(sha256: str, mime: str) -> str:
+    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("invalid attachment hash")
+    if mime not in ATTACH_MIME_EXT:
+        raise ValueError("invalid attachment mime")
     return os.path.join(ATTACH_DIR, sha256[:2], sha256 + "." + ATTACH_MIME_EXT[mime])
+
+
+def _write_attachment_atomic(path: str, data: bytes):
+    parent = os.path.dirname(path)
+    fd, temp = tempfile.mkstemp(prefix=".pack-attachment-", dir=parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+        try:
+            dir_fd = os.open(parent, os.O_RDONLY)
+            try: os.fsync(dir_fd)
+            finally: os.close(dir_fd)
+        except OSError:
+            pass
+    except BaseException:
+        try: os.close(fd)
+        except OSError: pass
+        try: os.unlink(temp)
+        except OSError: pass
+        raise
 
 
 # ---------------- Run 层防重跑（SPEC 附录 G.1 第 4 条） ----------------
@@ -3296,12 +3325,23 @@ def build_server():
                 conn.close()
                 raise ValueError("room attachment quota exceeded")
             path = _attach_path(sha, mime)
-            if not os.path.exists(path):
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                tmp = path + f".tmp-{os.getpid()}"
-                with open(tmp, "wb") as f:
-                    f.write(data)
-                os.replace(tmp, path)
+            if os.path.islink(ATTACH_DIR):
+                raise ValueError("attachment storage root must not be a symlink")
+            os.makedirs(ATTACH_DIR, mode=0o700, exist_ok=True)
+            os.chmod(ATTACH_DIR, 0o700)
+            parent = os.path.dirname(path)
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+            if os.path.islink(parent):
+                raise ValueError("attachment shard directory must not be a symlink")
+            os.chmod(parent, 0o700)
+            valid_existing = False
+            if os.path.lexists(path) and not os.path.islink(path) and os.path.isfile(path):
+                with open(path, "rb") as existing:
+                    current = existing.read(ATTACH_MAX_BYTES + 1)
+                valid_existing = (len(current) == len(data)
+                                  and hashlib.sha256(current).hexdigest() == sha)
+            if not valid_existing:
+                _write_attachment_atomic(path, data)
             cur = conn.execute(
                 "INSERT INTO attachments(sha256,mime,size,original_name,uploader_id,room_id,message_id,created_at) VALUES(?,?,?,?,?,?,NULL,?)",
                 (sha, mime, len(data), name, me["id"], r["id"], time.time()))
@@ -3314,40 +3354,40 @@ def build_server():
 
     @mcp.tool
     def attachment_get(attachment_id: int) -> dict:
-        """取一张附件图片的本体（base64）。任何在册成员可取（房间不做
-        成员级隔离，与消息读取同口径）；不存在或文件丢失时报错。"""
+        """取一张附件图片的本体（base64），并验证内容寻址哈希与长度。"""
         me = authenticate()
         require(me)
         conn = db()
-        row = conn.execute("SELECT * FROM attachments WHERE id=?",
-                           (attachment_id,)).fetchone()
-        if not row:
+        try:
+            row = conn.execute("SELECT * FROM attachments WHERE id=?",
+                               (attachment_id,)).fetchone()
+            if not row:
+                raise ValueError(f"no such attachment: {attachment_id}")
+            if _is_external(me):
+                if row["room_id"] != me["bound_room_id"]:
+                    raise ValueError("forbidden: attachment is outside the bound room")
+                if row["created_at"] < me["created_at"]:
+                    raise ValueError("forbidden: attachment predates external member join")
+            path = _attach_path(row["sha256"], row["mime"])
+            parent = os.path.dirname(path)
+            if (os.path.islink(ATTACH_DIR) or os.path.islink(parent)
+                    or os.path.islink(path) or not os.path.isfile(path)):
+                raise ValueError("attachment file missing or unsafe")
+            with open(path, "rb") as stream:
+                data = stream.read(ATTACH_MAX_BYTES + 1)
+            if (len(data) != row["size"] or len(data) > ATTACH_MAX_BYTES
+                    or hashlib.sha256(data).hexdigest() != row["sha256"]):
+                audit(conn, me["name"], "attachment_integrity_failure",
+                      f"attachment {attachment_id} hash/size mismatch")
+                conn.commit()
+                raise ValueError("attachment integrity check failed")
+            audit(conn, me["name"], "attachment_get", f"attachment {attachment_id}")
+            conn.commit()
+            return {"attachment_id": attachment_id, "mime": row["mime"],
+                    "size": row["size"], "filename": row["original_name"],
+                    "data_base64": base64.b64encode(data).decode()}
+        finally:
             conn.close()
-            raise ValueError(f"no such attachment: {attachment_id}")
-        if _is_external(me):
-            # 件二：attachment_get 入参无房间，必须按 attachments.room_id
-            # == bound_room_id 校验；并叠加水位截断——拒绝读取入群时刻
-            # 之前已存在的附件。
-            if row["room_id"] != me["bound_room_id"]:
-                conn.close()
-                raise ValueError(
-                    "forbidden: attachment is outside the bound room")
-            if row["created_at"] < me["created_at"]:
-                conn.close()
-                raise ValueError(
-                    "forbidden: attachment predates external member join")
-        path = _attach_path(row["sha256"], row["mime"])
-        if not os.path.exists(path):
-            conn.close()
-            raise ValueError("attachment file missing")
-        with open(path, "rb") as f:
-            data = f.read()
-        audit(conn, me["name"], "attachment_get", f"attachment {attachment_id}")
-        conn.commit()
-        conn.close()
-        return {"attachment_id": attachment_id, "mime": row["mime"],
-                "size": row["size"], "filename": row["original_name"],
-                "data_base64": base64.b64encode(data).decode()}
 
     @mcp.tool
     def attachment_list(room: str, message_id: int = 0) -> dict:
