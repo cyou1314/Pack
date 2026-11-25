@@ -550,7 +550,7 @@
           "name": "idx_agent_event_inbox_seq_agent_unique",
           "origin": "c",
           "partial": false,
-          "sql": "CREATE UNIQUE INDEX idx_agent_event_inbox_seq_agent_unique\n   ON agent_event_inbox(inbox_seq, agent_id)",
+          "sql": "CREATE UNIQUE INDEX idx_agent_event_inbox_seq_agent_unique\n           ON agent_event_inbox(inbox_seq, agent_id)",
           "unique": true
         },
         {
@@ -837,7 +837,7 @@
           "name": "idx_agent_event_projection_receipts_outcome",
           "origin": "c",
           "partial": false,
-          "sql": "CREATE INDEX idx_agent_event_projection_receipts_outcome\n   ON agent_event_projection_receipts(\n       consumer_id, agent_id, outcome, inbox_seq\n   )",
+          "sql": "CREATE INDEX idx_agent_event_projection_receipts_outcome\n           ON agent_event_projection_receipts(\n               consumer_id, agent_id, outcome, inbox_seq\n           )",
           "unique": false
         },
         {
@@ -992,7 +992,7 @@
           "name": "idx_agent_event_projection_resolutions_agent_time",
           "origin": "c",
           "partial": false,
-          "sql": "CREATE INDEX idx_agent_event_projection_resolutions_agent_time\n   ON agent_event_projection_resolutions(agent_id, resolved_at DESC)",
+          "sql": "CREATE INDEX idx_agent_event_projection_resolutions_agent_time\n           ON agent_event_projection_resolutions(agent_id, resolved_at DESC)",
           "unique": false
         },
         {
@@ -1241,7 +1241,7 @@
           "name": "idx_agent_session_messages_session_created",
           "origin": "c",
           "partial": false,
-          "sql": "CREATE INDEX idx_agent_session_messages_session_created\n   ON agent_session_messages(session_id, created_at, message_id)",
+          "sql": "CREATE INDEX idx_agent_session_messages_session_created\n           ON agent_session_messages(session_id, created_at, message_id)",
           "unique": false
         },
         {
@@ -1253,7 +1253,7 @@
           "name": "idx_agent_session_messages_session_run",
           "origin": "c",
           "partial": false,
-          "sql": "CREATE INDEX idx_agent_session_messages_session_run\n   ON agent_session_messages(session_id, provider_run_id, status)",
+          "sql": "CREATE INDEX idx_agent_session_messages_session_run\n           ON agent_session_messages(session_id, provider_run_id, status)",
           "unique": false
         },
         {
@@ -1379,7 +1379,7 @@
           "name": "idx_agent_session_runs_session_started",
           "origin": "c",
           "partial": false,
-          "sql": "CREATE INDEX idx_agent_session_runs_session_started\n   ON agent_session_runs(session_id, started_at, run_record_id)",
+          "sql": "CREATE INDEX idx_agent_session_runs_session_started\n           ON agent_session_runs(session_id, started_at, run_record_id)",
           "unique": false
         },
         {
@@ -1504,7 +1504,7 @@
           "name": "idx_agent_sessions_agent_provider_session_unique",
           "origin": "c",
           "partial": true,
-          "sql": "CREATE UNIQUE INDEX idx_agent_sessions_agent_provider_session_unique\n   ON agent_sessions(agent_id, provider_session_id)\n   WHERE provider_session_id IS NOT NULL",
+          "sql": "CREATE UNIQUE INDEX idx_agent_sessions_agent_provider_session_unique\n           ON agent_sessions(agent_id, provider_session_id)\n           WHERE provider_session_id IS NOT NULL",
           "unique": true
         },
         {
