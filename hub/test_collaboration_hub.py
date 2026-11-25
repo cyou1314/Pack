@@ -98,6 +98,51 @@ def main():
             assert_closed(conn, failed, failed_task, "failed")
             assert conn.execute("SELECT status FROM tasks WHERE id=?", (legacy_id,)).fetchone()[0] == "open"
 
+            # Exercise actual MCP claim, run fence, review and block paths.
+            approved, approved_task = fixture(conn, room, owner, member, 6, now, deadline=now+600)
+            def agent(name, args):
+                return asyncio.run(call(port, reg["token"], name, args))
+            claim = agent("task_claim", {"task_id": approved_task})
+            assert claim.get("claim_token"), claim
+            ct = claim["claim_token"]
+            assert snapshot(conn, approved)["calls_used"] == 1
+            assert "error" in agent("task_claim", {"task_id": approved_task})
+            started = agent("run_start", {"task_id": approved_task, "claim_token": ct})
+            assert started.get("fence") == 1, started
+            assert "error" in agent("run_start", {"task_id": approved_task, "claim_token": ct})
+            finished = agent("run_finish", {"task_id": approved_task, "claim_token": ct})
+            assert finished.get("status") == "closed", finished
+            assert "error" in agent("run_start", {"task_id": approved_task, "claim_token": ct})
+            assert "error" in agent("task_transfer", {"task_id": approved_task,
+                "claim_token": ct, "to_member": "other"})
+            complete = agent("task_complete", {"task_id": approved_task, "claim_token": ct,
+                "result": "fixture result"})
+            assert complete.get("status") == "review", complete
+            assert snapshot(conn, approved)["status"] == "active"
+            review = dispatch("task_review", {"task_id": approved_task, "approve": True})
+            assert review.get("status") == "done", review
+            assert snapshot(conn, approved)["status"] == "succeeded"
+
+            rejected, rejected_task = fixture(conn, room, owner, member, 7, now, deadline=now+600)
+            claim = agent("task_claim", {"task_id": rejected_task})
+            assert claim.get("claim_token"), claim
+            complete = agent("task_complete", {"task_id": rejected_task,
+                "claim_token": claim["claim_token"], "result": "fixture result"})
+            assert complete.get("status") == "review", complete
+            review = dispatch("task_review", {"task_id": rejected_task, "approve": False})
+            assert review.get("status") == "cancelled", review
+            assert_closed(conn, rejected, rejected_task, "failed")
+            assert "error" in dispatch("task_release", {"task_id": rejected_task})
+
+            blocked, blocked_task = fixture(conn, room, owner, member, 8, now, deadline=now+600)
+            claim = agent("task_claim", {"task_id": blocked_task})
+            assert claim.get("claim_token"), claim
+            result = agent("task_block", {"task_id": blocked_task,
+                "claim_token": claim["claim_token"], "reason": "fixture failure",
+                "fail_class": "task"})
+            assert result.get("status") == "cancelled", result
+            assert_closed(conn, blocked, blocked_task, "failed")
+
             removed, removed_task = fixture(conn, room, owner, member, 4, now, deadline=now+600)
             unbound, _ = fixture(conn, room, owner, member, 5, now, deadline=now+600, create_card=False)
             result = dispatch("member_remove", {"name": "collab-fixture-member"})

@@ -54,3 +54,7 @@ hub/collaboration_policy.py 是无副作用的纯计划器，以经过认证的 
 hub.py 已接入现有 task_cancel、sweep_once、member_remove 和 _auto_relay 路径。仅检测到显式初始化的 collaboration_task_links 表时启用相应分支；正常 Hub init 不创建该表，也不会导入新增模块。取消/超时/成员移除在同一事务中停止 run、取消关联卡、关闭既有 runs、释放桌面锁、清理 pending transfer 并写审计。sweeper 在旧回收前独立写事务处理协作截止时间与租约失效，旧回收及未认领接力跳过已绑定卡。成员移除覆盖未绑定步骤。新增真实 Hub schema + 本地 MCP 测试，包含旧卡兼容性。
 
 仍未开放协作创建或认领：task_claim/reserve、task_review/reconcile、block/release/transfer 等入口及 Provider 重试、deadline 的实时检查尚须完整接线。终止只是 Hub 逻辑终止，不能证明外部请求已停止。安装器 build-dmg.sh 与 manager.py 固定清单未包含协作模块，当前正常安装不启用 schema；启用前必须补齐打包、升级、卸载、回滚和测试。不得手工在生产初始化协作表。
+
+## 第六阶段：实际认领及审核路径（测试启用）
+
+Hub task_claim 在同一事务内预留一次协作预算，失败回滚；持有人路径对已绑定任务检查 run 状态、截止时间、租约，并使用写事务；run_start 对已登记过的协作任务拒绝再次登记。task_review 通过时同步成功步骤、拒绝时终止整个 run；明确 partial/failed 的信封不得作为成功批准。task_block 直接结束协作并保留失败类别，quota 保留耗尽事实；task_transfer、task_accept_transfer、task_release 禁止对绑定任务操作。真实 MCP fixture 增加认领、重复登记、交活、审核、失败等测试。仍仅在测试显式初始化账本，未开放生产创建；当前认领仅校验现有成员身份/房间等基本边界，真实 Provider readiness、结果共享授权、审核语义、Provider 内部调用计量、实际取消传播、打包等仍待验收。run_start 的一次登记不等于保证一次模型调用；外部执行体必须遵循预算协议。

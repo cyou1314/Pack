@@ -1330,6 +1330,21 @@ def _collaboration_link(conn, task_id):
     return row[0] if row else None
 
 
+def _collaboration_active_task(conn, task_id, now):
+    """Require a live linked run; ordinary tasks retain their existing semantics."""
+    run_id = _collaboration_link(conn, task_id)
+    if run_id is None:
+        return None
+    row = conn.execute(
+        "SELECT r.status,r.deadline,s.status FROM collaboration_runs r "
+        "JOIN collaboration_task_links l ON l.run_id=r.id "
+        "JOIN collaboration_steps s ON s.run_id=l.run_id AND s.step_key=l.step_key "
+        "WHERE l.task_id=?", (task_id,)).fetchone()
+    if not row or row[0] != "active" or row[1] <= now or row[2] != "running":
+        raise ValueError("collaboration: task is no longer active")
+    return run_id
+
+
 def _collaboration_stop(conn, run_id, status, actor, reason, now):
     """Stop the ledger and cancel its existing Hub tasks in one write transaction."""
     from collaboration_store import _stop
@@ -3845,59 +3860,81 @@ def build_server():
         me = authenticate()
         require(me)
         conn = db()
-        tok = secrets.token_urlsafe(24)
-        now = _now()
-        with _lock:
-            if _is_external(me):
-                # 件二：external 只许认领绑定房内、指派给本人、非引擎
-                # 标记的卡（未指派卡不许抢）。staging51 红队修复：
-                # 前置检查在 _lock 内、用同一 conn 重读任务行后紧贴
-                # 原子 UPDATE 执行——原实现锁外预检与锁内 UPDATE
-                # 之间存在 TOCTOU 窗口（预检通过后任务被改派/改
-                # 正文即可绕过三条限制）。拒绝口径与既有 claim
-                # 失败区分开（forbidden 前缀）。
-                t0 = conn.execute(
-                    "SELECT room_id, title, body, assignee FROM tasks WHERE id=?",
-                    (task_id,)).fetchone()
-                if t0:
-                    if t0["room_id"] != me["bound_room_id"]:
-                        conn.close()
-                        raise ValueError("forbidden: task is outside the bound room")
-                    if t0["assignee"] != me["id"]:
-                        conn.close()
-                        raise ValueError(
-                            "forbidden: external members may only claim tasks assigned to themselves")
-                    if _is_executor_pinned(t0["title"], t0["body"]):
-                        conn.close()
-                        raise ValueError("forbidden: executor-pinned task")
-            cur = conn.execute(
-                """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
-                   lease_expires=?, attempts=attempts+1, next_claim_at=NULL, sched_at=NULL, updated_at=?
-                   WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)
-                     AND (next_claim_at IS NULL OR next_claim_at<=?)""",
-                (me["id"], tok, now + LEASE_SECONDS, now, task_id, me["id"], now))
-            won = cur.rowcount == 1
-            if won:
-                audit(conn, me["name"], "task_claim", f"task {task_id}")
-                # 防御：本任务名下若还挂着一把没放干净的旧锁（各出口本应
-                # 已放，此处兜底），新认领开始前清掉，免得新持有人被
-                # 自己任务的残锁挡住。
-                _desktop_release_for_task(conn, task_id, me["name"], "orphan_on_claim")
-            conn.commit()
-        t = conn.execute("SELECT status, assignee, next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
-        conn.close()
-        if not t:
-            raise ValueError(f"no such task: {task_id}")
-        if not won:
-            if t["status"] == "open" and t["next_claim_at"] and t["next_claim_at"] > now:
-                raise ValueError(
-                    f"claim failed: task {task_id} in backoff until {t['next_claim_at']:.0f} "
-                    f"(retry_after={t['next_claim_at'] - now:.0f}s)")
-            raise ValueError(f"claim failed: task {task_id} status={t['status']}")
-        return {"task_id": task_id, "status": "claimed", "claim_token": tok,
-                "lease_expires": now + LEASE_SECONDS}
+        try:
+            tok = secrets.token_urlsafe(24)
+            now = _now()
+            with _lock:
+                if _collaboration_present(conn):
+                    conn.execute("BEGIN IMMEDIATE")
+                now = _now()
+                linked = _collaboration_link(conn, task_id)
+                if _is_external(me):
+                    # 件二：external 只许认领绑定房内、指派给本人、非引擎
+                    # 标记的卡（未指派卡不许抢）。staging51 红队修复：
+                    # 前置检查在 _lock 内、用同一 conn 重读任务行后紧贴
+                    # 原子 UPDATE 执行——原实现锁外预检与锁内 UPDATE
+                    # 之间存在 TOCTOU 窗口（预检通过后任务被改派/改
+                    # 正文即可绕过三条限制）。拒绝口径与既有 claim
+                    # 失败区分开（forbidden 前缀）。
+                    t0 = conn.execute(
+                        "SELECT room_id, title, body, assignee FROM tasks WHERE id=?",
+                        (task_id,)).fetchone()
+                    if t0:
+                        if t0["room_id"] != me["bound_room_id"]:
+                            conn.close()
+                            raise ValueError("forbidden: task is outside the bound room")
+                        if t0["assignee"] != me["id"]:
+                            conn.close()
+                            raise ValueError(
+                                "forbidden: external members may only claim tasks assigned to themselves")
+                        if _is_executor_pinned(t0["title"], t0["body"]):
+                            conn.close()
+                            raise ValueError("forbidden: executor-pinned task")
+                if linked is not None:
+                    from collaboration_dispatch import reserve_claim
+                    if me["role"] != "member" or me["name"] == "owner":
+                        raise ValueError("collaboration: executor identity required")
+                    task = conn.execute("SELECT next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
+                    if task and task[0] is not None and task[0] > now:
+                        raise ValueError("collaboration: task in backoff")
+                    if not reserve_claim(conn, task_id, member_id=me["id"],
+                                         eligible_ids={me["id"]}, now=now):
+                        raise ValueError("collaboration: claim not eligible or already reserved")
+                cur = conn.execute(
+                    """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
+                       lease_expires=?, attempts=attempts+1, next_claim_at=NULL, sched_at=NULL, updated_at=?
+                       WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)
+                         AND (next_claim_at IS NULL OR next_claim_at<=?)""",
+                    (me["id"], tok, now + LEASE_SECONDS, now, task_id, me["id"], now))
+                won = cur.rowcount == 1
+                if linked is not None and not won:
+                    raise ValueError("collaboration: task claim changed; reservation rolled back")
+                if won:
+                    audit(conn, me["name"], "task_claim", f"task {task_id}")
+                    # 防御：本任务名下若还挂着一把没放干净的旧锁（各出口本应
+                    # 已放，此处兜底），新认领开始前清掉，免得新持有人被
+                    # 自己任务的残锁挡住。
+                    _desktop_release_for_task(conn, task_id, me["name"], "orphan_on_claim")
+                conn.commit()
+            t = conn.execute("SELECT status, assignee, next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
+            conn.close()
+            if not t:
+                raise ValueError(f"no such task: {task_id}")
+            if not won:
+                if t["status"] == "open" and t["next_claim_at"] and t["next_claim_at"] > now:
+                    raise ValueError(
+                        f"claim failed: task {task_id} in backoff until {t['next_claim_at']:.0f} "
+                        f"(retry_after={t['next_claim_at'] - now:.0f}s)")
+                raise ValueError(f"claim failed: task {task_id} status={t['status']}")
+            return {"task_id": task_id, "status": "claimed", "claim_token": tok,
+                    "lease_expires": now + LEASE_SECONDS}
+        finally:
+            conn.close()
 
     def _holder(conn, me, task_id, claim_token):
+        linked = _collaboration_link(conn, task_id)
+        if linked is not None and not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
             raise ValueError(f"no such task: {task_id}")
@@ -3905,6 +3942,10 @@ def build_server():
             raise ValueError(f"task is not actively held (status={t['status']})")
         if t["assignee"] != me["id"] or not t["claim_token"] or not hmac.compare_digest(t["claim_token"], claim_token or ""):
             raise ValueError("not the current holder (claim_token mismatch)")
+        if linked is not None:
+            _collaboration_active_task(conn, task_id, _now())
+            if t["lease_expires"] is None or t["lease_expires"] <= _now():
+                raise ValueError("collaboration: task lease expired")
         return t
 
     def _task_update_impl(me, task_id: int, claim_token: str, note: str = "") -> dict:
@@ -4069,6 +4110,21 @@ def build_server():
             if _is_external(me) and t["room_id"] != me["bound_room_id"]:
                 raise ValueError("forbidden: task is outside the bound room")
             now = _now()
+            linked = _collaboration_link(conn, task_id)
+            if linked is not None:
+                _collaboration_stop(conn, linked, "failed", me["name"], "task_block", now)
+                conn.execute("UPDATE tasks SET result=?,fail_class=? WHERE id=?", (reason, fc, task_id))
+                if fc == "quota":
+                    conn.execute(
+                        "UPDATE members SET quota_week_used_pct=100, quota_updated_at=?, "
+                        "quota_source='fact' WHERE id=?", (now, me["id"]))
+                    audit(conn, me["name"], "member_quota_exhausted",
+                          f"task {task_id} via task_block quota source=fact")
+                audit(conn, me["name"], "task_block", f"task {task_id} fail_class={fc}")
+                conn.commit()
+                return {"task_id": task_id, "status": "cancelled", "fail_class": fc,
+                        "next_claim_at": None, "relayed_to": None,
+                        "quota_marked_exhausted": fc == "quota"}
             nca = now + _backoff_seconds(fc, t["attempts"])
             cur = conn.execute(
                 "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? WHERE id=? AND assignee=? AND claim_token=? AND status IN ('claimed','working')",
@@ -4119,12 +4175,25 @@ def build_server():
         conn = db()
         try:
             with _lock:
+                if _collaboration_present(conn):
+                    conn.execute("BEGIN IMMEDIATE")
                 t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if not t:
                     raise ValueError(f"no such task: {task_id}")
                 if t["status"] != "review":
                     raise ValueError(f"task {task_id} not in review (status={t['status']})")
                 now = _now()
+                linked = _collaboration_active_task(conn, task_id, now)
+                if linked is not None and not approve:
+                    _collaboration_stop(conn, linked, "failed", me["name"],
+                                        "review_rejected", now)
+                    conn.execute("UPDATE tasks SET review_note=? WHERE id=?", (note, task_id))
+                    audit(conn, me["name"], "task_review", f"task {task_id} approve=False")
+                    conn.commit()
+                    return {"task_id": task_id, "status": "cancelled"}
+                if linked is not None and t["envelope"]:
+                    if json.loads(t["envelope"]).get("verdict") != "done":
+                        raise ValueError("collaboration: partial or failed envelope cannot be approved")
                 if approve:
                     cur = conn.execute(
                         "UPDATE tasks SET status='done', review_note=?, fail_class=NULL, "
@@ -4145,6 +4214,16 @@ def build_server():
                 if not approve:
                     audit(conn, me["name"], "task_review_backoff",
                           f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
+                if linked is not None:
+                    from collaboration_dispatch import reconcile_terminal
+                    if not reconcile_terminal(conn, task_id, now=now):
+                        raise RuntimeError("collaboration: review reconciliation failed")
+                    state = conn.execute(
+                        "SELECT s.status FROM collaboration_steps s JOIN collaboration_task_links l "
+                        "ON l.run_id=s.run_id AND l.step_key=s.step_key WHERE l.task_id=?",
+                        (task_id,)).fetchone()
+                    if not state or state[0] != "succeeded":
+                        raise RuntimeError("collaboration: review did not succeed")
                 audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
                 conn.commit()
                 return {"task_id": task_id, "status": "done" if approve else "open"}
@@ -4378,6 +4457,9 @@ def build_server():
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
+        if _collaboration_link(conn, task_id) is not None:
+            conn.close()
+            raise ValueError("collaboration: retry is prohibited")
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
             conn.close()
@@ -4436,6 +4518,8 @@ def build_server():
         conn = db()
         try:
             with _lock:
+                if _collaboration_link(conn, task_id) is not None:
+                    raise ValueError("collaboration: transfer is prohibited")
                 t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if not t:
                     raise ValueError(f"no such task: {task_id}")
@@ -4561,6 +4645,8 @@ def build_server():
         conn = db()
         try:
             with _lock:
+                if _collaboration_link(conn, task_id) is not None:
+                    raise ValueError("collaboration: transfer is prohibited")
                 t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if not t:
                     raise ValueError(f"no such task: {task_id}")
@@ -4687,6 +4773,9 @@ def build_server():
                 if t["status"] not in ("claimed", "working"):
                     raise ValueError(
                         f"task {task_id} not in claimed/working (status={t['status']})")
+                if _collaboration_link(conn, task_id) is not None and conn.execute(
+                        "SELECT 1 FROM runs WHERE task_id=? LIMIT 1", (task_id,)).fetchone():
+                    raise ValueError("collaboration: execution already registered")
                 open_run = conn.execute(
                     "SELECT * FROM runs WHERE task_id=? AND status='running'",
                     (task_id,)).fetchone()
