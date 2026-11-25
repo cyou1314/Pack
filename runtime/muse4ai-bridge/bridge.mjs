@@ -11,9 +11,24 @@ import { fileURLToPath } from 'node:url';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATE = path.join(DIR, 'state.json');
 const KEY = path.join(DIR, '.api-key');
-const CFG = '/Users/cyou/pack-runtime/config.json';
+export function resolveRuntimeConfigPath(env = process.env) {
+  return env.PACK_RUNTIME_CONFIG
+    ? path.resolve(DIR, env.PACK_RUNTIME_CONFIG)
+    : path.resolve(DIR, '..', 'config.json');
+}
+export function resolveMuseApiBaseUrl(env = process.env) {
+  const value = String(env.PACK_MUSE_API_URL || 'http://127.0.0.1:47821').trim();
+  let url;
+  try { url = new URL(value); } catch { throw Error('invalid_local_muse_api_url'); }
+  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+      || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw Error('invalid_local_muse_api_url');
+  }
+  return url.origin;
+}
+const CFG = resolveRuntimeConfigPath();
 const ADDR_TOKEN = path.join(DIR, '.addr_token');
-const LOCAL = 'http://127.0.0.1:47821';
+const LOCAL = resolveMuseApiBaseUrl();
 const PERIOD = 20000;
 const MAX_IMAGE = 100 * 1024 * 1024;
 export const tag = body => /\[M4A(?:-image)?\]/.test(body || '');
