@@ -22,6 +22,11 @@ done
 [ -f "$ENGINE/app/gateway-page.js" ] || fail "missing external Engine source: $ENGINE/app/gateway-page.js (set PACK_BUILD_ENGINE)"
 [ -f "$ENGINE/app/package.json" ] || fail "missing external Engine package manifest: $ENGINE/app/package.json"
 [ -x "$ENGINE/Electron.app/Contents/MacOS/Electron" ] || fail "missing executable Electron bundle: $ENGINE/Electron.app"
+for contract in 'PACK_L2_SOCKET_DIR' 'handoff.sock' 'com.cyou.pack.l2-handoff'; do
+  grep -Fq "$contract" "$ENGINE/app/headless.cjs" || fail "Engine bundle is missing L2 handoff contract string: $contract"
+done
+"$PYROOT/bin/python3" "$ROOT/runtime/l2-handoff/verify-electron.py" "$ENGINE/Electron.app" || fail "Electron cookie encryption fuse is not enabled; prepare a separate encrypted bundle first"
+codesign --verify --deep --strict "$ENGINE/Electron.app" || fail "Electron bundle signature verification failed"
 [ -f /usr/libexec/PlistBuddy ] || fail "missing /usr/libexec/PlistBuddy"
 "$PYROOT/bin/python3" -c 'import sys; assert sys.version_info[:2] == (3,12)'
 "$VENV/bin/python" -m pip freeze | sort | diff -u "$ROOT/installer/python-requirements.lock" -
@@ -33,6 +38,8 @@ cat > "$STAGE/BUILD-INFO.txt" <<EOF
 Pack commit: $PACK_COMMIT
 Engine commit: $ENGINE_COMMIT
 Engine package version: $ENGINE_VERSION
+L2 handoff contract: verified
+Electron cookie encryption: enabled
 Python runtime: 3.12
 Built UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
