@@ -51,6 +51,10 @@ Agent 接入必须保留两种明确模式，添加 Agent 时由用户选择：
 
 Native Adapter 与 API Adapter 必须是不同实现，不得用 API Key 冒充原生个人账号，也不得假设 API 可以读取服务商网页账号的私人记忆。
 
+- Native Account：每个 Provider 账号使用独立、持久化的 WebKit 数据目录；登录态、历史、个性化记忆和服务商原生工具留在该账号内，不跨 Agent 共享 Cookie，不把网页端私有记忆抓取后伪装成 Pack 记忆。
+- Official API：只使用官方数据面 API 和 API 凭证；凭证仅存 Keychain，Profile 只保存引用。上下文和可持久化记忆由 Pack Workspace 管理，工具调用必须显式声明并经过 Pack 权限策略。
+- 两种模式可以并存于同一 Provider，但必须创建不同 Profile；用户添加时明确选择模式，不能自动把 Native Profile 静默降级为 API Profile。
+
 ### Hub / Runtime / Engine 层
 
 - Hub 负责身份、任务状态机、协作、审计、配置和持久化。
