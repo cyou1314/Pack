@@ -47,6 +47,11 @@ def available(port):
         try: s.bind(('127.0.0.1',port)); return True
         except OSError: return False
 
+def ensure_agent_directory_safe():
+    if agents.is_symlink() or (agents.exists() and not agents.is_dir()):
+        raise SystemExit(f'LaunchAgents directory is not a real directory; refusing to modify: {agents}')
+
+
 def ensure_agent_paths_available():
     conflicts = [agents / (label + '.plist') for label in labels.values()
                  if (agents / (label + '.plist')).exists() or (agents / (label + '.plist')).is_symlink()]
@@ -298,6 +303,7 @@ def install():
         for label in labels.values():
             if ctl('print', f'gui/{uid}/{label}', check=False).returncode == 0:
                 raise SystemExit('A service label is already in use.')
+        ensure_agent_directory_safe()
         ensure_agent_paths_available()
 
         state = {
