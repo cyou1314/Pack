@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
+import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -72,6 +74,17 @@ class EngineLockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsafe Electron symlink"):
             engine_lock.create(self.engine, self.lock, self.rev)
         self.assertFalse(self.lock.exists())
+
+    def test_missing_lock_blocks_dmg_before_build(self):
+        output = self.root / "Pack test.dmg"
+        env = dict(os.environ, PACK_BUILD_ENGINE_LOCK=str(self.lock))
+        script = Path(__file__).with_name("build-dmg.sh")
+        result = subprocess.run(
+            ["bash", str(script), str(output)], env=env,
+            capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing approved Engine lock", result.stderr)
+        self.assertFalse(output.exists())
 
     def test_app_file_must_not_be_symlink(self):
         app = self.engine / "app/headless.cjs"

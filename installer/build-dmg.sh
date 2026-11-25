@@ -36,7 +36,7 @@ STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-installer-stage.XXXXXX")"
 PACK_COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 cp "$ENGINE_LOCK" "$STAGE/engine.lock.json"
 ENGINE_COMMIT="$("$PYROOT/bin/python3" "$ROOT/installer/engine-lock.py" verify --engine "$ENGINE" --lock "$STAGE/engine.lock.json")"
-ENGINE_VERSION="$("$PYROOT/bin/python3" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version","unknown"))' "$ENGINE/app/package.json")"
+ENGINE_VERSION="$("$PYROOT/bin/python3" -c 'import json,sys; print(json.load(open(sys.argv[1]))["engine_package_version"])' "$STAGE/engine.lock.json")"
 cat > "$STAGE/BUILD-INFO.txt" <<EOF
 Pack commit: $PACK_COMMIT
 Engine source revision (declared in lock): $ENGINE_COMMIT
@@ -59,6 +59,9 @@ for f in hub.py room_watch.py backup-db.sh verify-backup.sh; do cp "$ROOT/hub/$f
 for f in headless.cjs gateway-page.js package.json; do cp "$ENGINE/app/$f" "$STAGE/engine/app/$f"; done
 ditto "$ENGINE/Electron.app" "$STAGE/engine/Electron.app"
 "$PYROOT/bin/python3" "$ROOT/installer/engine-lock.py" verify --engine "$STAGE/engine" --lock "$STAGE/engine.lock.json" >/dev/null
+for contract in 'PACK_L2_SOCKET_DIR' 'handoff.sock' 'com.cyou.pack.l2-handoff'; do
+  grep -Fq "$contract" "$STAGE/engine/app/headless.cjs" || fail "staged Engine is missing L2 handoff contract string: $contract"
+done
 "$PYROOT/bin/python3" "$ROOT/runtime/l2-handoff/verify-electron.py" "$STAGE/engine/Electron.app"
 codesign --verify --deep --strict "$STAGE/engine/Electron.app"
 /usr/libexec/PlistBuddy -c 'Add :PackInstallerMarker string com.cyou.pack.installer.v1' "$STAGE/Pack.app/Contents/Info.plist"
