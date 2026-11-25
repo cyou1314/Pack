@@ -117,7 +117,7 @@ def save_install_state(state):
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:
             json.dump(state, stream, ensure_ascii=False, sort_keys=True)
-            stream.write('\\n')
+            stream.write(chr(10))
         os.replace(temp, STATE_PATH)
         os.chmod(STATE_PATH, 0o600)
     except BaseException:
