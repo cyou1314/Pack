@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS collaboration_task_links (
     PRIMARY KEY(run_id, step_key),
     FOREIGN KEY(run_id, step_key) REFERENCES collaboration_steps(run_id, step_key)
 );
+CREATE TABLE IF NOT EXISTS collaboration_requests (
+    owner_id INTEGER NOT NULL,
+    request_key TEXT NOT NULL,
+    source_message_id INTEGER NOT NULL UNIQUE,
+    run_id TEXT NOT NULL UNIQUE REFERENCES collaboration_runs(id),
+    body TEXT NOT NULL,
+    PRIMARY KEY(owner_id,request_key)
+);
 CREATE TABLE IF NOT EXISTS collaboration_executors (
     member_id INTEGER PRIMARY KEY,
     owner_id INTEGER NOT NULL,

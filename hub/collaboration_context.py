@@ -130,6 +130,15 @@ def _source(conn, *, run_id, step_key, room, owner_id, kind, source_id):
             "SELECT body,edited_at,created_at FROM messages WHERE id=? AND room_id=? "
             "AND author_id=? AND kind='chat' AND deleted_at IS NULL",
             (source_id, room, owner_id)).fetchone()
+        if not row:
+            # New managed runs use a private request body. The public message
+            # is only an immutable-by-chat-edit marker, never the prompt.
+            row = conn.execute("""
+                SELECT q.body,m.edited_at,m.created_at FROM collaboration_requests q
+                JOIN messages m ON m.id=q.source_message_id
+                WHERE q.run_id=? AND q.owner_id=? AND m.id=? AND m.room_id=?
+                  AND m.author_id=? AND m.kind='collaboration_request' AND m.deleted_at IS NULL
+                """, (run_id,owner_id,source_id,room,owner_id)).fetchone()
     elif kind == "dependency_result":
         row = conn.execute("""
             SELECT t.result,t.updated_at,t.assignee FROM tasks t

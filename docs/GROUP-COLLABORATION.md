@@ -110,3 +110,9 @@ Swift `AgentLocalAccountResolver` 通过现有 `AgentRegistryStore.profile(id:)`
 新增 `collaboration_executor_info`（仅 opt-in schema 注册，专用 token 查询自己的绑定，撤销后拒绝）与 Swift `AgentAPICollaborationHost`：采用 Swift 内进程 API lane，复用 registry/vault/official adapter；Node 保留 native lane，两者使用同一预建私有目录下 UUID.lease 的 mkdir/rmdir 协作锁。App `DedicatedCollaborationHub` 工厂显式提供专用成员 token，使用现有 HubClient 单次调用，不经过旧自动重连重试或日志，不读 dispatcher 配置。流程身份确认→本地 credential presence→租约→claim→context→run_start→精确 HTTP 请求授权→重验上下文→真实 transport→单次交付；未知结果保留租约。Swift 模拟 Hub+HTTP 端到端测试和 Python 真实 MCP 身份测试。API 429 不视为周额度100%，宿主 block 使用 task 类别。Token usage 暂仅返回宿主，未持久入账。
 
 这是可调用的 App 工厂而非已启动生产工作流。仍须提供安全的专用 token provisioning/存储、真实用户授权 UI、统一租约路径、Hub 创建/调度入口、原生真实页面 driver、签名 Keychain/真实 API 验收。无自动任务轮询、不传 API key 跨进程、不启用 schema，不新增 IPC 服务。Swift 与 Node 生命周期分别实现，后续需契约测试防漂移；现有 HubClient 底层 URLSession 不保证网络层 exactly-once，且现有响应读取并非流式限长。未知租约需显式人工恢复。
+
+## 第十六阶段：私有协作创建及审核驱动派发（opt-in MCP）
+
+新增 owner-only `collaboration_executor_bind`（仅新建成员）、`collaboration_create/status/cancel`。创建采用 owner+32 位随机 request_key 幂等、24 小时内固定 deadline、显式选择专用成员和预算；私有 body 存 collaboration_requests，房间只写非 chat 类型的占位消息，旧 watcher 不应触发普通 @ 派单。事务内创建 DAG、精确授权根请求、生成并绑定首批任务卡；完成 dispatcher 审核才自动发放下一批依赖结果与任务卡，后续派发通过 savepoint 全批回滚，授权失败则保留已审核结果并停止全组。无模型调用、无自动广播。真实 MCP 回归覆盖 owner/普通成员隔离、幂等、私有正文、compare 并行→汇总、预算不足回滚、取消。仅新 managed run 自动推进；旧测试 ledger 不变。
+
+限制：未启用生产 schema，尚未接 UI 或安全专用 token 发放/撤销流程；绑定接口接受已由 dispatcher 登记的全新成员，不能证明其令牌从未泄露，实际生产应原子化 provision。私有请求只保护正常 Hub 工具读取，不是 DB 加密、备份隔离或任意本机代码沙箱。用户创建时授权选定 DAG 的直接依赖结果共享，实际 Provider 出口仍由宿主单独确认。当前执行器尚未消费 step role，下一阶段须将角色指令与预算固定到执行请求；实际平台调用未验收。普通 dispatcher 仍能审核；未加自动审核。

@@ -261,6 +261,66 @@ def main():
             assert "error" in executor("room_read_new",{"room":"pack-main"})
             assert "error" in executor("task_list",{})
 
+            # Real owner creates a private managed compare run. No raw prompt
+            # in the old room/inbox/task surfaces, no automatic legacy chat.
+            def owner_call(name,args):
+                return asyncio.run(call(port,owner_reg["token"],name,args))
+            members=[]
+            for ix in range(2):
+                registered=dispatch("member_register",{"name":f"managed-executor-{ix}","provider":"openai"})
+                assert registered.get("token"),registered
+                binding={"member_id":registered["member_id"],"provider":"openai","access_kind":"api",
+                         "account_ref":f"12345678-1234-4234-8234-123456789ab{ix}"}
+                assert "error" in outsider("collaboration_executor_bind",binding)
+                assert owner_call("collaboration_executor_bind",binding).get("created") is True
+                members.append(registered)
+            request={"room":"pack-main","request_key":"f"*32,"body":"managed-private-root-marker",
+                "mode":"compare","leader":members[0]["member_id"],"workers":[members[1]["member_id"]],
+                "deadline":time.time()+600,"max_calls":3}
+            assert "error" in outsider("collaboration_create",request)
+            created=owner_call("collaboration_create",request)
+            assert created.get("status")=="active",created
+            managed=created["run_id"]
+            assert owner_call("collaboration_create",request)==created
+            assert "error" in owner_call("collaboration_create",{**request,"body":"different"})
+            assert "error" in outsider("collaboration_status",{"run_id":managed})
+            assert "managed-private-root-marker" not in str(outsider("room_read_new",{"room":"pack-main","limit":200}))
+            assert "managed-private-root-marker" not in str(outsider("task_list",{}))
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_task_links WHERE run_id=?",(managed,)).fetchone()[0]==2
+            steps={x["key"]:x for x in created["steps"]}
+            assert steps["final"]["task_id"] is None
+            def finish_managed(step,registered,result):
+                def execute(name,args):
+                    return asyncio.run(call(port,registered["token"],name,args))
+                tid=step["task_id"]
+                claim=execute("task_claim",{"task_id":tid})
+                assert claim.get("claim_token"),claim
+                args={"task_id":tid,"claim_token":claim["claim_token"]}
+                context=execute("collaboration_context_get",args)
+                assert context.get("items",[{}])[0].get("text")==request["body"],context
+                assert execute("run_start",args).get("fence")==1
+                assert execute("task_complete",{**args,"result":result}).get("status")=="review"
+                assert dispatch("task_review",{"task_id":tid,"approve":True}).get("status")=="done"
+                return context
+            finish_managed(steps["analysis-0"],members[0],"first result")
+            assert owner_call("collaboration_status",{"run_id":managed})["steps"][-1]["task_id"] is None
+            finish_managed(steps["analysis-1"],members[1],"second result")
+            status=owner_call("collaboration_status",{"run_id":managed})
+            final=next(s for s in status["steps"] if s["key"]=="final")
+            assert final["task_id"],status
+            context=finish_managed(final,members[0],"final result")
+            assert {i["text"] for i in context["items"] if i["kind"]=="dependency_result"}=={"first result","second result"}
+            assert owner_call("collaboration_status",{"run_id":managed})["status"]=="succeeded"
+            assert owner_call("collaboration_create",request)["status"]=="succeeded"
+            invalid={**request,"request_key":"e"*32,"max_calls":2}
+            assert "error" in owner_call("collaboration_create",invalid)
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_requests WHERE request_key=?",("e"*32,)).fetchone()[0]==0
+            focus={**request,"request_key":"d"*32,"mode":"focus","workers":[],"max_calls":1}
+            pending=owner_call("collaboration_create",focus)
+            assert pending.get("status")=="active",pending
+            assert owner_call("collaboration_cancel",{"run_id":pending["run_id"]})["status"]=="cancelled"
+            assert owner_call("collaboration_cancel",{"run_id":pending["run_id"]})["status"]=="cancelled"
+
             removed, removed_task = fixture(conn, room, owner, member, 4, now, deadline=now+600)
             unbound, _ = fixture(conn, room, owner, member, 5, now, deadline=now+600, create_card=False)
             result = dispatch("member_remove", {"name": "collab-fixture-member"})
