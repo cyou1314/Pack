@@ -10,7 +10,7 @@ from test_task_lifecycle_guards import hub, free_port, wait_port, call
 from collaboration_store import initialize, write_transaction, create_run, snapshot
 from collaboration_dispatch import bind_task, reserve_claim
 from collaboration_guard import install_task_guards
-from collaboration_context import grant_context, revoke_context
+from collaboration_context import grant_context, revoke_context, register_executor, revoke_executor
 
 
 def fixture(conn, room, owner, member, source, now, *, deadline, claimed=False, lease=None,
@@ -209,6 +209,53 @@ def main():
             assert card["result"]=="private-result-marker",card
             assert "error" in outsider("egress_check",{"url":"https://example.com","task_id":private_task})
             assert dispatch("task_review",{"task_id":private_task,"approve":True}).get("status")=="done"
+
+            # Dedicated executor credentials never grant access to general Hub tools.
+            dedicated = dispatch("member_register", {"name":"collab-dedicated","provider":"fixture-api"})
+            assert dedicated.get("token"),dedicated
+            dm = dedicated["member_id"]
+            account = "12345678-1234-4234-8234-123456789abc"
+            def executor(name,args):
+                return asyncio.run(call(port,dedicated["token"],name,args))
+            with write_transaction(conn):
+                assert register_executor(conn,actor_id=real_owner,member_id=dm,
+                    provider="fixture-api",access_kind="api",account_ref=account)
+                assert not register_executor(conn,actor_id=real_owner,member_id=dm,
+                    provider="fixture-api",access_kind="api",account_ref=account)
+            for tool,args in (
+                ("room_read_new",{"room":"pack-main"}),("room_post",{"room":"pack-main","body":"no"}),
+                ("inbox_pull",{"room":"pack-main"}),("memory_read",{"scope":"room-shared"}),
+                ("attachment_list",{"room":"pack-main"}),("egress_check",{"url":"https://example.com"}),
+                ("desktop_acquire",{"task_id":private_task,"claim_token":"no"})):
+                assert "error" in executor(tool,args),(tool,args)
+            assert executor("heartbeat",{}).get("ok") is True
+            assert executor("task_list",{}).get("tasks")==[]
+            assert "error" in executor("task_claim",{"task_id":legacy_id})
+            with write_transaction(conn):
+                message2=conn.execute("INSERT INTO messages(room_id,author_id,kind,body,created_at)"
+                    " VALUES(?,?,'chat',?,?)",(room,real_owner,"dedicated input",now)).lastrowid
+            dr,dt=fixture(conn,room,owner,dm,message2,now,deadline=now+600)
+            assert "error" in executor("task_claim",{"task_id":dt})
+            assert snapshot(conn,dr)["calls_used"]==0
+            with write_transaction(conn):
+                assert grant_context(conn,dr,"answer",actor_id=real_owner,member_id=dm,
+                    refs=[("owner_message",message2)],now=now)
+            listing=executor("task_list",{})
+            assert [x["id"] for x in listing["tasks"]]==[dt],listing
+            c=executor("task_claim",{"task_id":dt})
+            assert c.get("claim_token"),c
+            token2=c["claim_token"]
+            info=executor("collaboration_context_get",{"task_id":dt,"claim_token":token2})
+            assert info.get("account_ref")==account and info.get("access_kind")=="api",info
+            assert "error" in executor("task_complete",{"task_id":dt,"claim_token":token2,"result":"premature"})
+            assert executor("run_start",{"task_id":dt,"claim_token":token2}).get("fence")==1
+            assert executor("task_complete",{"task_id":dt,"claim_token":token2,"result":"dedicated result"}).get("status")=="review"
+            assert dispatch("task_review",{"task_id":dt,"approve":True}).get("status")=="done"
+            with write_transaction(conn):
+                assert revoke_executor(conn,actor_id=real_owner,member_id=dm)
+            assert "error" in executor("heartbeat",{})
+            assert "error" in executor("room_read_new",{"room":"pack-main"})
+            assert "error" in executor("task_list",{})
 
             removed, removed_task = fixture(conn, room, owner, member, 4, now, deadline=now+600)
             unbound, _ = fixture(conn, room, owner, member, 5, now, deadline=now+600, create_card=False)

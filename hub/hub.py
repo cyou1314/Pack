@@ -1336,6 +1336,43 @@ def _collaboration_privileged(me):
             and (me["role"] == "dispatcher" or me["name"] == "owner"))
 
 
+COLLABORATION_EXECUTOR_TOOLS = frozenset({
+    "heartbeat", "task_list", "task_claim", "collaboration_context_get",
+    "run_start", "run_finish", "task_update", "task_complete", "task_block",
+})
+
+
+def _collaboration_executor_binding(conn, member_id):
+    if not _collaboration_present(conn):
+        return None
+    # Older opt-in development ledgers may not have this table yet.
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_executors'").fetchone():
+        return None
+    from collaboration_context import executor_binding
+    return executor_binding(conn,member_id)
+
+
+def _collaboration_executor_gate(me, tool_name):
+    if _collaboration_privileged(me):
+        return
+    conn = db()
+    try:
+        binding = _collaboration_executor_binding(conn,me["id"])
+        if binding is None:
+            return
+        from collaboration_context import require_executor
+        try:
+            require_executor(conn,me["id"])
+            if tool_name not in COLLABORATION_EXECUTOR_TOOLS:
+                raise ValueError("tool not in executor allowlist")
+        except ValueError:
+            audit(conn,me["name"],"collaboration_executor_denied",f"tool={tool_name}")
+            conn.commit()
+            raise ValueError(f"forbidden: collaboration executor cannot use {tool_name}") from None
+    finally:
+        conn.close()
+
+
 def _collaboration_protected_tasks(conn, task_ids, me):
     if _collaboration_privileged(me) or not _collaboration_present(conn):
         return set()
@@ -2096,6 +2133,7 @@ def build_server():
                 # staging56：访问模式闸（_ext_check 之后；external 成员
                 # 先过白名单审计、再过模式审计，两闸不双写同一拒绝）。
                 _mode_check(_me, fn.__name__)
+                _collaboration_executor_gate(_me,fn.__name__)
             return fn(*args, **kwargs)
         wrapper.__signature__ = inspect.signature(fn)
         return _register_tool(wrapper)
@@ -3917,6 +3955,9 @@ def build_server():
                     conn.execute("BEGIN IMMEDIATE")
                 now = _now()
                 linked = _collaboration_link(conn, task_id)
+                if _collaboration_executor_binding(conn,me["id"]) is not None:
+                    from collaboration_context import validate_executor_claim
+                    validate_executor_claim(conn,task_id,member_id=me["id"],now=now)
                 if _is_external(me):
                     # 件二：external 只许认领绑定房内、指派给本人、非引擎
                     # 标记的卡（未指派卡不许抢）。staging51 红队修复：
@@ -3984,6 +4025,11 @@ def build_server():
         linked = _collaboration_link(conn, task_id)
         if linked is not None and not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")
+        if _collaboration_executor_binding(conn,me["id"]) is not None:
+            from collaboration_context import require_executor
+            require_executor(conn,me["id"])
+            if linked is None:
+                raise ValueError("collaboration executor may only hold linked tasks")
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
             raise ValueError(f"no such task: {task_id}")
@@ -4104,6 +4150,16 @@ def build_server():
             if _is_external(me) and t0["room_id"] != me["bound_room_id"]:
                 raise ValueError("forbidden: task is outside the bound room")
             linked = _collaboration_link(conn, task_id)
+            if _collaboration_executor_binding(conn,me["id"]) is not None:
+                from collaboration_context import read_context
+                read_context(conn,task_id,member_id=me["id"],now=_now())
+                if not conn.execute("SELECT 1 FROM runs WHERE task_id=? AND member_id=? AND claim_token=?",
+                                    (task_id,me["id"],claim_token)).fetchone():
+                    raise ValueError("collaboration: execution not registered")
+                if len(result.encode("utf-8")) > 16*1024:
+                    raise ValueError("collaboration: result byte budget exceeded")
+                if envelope is not None and len(json.dumps(envelope,ensure_ascii=False).encode("utf-8")) > 16*1024:
+                    raise ValueError("collaboration: envelope byte budget exceeded")
             if linked is not None and attachment_ids:
                 raise ValueError("collaboration: attachment delivery requires a dedicated grant")
             env = None
@@ -4444,6 +4500,24 @@ def build_server():
                LEFT JOIN members cr ON cr.id=t.created_by
                JOIN rooms rm ON rm.id=t.room_id WHERE 1=1"""
         args = []
+        dedicated = _collaboration_executor_binding(conn,me["id"]) is not None
+        if dedicated:
+            from collaboration_context import require_executor
+            try:
+                require_executor(conn,me["id"])
+            except ValueError:
+                conn.close()
+                raise
+            # Scope before pagination. No ordinary tasks, other Agent tasks,
+            # revoked grants or closed/expired runs are returned.
+            q += (" AND t.assignee=? AND EXISTS ("
+                  " SELECT 1 FROM collaboration_task_links l"
+                  " JOIN collaboration_runs r ON r.id=l.run_id"
+                  " JOIN collaboration_context_grants g ON g.run_id=l.run_id AND g.step_key=l.step_key"
+                  " WHERE l.task_id=t.id AND l.member_id=? AND g.member_id=?"
+                  " AND g.revoked=0 AND g.provider=? AND r.status='active' AND r.deadline>?)"
+                  " AND t.status IN ('open','claimed','working')")
+            args.extend([me["id"],me["id"],me["id"],me["provider"],_now()])
         if status:
             # staging50：status 可传逗号分隔多状态（Gemini 审计建议），一次
             # 取全活跃态供运行时/桥接免翻页；单状态与旧行为逐字一致。
@@ -4863,6 +4937,9 @@ def build_server():
                 if _collaboration_link(conn, task_id) is not None and conn.execute(
                         "SELECT 1 FROM runs WHERE task_id=? LIMIT 1", (task_id,)).fetchone():
                     raise ValueError("collaboration: execution already registered")
+                if _collaboration_executor_binding(conn,me["id"]) is not None:
+                    from collaboration_context import read_context
+                    read_context(conn,task_id,member_id=me["id"],now=_now())
                 open_run = conn.execute(
                     "SELECT * FROM runs WHERE task_id=? AND status='running'",
                     (task_id,)).fetchone()

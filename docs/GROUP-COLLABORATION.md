@@ -74,3 +74,9 @@ build-dmg.sh 和 manager.py 的程序文件白名单已纳入四个协作模块�
 普通 Agent 的 task_list 对关联卡只返回状态/分工元数据与上下文入口占位，隐藏 title/body/result/envelope/review_note；room_read_new 和共用 inbox 格式化路径遮蔽关联消息正文、payload、附件、引用及任务标题，保留 ID/排序以维持游标。owner/dispatcher 仍有审阅权限。协作 task_update 仅写进度通知，task_complete 仅写交活通知，拒绝附带附件；结果仍存既有 task 行供审核与已授权依赖读取。attachment_list/get 拒绝普通成员读取关联附件，未绑定附件只允许上传者读取；旧 egress_check 不把关联卡当作跨 Provider 授权。仅 schema 存在时生效，旧库不改行为。
 
 这不是完整数据防泄露沙箱：普通 room_post、自主复制、历史公开 owner 消息、全局共享记忆、摘要、独立上传后发布、直接文件/DB 访问、外部 Provider 已收数据及其他侧通道仍需单独限制。尚未开放生产 schema/创建入口，不能把敏感内容交给不可信执行体。后续需将协作成员的工具面缩小至独立执行协议，明确输入/输出公开等级及真正的 Provider 账号和出口授权；附件暂不自动分发。
+
+## 第十阶段：专用 Agent 执行身份（测试启用）
+
+新增内部 executor binding：真实 owner 为新成员固定 provider、native/api 模式与本地随机 UUID 账号引用；不接受密钥、Cookie 或邮箱作引用，绑定不可修改/复用，撤销后保留限制，不降级为普通成员。所有 MCP 工具入口追加默认拒绝白名单（heartbeat、自己的 task_list、claim、context_get、run_start/finish、update、complete/block），与原 external/access_mode 闸叠加。专用成员只列当前已授权绑定卡，认领前重验 grant 与来源，run_start/complete 再验；交付要求已登记 run，文本和 envelope 分别限制 16 KiB。真实 MCP 测试覆盖旧工具拒绝、无授权不消耗预算、绑定读取、正常交付和撤销。
+
+此为测试环境的专用身份协议，不是实际 Provider 登录验证。UUID 仅本地逻辑引用，未来可信 adapter 必须验证真实账号/session/Keychain 绑定。暂未提供公开 provisioning/revoke API，撤销阻止新调用不代表中断已发出的模型请求或自动关闭所有活跃 run。普通旧成员仍可参与测试协作，生产入口仍关闭；启用前应强制专用身份、事务化创建/撤销、工具旁路审计及运行时接入。

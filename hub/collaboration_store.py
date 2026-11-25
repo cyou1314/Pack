@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS collaboration_task_links (
     PRIMARY KEY(run_id, step_key),
     FOREIGN KEY(run_id, step_key) REFERENCES collaboration_steps(run_id, step_key)
 );
+CREATE TABLE IF NOT EXISTS collaboration_executors (
+    member_id INTEGER PRIMARY KEY,
+    owner_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    access_kind TEXT NOT NULL CHECK(access_kind IN ('native','api')),
+    account_ref TEXT NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
+    UNIQUE(provider,access_kind,account_ref)
+);
 CREATE TABLE IF NOT EXISTS collaboration_context_grants (
     run_id TEXT NOT NULL,
     step_key TEXT NOT NULL,
