@@ -124,7 +124,7 @@ export function createCollaborationRunner({
   async function stop(task_id, claim_token, code, usage=null) {
     try {
       const result = await hubCall('task_block',{task_id,claim_token,reason:code,
-        fail_class:'task'}); // 429 does not prove weekly quota exhaustion
+        fail_class:'task',...(usage===null?{}:{provider_usage:usage})}); // 429 does not prove weekly quota exhaustion
       if (result?.task_id === task_id && result.status === 'cancelled')
         return {status:'blocked',code,usage};
     } catch {}
@@ -191,7 +191,8 @@ export function createCollaborationRunner({
         try { output=outcomeOf(await Promise.race([pending,deadline])); }
         catch { uncertain.add(account); return await stop(task_id,claim_token,phase); }
         finally { clearTimeout(timer); }
-        usage=output.usage;
+        // Native accounts do not provide reliable token metering.
+        usage=destination.access_kind==='api'?output.usage:null;
         if (output.status==='failed') {
           const stopped=await stop(task_id,claim_token,output.code,usage);
           retainLease=stopped.status!=='blocked';
@@ -199,7 +200,8 @@ export function createCollaborationRunner({
         }
         // Do not retry a submission whose remote commit is unknown.
         try {
-          const delivered=await hubCall('task_complete',{task_id,claim_token,result:output.text});
+          const delivered=await hubCall('task_complete',{task_id,claim_token,result:output.text,
+            ...(usage===null?{}:{provider_usage:usage})});
           if (delivered?.task_id===task_id && delivered.status==='review') {
             retainLease=false;
             return {status:'review',usage};

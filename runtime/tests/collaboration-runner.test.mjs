@@ -55,7 +55,8 @@ test('API and native share the contract without importing account memory or inve
     assert.equal(f.count(),1);
     assert.deepEqual(f.calls.map(x=>x.tool),['task_claim','collaboration_context_get','run_start',
       'collaboration_context_get','task_complete']);
-    assert.deepEqual(f.calls.at(-1).args,{task_id:10,claim_token:'fixture',result:'result'});
+    assert.deepEqual(f.calls.at(-1).args,{task_id:10,claim_token:'fixture',result:'result',
+      ...(mode==='api'?{provider_usage:{input_tokens:10,output_tokens:4}}:{})});
   }
 });
 test('reject foreign account, mode, secret reference and invalid context',async()=>{
@@ -119,6 +120,7 @@ test('structured Provider failure preserves metering and never retries',async()=
   assert.deepEqual(await f.runner.execute(10),{status:'blocked',code:'quota',
     usage:{input_tokens:0,output_tokens:0}});
   assert.equal(f.calls.at(-1).args.fail_class,'task');
+  assert.deepEqual(f.calls.at(-1).args.provider_usage,{input_tokens:0,output_tokens:0});
 });
 
 test('role and budget must match step',()=>{

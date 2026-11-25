@@ -133,11 +133,15 @@ public actor AgentAPICollaborationHost {
     private func stop(_ taskID: Int, _ token: String, _ code: String,
                       _ usage: AgentAPIUsage? = nil) async -> AgentCollaborationExecutionResult {
         do {
-            let receipt: Receipt = try await call("task_block", [
+            var args: [String: Any] = [
                 "task_id": taskID, "claim_token": token, "reason": code,
                 // HTTP 429 is not evidence of a weekly quota at 100%.
                 "fail_class": "task"
-            ])
+            ]
+            if let usage = usage {
+                args["provider_usage"] = ["input_tokens": usage.inputTokens, "output_tokens": usage.outputTokens]
+            }
+            let receipt: Receipt = try await call("task_block", args)
             if receipt.taskID == taskID && receipt.status == "cancelled" {
                 return .blocked(code: code, usage: usage)
             }
@@ -218,9 +222,13 @@ public actor AgentAPICollaborationHost {
             return stopped
         case .succeeded(let text, let usage):
             do {
-                let receipt: Receipt = try await call("task_complete", [
+                var args: [String: Any] = [
                     "task_id": taskID, "claim_token": claim.token, "result": text
-                ])
+                ]
+                if let usage = usage {
+                    args["provider_usage"] = ["input_tokens": usage.inputTokens, "output_tokens": usage.outputTokens]
+                }
+                let receipt: Receipt = try await call("task_complete", args)
                 if receipt.taskID == taskID && receipt.status == "review" {
                     retain = false
                     return .review(usage: usage)

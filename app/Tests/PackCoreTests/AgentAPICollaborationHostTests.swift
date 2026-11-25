@@ -49,7 +49,9 @@ private actor HostHub: AgentCollaborationHub {
         case "run_start": result = ["task_id":id,"status":"running","fence":1]
         case "task_complete":
             if deliveryUnknown { throw AgentAPIError.ambiguousTransport }
-            guard args["result"] as? String == "answer" else { throw AgentAPIError.invalidRequest }
+            guard args["result"] as? String == "answer",
+                  let usage = args["provider_usage"] as? [String: Int],
+                  usage == ["input_tokens":4,"output_tokens":2] else { throw AgentAPIError.invalidRequest }
             result = ["task_id":id,"status":"review"]
         case "task_block": result = ["task_id":id,"status":"cancelled"]
         default: throw AgentAPIError.invalidRequest

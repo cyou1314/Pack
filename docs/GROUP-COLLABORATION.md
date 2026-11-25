@@ -128,3 +128,5 @@ owner-only `collaboration_route_preview` 按专用绑定的六种文本候选、
 ## 第十八阶段：协作用量账本（Hub）
 
 新增 opt-in `collaboration_usage`，仅专用执行身份、有效 claim 与单次 running Run 登记可写；交付或 block 同事务落账，重复提交不能二次记账，非法计量整笔回滚。原生不接受 Token 数值，未知 null；未登记、登记未报告、提交、停止分别展示。owner-only `collaboration_usage_get` 返回每步骤、执行登记、Hub 耗时、已报告 Token 小计及覆盖率；不是 Provider 核验账单，注册次数不等于调用次数，不推算费用。专用身份禁止独立 run_finish，避免提前关闭登记再交付；专用 block 不再自动标记周额度 100%。不改变旧成员原有工具语义。生产 schema 尚未启用，旧 opt-in 开发库需显式 initialize 升级；真实 API/原生验收及价格版本、缓存/推理分项、结算对账仍待完成。
+
+Swift API host 与 Node runner 将已解析的 input/output tokens 随 task_complete/task_block 同一次提交；缺失时省略字段，原生始终未知。测试覆盖真实 Hub 的非法值回滚、重复提交不重复计量、混合已知/未知用量，以及两执行通道的交付参数。未增加实际价格查询或费用估算。
