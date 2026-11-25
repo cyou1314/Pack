@@ -159,7 +159,8 @@ manager.subprocess.run = fake_run
 async def fake_setup_owner():
     manager.write_private(manager.hub / ".dispatcher_token", "dispatch-token")
     manager.write_private(manager.hub / ".owner_token", "owner-token")
-    manager.write_private(manager.config, '{"hubUrl":"http://127.0.0.1:18795/mcp"}')
+    manager.write_private(manager.hub / "pack.db", "database-fixture")
+    manager.write_private(manager.config, '{"hubUrl":"http://127.0.0.1:18795/mcp","token":"dispatch-token","ownerToken":"owner-token"}')
 manager.setup_owner = fake_setup_owner
 original_write_agent = manager.write_agent
 def fail_after_watch(kind, *args, **kwargs):
@@ -202,9 +203,37 @@ assert not (manager.engine / "Electron.app").exists()
 assert (manager.hub / "attachments").is_dir()
 assert (manager.hub / ".dispatcher_token").read_text() == "dispatch-token"
 assert (manager.hub / ".owner_token").read_text() == "owner-token"
+assert (manager.hub / "pack.db").read_text() == "database-fixture"
 assert manager.config.is_file()
 assert (manager.engine / "data" / "local").is_dir()
 assert not manager.socket_dir.exists()
+assert not loaded, loaded
+
+# Reinstall the program payload into the same Pack-owned data roots. Existing
+# credentials, database, attachments and engine data must remain untouched.
+manager.write_agent = original_write_agent
+async def unexpected_owner_setup():
+    raise AssertionError("reinstall must not register a second owner")
+manager.setup_owner = unexpected_owner_setup
+saved_config = manager.config.read_text()
+manager.install()
+state = manager.load_install_state()
+assert state["phase"] == "completed", state
+assert manager.config.read_text() == saved_config
+assert (manager.hub / ".dispatcher_token").read_text() == "dispatch-token"
+assert (manager.hub / ".owner_token").read_text() == "owner-token"
+assert (manager.hub / "pack.db").read_text() == "database-fixture"
+assert (manager.hub / "python").is_dir()
+assert (manager.engine / "app").is_dir()
+assert manager.socket_dir.is_dir()
+assert len(loaded) == 4, loaded
+manager.uninstall()
+state = manager.load_install_state()
+assert state["phase"] == "uninstalled", state
+assert not (manager.hub / "python").exists()
+assert not (manager.engine / "app").exists()
+assert (manager.hub / "pack.db").read_text() == "database-fixture"
+assert manager.config.read_text() == saved_config
 assert not loaded, loaded
 """
         transaction = subprocess.run(
