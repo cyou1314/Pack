@@ -254,8 +254,8 @@ Session Read API 是读模型查询，不是 Inbox Consumer；读取分页不得
 4. 定稿 Codex event payload validators 和 Session / Provider ID 映射规则。
 5. PR #50 已实现 additive migration v7：last_inbox_seq、Agent Session Messages、Agent Session Runs、Projection Receipts、Projection Resolutions；完整 CI 已通过，待按依赖顺序合入。
 6. PR #49 已拆分 ACK / Release 事务 helper，保留旧包装 API；后续 Projector 必须复用事务内 helper。
-7. 实现 hub-session-projector，先支持 session.created、message.delta / completed 和 run.started / completed / failed / interrupted。
-8. 加入真实 SQLite 事务故障注入、重复投影、跨 Agent 隔离、blocked / skip 和 migration 回归。
+7. PR #51 已实现内部 hub-session-projector：单事务完成 Session / Message / Run 投影、Receipt、连续前缀 ACK 和 blocked Lease Release；Tool / Approval / Usage / progress 写 ignored receipt。Hub 单测、快照、默认 Staging、Runtime 和 macOS CI 已通过，Staging56 尚在运行。
+8. M2e 实现 Audited Skip Resolution：校验无 active Lease 且目标是当前 cursor 后第一条未 ACK Inbox 事件，在一个事务内写 Projection Resolution、receipt=skipped、Hub audit 并推进 cursor；加入越序 skip、active Lease、非 dispatcher / owner 和重复 resolution 测试。
 9. 后续独立设计 Session Read API、Tool / Approval 投影与 generation rebuild；通过权限和安全验收后再接 SwiftUI。
 10. 最后才考虑生产 Runtime 接线；必须可关闭、可回退，并先完成用户 Mac 数据库备份、恢复演练和只读 Shadow preflight。
 
