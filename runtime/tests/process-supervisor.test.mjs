@@ -51,3 +51,13 @@ test('invalid process limits fail before spawning', async () => {
     error => error.message === 'invalid_process_limits',
   );
 });
+
+test('driver input is rejected before spawn when it exceeds the cap', async () => {
+  await assert.rejects(
+    runBoundedProcess(process.execPath, ['-e', 'process.exit(0)'], {
+      input: 'x'.repeat(1025),
+      maxInputBytes: 1024,
+    }),
+    error => error.message === 'driver_input_limit',
+  );
+});
