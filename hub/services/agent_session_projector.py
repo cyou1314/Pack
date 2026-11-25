@@ -627,10 +627,18 @@ def process_agent_event_lease(
 
             cursor = _cursor_value(connection, consumer_id, agent_id)
             if lease["status"] == "completed":
+                ack_result = ack_agent_events_in_transaction(
+                    connection,
+                    principal,
+                    lease_id,
+                    lease_token,
+                    through_inbox_seq=int(lease["acked_through_inbox_seq"]),
+                    now=now,
+                )
                 connection.commit()
                 return {
                     "status": "completed",
-                    "acked_inbox_seq": cursor,
+                    "acked_inbox_seq": int(ack_result["acked_inbox_seq"]),
                     "processed_count": 0,
                     "idempotent": True,
                 }
