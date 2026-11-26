@@ -21,6 +21,10 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Set up Node for cross-runtime recovery
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install CI dependencies
         run: python -m pip install --disable-pip-version-check -r hub/requirements-ci.txt
       - name: Shell syntax
@@ -66,6 +70,7 @@ jobs:
           python hub/test_registry_session_v7_port.py
           python hub/test_agent_sessions_port.py
           python hub/test_agent_session_projector_port.py
+          python hub/test_event_recovery_e2e.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py
           python installer/test_browser_payload.py
