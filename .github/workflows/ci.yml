@@ -58,6 +58,7 @@ jobs:
           python hub/test_collaboration_connection_binding.py
           python hub/test_registry_v1_port.py
           python hub/test_registry_v2_v3_port.py
+          python hub/test_registry_event_v4_v5_port.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py
           python installer/test_browser_payload.py
