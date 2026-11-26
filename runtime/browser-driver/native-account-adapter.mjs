@@ -87,7 +87,7 @@ export function createNativeAccountAdapter({
   const binding=Object.freeze({...destination});
   // Snapshot only the fields BrowserSessions actually uses.
   const sessionProfile=Object.freeze({id:destination.account_ref,mode:'nativeAccount'});
-  let driver,opened=false,verified=false,used=false,inFlight=false,closed=false;
+  let driver,opened=false,verified=false,used=false,inFlight=false,closed=false,verifying=false;
   function live(signal,deadline) {
     if(signal?.aborted || !Number.isFinite(deadline) || now()>=deadline*1000)
       fail('native_deadline_or_cancelled');
@@ -101,15 +101,17 @@ export function createNativeAccountAdapter({
   }
   return {
     async verifyAccount(candidate) {
-      if(closed || used || !sameDestination(candidate,binding)) return false;
-      if(verified) return false; // single verification, single execution
-      const context=await sessions.open(sessionProfile);
-      opened=true;
-      driver=await createPageDriver({context,provider:binding.provider,origin});
-      if(!driver || ['inspect','prepareConversation','sendOnce','waitForReply'].some(k=>typeof driver[k]!=='function'))
-        fail('invalid_native_driver');
-      verified=await inspect(undefined);
-      return verified;
+      if(closed || used || verifying || opened || !sameDestination(candidate,binding)) return false;
+      verifying=true;
+      try {
+        const context=await sessions.open(sessionProfile);
+        opened=true;
+        driver=await createPageDriver({context,provider:binding.provider,origin});
+        if(!driver || ['inspect','prepareConversation','sendOnce','waitForReply'].some(k=>typeof driver[k]!=='function'))
+          fail('invalid_native_driver');
+        verified=await inspect(undefined);
+        return verified;
+      } finally {verifying=false;}
     },
     async execute(request,{signal}={}) {
       if(!verified || used || closed) fail('native_adapter_not_ready');
@@ -130,9 +132,11 @@ export function createNativeAccountAdapter({
         // Second authorization binds the exact text and actual conversation.
         // Never send private context merely because navigation/login succeeded.
         live(signal,deadline);
+        if(!await inspect(signal)) return {status:'failed',code:'account_unavailable',usage:null};
+        live(signal,deadline);
         const approved=await authorizeNativeSend(Object.freeze({
           destination:binding,origin,conversationID:conversation.conversationID,
-          textSHA256:digest(text),deadline,taskID:request.task_id
+          text,textSHA256:digest(text),deadline,taskID:request.task_id
         }));
         if(approved!==true) return {status:'failed',code:'provider_rejected',usage:null};
         live(signal,deadline);
@@ -156,7 +160,7 @@ export function createNativeAccountAdapter({
       } finally {inFlight=false;}
     },
     async close() {
-      if(inFlight) fail('native_execution_in_flight');
+      if(inFlight || verifying) fail('native_execution_in_flight');
       if(closed) return;
       if(opened) await sessions.close(sessionProfile);
       closed=true;

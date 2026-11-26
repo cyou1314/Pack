@@ -174,3 +174,7 @@ Agent 身份认证后提供 API 手动执行入口，真实专用身份一次心
 ## 第二十八阶段：独立原生账号交互登录（开发入口）
 
 新增 Node `native-login-cli.mjs`，只读取本机注册表中既有 canonical UUID 原生档案、固定 Provider origin，验证私有目录与普通 registry 文件、拒绝 API/错误引用/重复引用；复用 Swift/Node 共享 account lease 及 BrowserSessions 专用 profile lease，启动可见浏览器，用户自行完成登录，回车/正常关闭后保留 browser-data。已知 pre-launch 失败可释放；未知启动/关闭保留租约，不打印浏览器错误详情、不导出 cookie、无自动登录/挑战处理、无模型调用或心跳。App 原生账号卡提供开发版命令指引，不启动外部未验证 Node；正式 DMG 仍缺依赖锁/下载完整性/运行时打包和签名，原生 identity/model/memory 验证及页面 driver 尚待完成。新增 mock 生命周期测试并入 Runtime CI，真实 Provider 登录未验收。
+
+## 第二十九阶段：原生身份登记与发送前复核契约
+
+新增 native-identity.mjs：受信任 host 在共享执行租约及 browser lease 内，以实际 Provider reader 的稳定 account/workspace ID、模型、记忆状态、精确 origin 做两次观测与显式 owner 确认；私有 0600 insert-only HMAC 记录不保存原始账号 ID，拒绝重新登记/跨档案/账号切换/未知设置/不安全文件。HMAC key 与 proof 同存于本机私有目录，仅防误绑定，不防本机被攻破；崩溃后临时文件须人工核查，不自动覆盖。原生 adapter 防重复验证/验证中关闭，创建对话后、授权前及发送前重新 inspect，授权携带实际文本及摘要。未实现真实 ChatGPT/Gemini/豆包 reader 或将 enrollment 接入 CLI/App，尚不能将用户自报身份作为 verified；测试仅为可信回调模拟。生产 schema 和真实站点执行未开启。

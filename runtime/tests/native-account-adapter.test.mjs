@@ -36,6 +36,7 @@ test('single send in fresh conversation, native usage unknown, no credential exp
   assert.deepEqual(f.calls.map(x=>x[0]),['open','authorize','send','wait','close']);
   const approved=f.calls[1][1];assert.match(approved.textSHA256,/^[a-f0-9]{64}$/);
   assert.equal(approved.conversationID,'fresh');
+  assert.equal(approved.text,f.calls[2][1].text);
   assert.equal(f.calls[2][1].text.includes('approved goal'),true);
 });
 test('account mismatch, login/challenge, cross-origin or unknown memory stops before send',async()=>{
@@ -108,4 +109,20 @@ test('runner retains account lease on browser close failure',async()=>{
   });
   assert.equal((await runner.execute(1)).status,'blocked');
   assert.equal(releases,0);
+});
+
+test('identity changed during conversation preparation prevents authorization and send',async()=>{
+  let reads=0;
+  const f=fixture({driver:{inspect:async()=>({...f.ready,accountProof:++reads>=3?'c'.repeat(64):proof})}});
+  assert.equal(await f.adapter.verifyAccount(f.destination),true);
+  assert.deepEqual(await f.adapter.execute(f.request),{status:'failed',code:'account_unavailable',usage:null});
+  assert.equal(f.calls.some(x=>x[0]==='authorize'||x[0]==='send'),false);
+  await f.adapter.close();
+});
+test('verification cannot be reopened concurrently or after a failed inspection',async()=>{
+  const f=fixture({driver:{inspect:async()=>({...f.ready,state:'challenge'})}});
+  assert.equal(await f.adapter.verifyAccount(f.destination),false);
+  assert.equal(await f.adapter.verifyAccount(f.destination),false);
+  assert.equal(f.calls.filter(x=>x[0]==='open').length,1);
+  await f.adapter.close();
 });
