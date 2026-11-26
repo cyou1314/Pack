@@ -178,3 +178,7 @@ Agent 身份认证后提供 API 手动执行入口，真实专用身份一次心
 ## 第二十九阶段：原生身份登记与发送前复核契约
 
 新增 native-identity.mjs：受信任 host 在共享执行租约及 browser lease 内，以实际 Provider reader 的稳定 account/workspace ID、模型、记忆状态、精确 origin 做两次观测与显式 owner 确认；私有 0600 insert-only HMAC 记录不保存原始账号 ID，拒绝重新登记/跨档案/账号切换/未知设置/不安全文件。HMAC key 与 proof 同存于本机私有目录，仅防误绑定，不防本机被攻破；崩溃后临时文件须人工核查，不自动覆盖。原生 adapter 防重复验证/验证中关闭，创建对话后、授权前及发送前重新 inspect，授权携带实际文本及摘要。未实现真实 ChatGPT/Gemini/豆包 reader 或将 enrollment 接入 CLI/App，尚不能将用户自报身份作为 verified；测试仅为可信回调模拟。生产 schema 和真实站点执行未开启。
+
+## 第三十阶段：ChatGPT 页面传输层（隔离 Chromium fixture）
+
+新增 ChatGPT-specific Playwright driver，固定 https://chatgpt.com/ fresh-chat，限定 reviewed data-attribute selector contract，拒绝多页/旧消息/重复控件/非同源或未知状态。授权后核对实际 composer 文本，仅一次点击，绑定 local draft 与新 /c/ ID、用户 turn ID、唯一 assistant turn；明确终结标志+两次稳定读取+身份复核后交付，部分回复/切换/异常不重试。接 native identity verifier，需可信实际账号/工作空间/模型/记忆 observer；没有可用的真实页面合约，不默认激活。Chromium CI synthetic route 全网络拦截，测试实际浏览器 DOM、完整 adapter 调用、旧对话、重复发送控件、身份切换及稳定部分回复。此阶段不代表真实 ChatGPT 站点兼容，未接 App/CLI 实际执行，Gemini/豆包及生产 schema 不变。

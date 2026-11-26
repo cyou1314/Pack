@@ -129,4 +129,4 @@ jobs:
       - name: Install matching Chromium
         run: node node_modules/playwright-core/cli.js install chromium
       - name: Local browser isolation smoke
-        run: node --test chromium.smoke.mjs
+        run: node --test chromium.smoke.mjs chatgpt-page-driver.smoke.mjs
