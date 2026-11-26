@@ -186,3 +186,7 @@ Agent 身份认证后提供 API 手动执行入口，真实专用身份一次心
 ## 第三十一阶段：原生只读诊断与候选依赖锁
 
 开发版原生登录命令支持 --diagnose，用户手动进入 Provider 页面后回车输出固定候选控件计数、页面类别，拒绝多页/异源/导航变化；不采集聊天、账号、URL 或动态属性，不赋予身份认证/执行资格。ChatGPT 固定探针仅候选，Gemini/豆包仅 origin 分类。Browser CI 使用官方 registry 生成候选 lock，校验 v3、唯一固定版本、tarball URL 与 canonical SHA-512，artifact 保存供审核，再 npm ci；非正式发布信任根，未凭空填入哈希。正式锁文件/Chromium 与 Node 二进制完整性、签名许可、真实 Provider 适配、生产迁移仍未完成。
+
+## 第三十二阶段：浏览器开发依赖固定与可搬迁载荷候选
+
+依据两次成功 CI 日志一致的 npm tarball/SHA-512 重建仓库 package-lock.json，CI 不再每次重新解析依赖。固定 Chromium 1255/full+headless 与 FFmpeg 1013 目录，独立 CI cache；stage-browser-candidate.sh 按 allowlist 创建新目录，browser-payload.py 校验结构、程序文件、私有数据常见名称、相对内链，生成逐文件 SHA-256/模式/路径清单及整体摘要，显式 revision/arch；CI 使用独立 HOME、显式 browser path、复制 Node 测试搬迁启动并再次核对载荷。仅候选 manifest（release_approved:false），不等价于签名、上游二进制独立校验、许可证/双架构验收或正式发布；未接生产 DMG/installer，无本机文件改动。

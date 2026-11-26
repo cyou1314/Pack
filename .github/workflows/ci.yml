@@ -54,6 +54,7 @@ jobs:
           python hub/test_collaboration_hub.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py
+          python installer/test_browser_payload.py
           python -m py_compile runtime/l2-handoff/prepare-electron.py runtime/l2-handoff/verify-electron.py runtime/l2-handoff/test_prepare_electron.py runtime/l2-handoff/test_verify_electron.py
           python runtime/l2-handoff/test_prepare_electron.py
           python runtime/l2-handoff/test_verify_electron.py
@@ -124,19 +125,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Generate and validate candidate dependency lock
+      - name: Validate checked-in dependency lock
+        run: node verify-candidate-lock.mjs
+      - name: Install exact checked-in lock
+        run: npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+      - name: Set up manifest Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install matching Chromium into dedicated CI cache
+        run: PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/pack-browser-cache" node node_modules/playwright-core/cli.js install chromium
+      - name: Local browser isolation smoke
+        run: PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/pack-browser-cache" node --test chromium.smoke.mjs chatgpt-page-driver.smoke.mjs
+      - name: Build and verify relocated browser candidate
         run: |
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
-          node verify-candidate-lock.mjs
-      - name: Preserve candidate lock for review
+          PAYLOAD="$RUNNER_TEMP/pack-browser-payload"
+          LOCK="$RUNNER_TEMP/browser-payload.candidate.json"
+          bash ../../installer/stage-browser-candidate.sh "$PAYLOAD" "$RUNNER_TEMP/pack-browser-cache" "$(command -v node)"
+          python ../../installer/browser-payload.py create --payload "$PAYLOAD" --lock "$LOCK" --revision "$(git rev-parse HEAD)" --architecture "$(uname -m)"
+          python ../../installer/browser-payload.py verify --payload "$PAYLOAD" --lock "$LOCK" --revision "$(git rev-parse HEAD)" --architecture "$(uname -m)"
+          SMOKE_HOME="$(mktemp -d)"
+          (
+            cd "$PAYLOAD/runtime/browser-driver"
+            env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin PLAYWRIGHT_BROWSERS_PATH="$PAYLOAD/browsers" "$PAYLOAD/node/bin/node" --input-type=module -e 'import {createBrowserSessions} from "./playwright.mjs"; import fs from "node:fs/promises"; import path from "node:path"; const root=await fs.mkdtemp(path.join(process.env.HOME,"profile-")); const profile={id:"11111111-1111-4111-8111-111111111111",mode:"nativeAccount"}; const sessions=await createBrowserSessions({root,headless:true}); const context=await sessions.open(profile); try {const page=context.pages()[0]||await context.newPage(); await page.goto("data:text/html,<title>Pack relocation fixture</title>"); if(await page.title()!=="Pack relocation fixture")throw Error("relocation smoke failed");} finally {await sessions.close(profile);}'
+          )
+          python ../../installer/browser-payload.py verify --payload "$PAYLOAD" --lock "$LOCK" --revision "$(git rev-parse HEAD)" --architecture "$(uname -m)"
+      - name: Preserve candidate manifest for review
         uses: actions/upload-artifact@v4
         with:
-          name: browser-dependency-lock-candidate
-          path: runtime/browser-driver/package-lock.json
+          name: browser-payload-candidate-manifest
+          path: ${{ runner.temp }}/browser-payload.candidate.json
           if-no-files-found: error
-      - name: Install exact candidate lock
-        run: npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
-      - name: Install matching Chromium
-        run: node node_modules/playwright-core/cli.js install chromium
-      - name: Local browser isolation smoke
-        run: node --test chromium.smoke.mjs chatgpt-page-driver.smoke.mjs
