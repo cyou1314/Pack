@@ -86,7 +86,38 @@ PR #52 与 #43、#44、#45、#46、#48、#49、#50、#51 的当前文件列表�
 
 PR #52 当前 CI 通过，只证明它相对于 main 的这条独立分支通过现有测试；不能证明它与 Foundation 的 M2 Event Gateway / Session Projection 组合后仍然正确。
 
-## 5. 推荐集成策略
+## 5. Agent Registry 的概念性数据模型重叠
+
+除文件级重叠外，Foundation M1 与 PR #52 还存在需要在合并前统一的概念性数据模型：
+
+**Foundation M1（Hub 侧）：**
+
+- providers：Provider 厂商目录；
+- agents：Pack 稳定 Agent 身份，通过 legacy_member_id 兼容旧 members；
+- agent_connections：连接模式、认证类型、凭证引用和连接状态；
+- agent_sessions：按 Agent + Room 绑定的 Provider Session 元数据；
+- Hub 只保存非敏感元数据和本机凭证引用，不保存 API Key、Cookie 或私人记忆。
+
+**PR #52（设备本地 + Hub 协作侧）：**
+
+- 本地 AgentAccountManager / AgentProfile：以 UUID 标识设备上的账号档案；
+- AgentCredentialVault：将 API Key 保存在 device-only Keychain；
+- collaboration_executors：以 member_id 作为 Hub 执行身份，并单独保存 provider、access_kind、account_ref、owner_id 和 revoked；
+- account_ref 当前与本机 AgentProfile UUID 对应，但它不是 Foundation agents / agent_connections 的外键。
+
+**需要统一的边界：**
+
+1. 本机 AgentProfile 应继续作为本机账号与凭证的事实来源；Hub 不应复制本机密钥或私人会话数据。
+2. Hub Agent Registry 应作为跨房间协作身份和连接元数据的事实来源；members 继续承担兼容认证、角色和任务归属。
+3. collaboration_executors 不应长期成为第二套 Agent Registry。需要决定它是临时兼容映射，还是改为引用 agents.agent_id / agent_connections.connection_id，并保留 member_id 作为兼容执行身份。
+4. account_ref、agent_id、connection_id 三者需要明确且稳定的映射规则；不能仅靠 provider + UUID 字符串约定而无数据库约束。
+5. collaboration_presence 应明确绑定到一个 Agent Connection / 本机执行进程，而不是把成员在线状态等同于 Provider 登录状态。
+6. Agent Session 应使用 agent_sessions 的 room 绑定和状态机；不得因为原生账号登录成功就推断 Session 已创建、恢复或具备 Provider 私人记忆。
+7. 新旧注册表切换必须遵守 M1 shadow-read 门槛；真实 Mac 数据库没有通过只读 shadow preflight 前，不启用新读路径。
+
+因此，PR #52 的 collaboration_executors 可以作为当前受控执行身份的过渡层，但在 Foundation M1 移植前必须形成明确的迁移/映射方案。不得同时维护两套互不关联的 Provider / Agent / Connection 主数据。
+
+## 6. 推荐集成策略
 
 **禁止直接合并 Foundation 分支或把 PR #43–#51 全部按顺序点 Merge。**
 
@@ -101,7 +132,7 @@ PR #52 当前 CI 通过，只证明它相对于 main 的这条独立分支通过
 7. **每个切片单独验证**：Hub 默认回归、staging56、SQLite fresh/legacy migration、contract snapshots、Runtime tests、Browser isolation、Swift tests、macOS App/Release build、Installer clean-clone。
 8. **完整集成后再做真实 Mac 验收**：先备份、恢复演练和只读 shadow preflight；未经用户明确确认，不迁移生产数据库。
 
-## 6. 不允许的集成捷径
+## 7. 不允许的集成捷径
 
 - 不把 Foundation 的 300 文件差异作为一个整体 merge 到 main。
 - 不用旧 Foundation Hub 文件覆盖 main 当前 Hub。
@@ -111,7 +142,7 @@ PR #52 当前 CI 通过，只证明它相对于 main 的这条独立分支通过
 - 不在 Session 身份、cursor、ACK、恢复与幂等语义未闭环时启用生产自动投递。
 - 不在真实 Mac 离线期间读取、复制或迁移用户生产数据库。
 
-## 7. 本次结论
+## 8. 本次结论
 
 当前 Pack v2 有两条不同基线：
 
