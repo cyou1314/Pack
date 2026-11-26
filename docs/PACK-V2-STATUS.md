@@ -18,8 +18,8 @@ Agent 接入必须保留两种明确模式，添加 Agent 时由用户选择：
 - 主分支基线：8458a500f458779e93b0f800b6cd97c5e70ea411。
 - 当前集成分支：codex/group-collaboration-policy。
 - 集成 PR：[ #52 ](https://github.com/cyou1314/Pack/pull/52)，仍为 Draft，未合并。
-- PR 当前提交：3fe96df42b808c07d338f3203348d29c7c77a1e5；包含 41 次提交、73 个文件，新增约 9,479 行。
-- 最新 CI：[运行 45774467891](https://github.com/cyou1314/Pack/actions/runs/45774467891)，Runtime、Hub、Browser/Chromium、macOS App 四个 Job 均通过。
+- 当前分支 HEAD：24a910486ac19da3750561799cde71b70a7169a9（本次仅同步状态文档）；最新代码提交：3fe96df42b808c07d338f3203348d29c7c77a1e5。PR 包含 42 次提交、73 个文件，新增约 9,543 行。
+- 最新完整代码 CI：[运行 45774467891](https://github.com/cyou1314/Pack/actions/runs/45774467891)，Runtime、Hub、Browser/Chromium、macOS App 四个 Job 均通过。状态文档提交后的 CI（45776862888 / 45776855541）正在重新执行。
 
 **CI 通过不等于真实产品链路验收。** 当前连接的 Mac 设备离线；尚未在用户本机执行构建、安装、数据库迁移、真实账号登录或真实 Provider 请求。不得把 CI 的 mock、fixture、隔离浏览器测试描述为真实账号验收。
 
