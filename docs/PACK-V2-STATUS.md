@@ -19,7 +19,7 @@ Agent 接入必须保留两种明确模式，添加 Agent 时由用户选择：
 - 当前集成分支：codex/group-collaboration-policy。
 - 集成 PR：[ #52 ](https://github.com/cyou1314/Pack/pull/52)，仍为 Draft，未合并。
 - 当前分支 HEAD：24a910486ac19da3750561799cde71b70a7169a9（本次仅同步状态文档）；最新代码提交：3fe96df42b808c07d338f3203348d29c7c77a1e5。PR 包含 42 次提交、73 个文件，新增约 9,543 行。
-- 最新完整代码 CI：[运行 45774467891](https://github.com/cyou1314/Pack/actions/runs/45774467891)，Runtime、Hub、Browser/Chromium、macOS App 四个 Job 均通过。状态文档提交后的 CI（45776862888 / 45776855541）正在重新执行。
+- 代码提交 3fe96df 的完整 CI：[运行 45774467891](https://github.com/cyou1314/Pack/actions/runs/45774467891)，Runtime、Hub、Browser/Chromium、macOS App 四个 Job 均通过。后续文档同步提交会触发新的 CI；当前状态以 [PR #52 Actions](https://github.com/cyou1314/Pack/actions) 为准。
 
 **CI 通过不等于真实产品链路验收。** 当前连接的 Mac 设备离线；尚未在用户本机执行构建、安装、数据库迁移、真实账号登录或真实 Provider 请求。不得把 CI 的 mock、fixture、隔离浏览器测试描述为真实账号验收。
 
@@ -76,7 +76,7 @@ Agent 接入必须保留两种明确模式，添加 Agent 时由用户选择：
 5. **完成 Mac 实机验收。** 先备份现有数据，执行只读检查与迁移 dry-run，再验证安装、升级、卸载、重装、数据库备份恢复和 Keychain。未经明确确认，不迁移真实生产数据库。
 6. **固定 Engine 依赖。** 纳入或固定 pack-headless-l2 源码版本，生成可审查的 Engine 产物锁，并从干净克隆验证完整 DMG。
 
-当前 PR #52 保持 Draft，不因 CI 全绿直接合并。应先完成模块审查和 Mac 实机验收，再决定是否拆分、合并或继续补齐。
+当前 PR #52 保持 Draft，不因 CI 全绿直接合并。Foundation M2 另有 PR #43–#51，基于旧分支且与 main 分叉；双方 17 个文件重叠。具体移植顺序见 PACK-V2-MAINLINE-RECONCILIATION.md。应先完成模块审查和 Mac 实机验收，再决定是否拆分、合并或继续补齐。
 
 ## 6. 发布验收底线
 
