@@ -128,6 +128,9 @@ def main():
               str(journal_mode))
         check("runtime DB connections retain busy timeout", busy_timeout == 30000,
               str(busy_timeout))
+        foreign_keys = runtime_conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        check("runtime DB connections enforce foreign keys", foreign_keys == 1,
+              str(foreign_keys))
         runtime_conn.close()
 
         conn = sqlite3.connect(db_path)
