@@ -63,6 +63,9 @@ jobs:
           python hub/test_agent_event_inbox_port.py
           python hub/test_agent_event_gateway_boundary.py
           python hub/test_agent_event_consumers_port.py
+          python hub/test_registry_session_v7_port.py
+          python hub/test_agent_sessions_port.py
+          python hub/test_agent_session_projector_port.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py
           python installer/test_browser_payload.py
