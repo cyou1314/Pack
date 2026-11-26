@@ -81,7 +81,7 @@ jobs:
             node --check "$f"
           done
       - name: Runtime unit tests
-        run: node --test runtime/tests/*.test.mjs runtime/muse4ai-bridge/tests/*.test.mjs runtime/l2-handoff/*.test.cjs runtime/browser-driver/sessions.test.mjs
+        run: node --test runtime/tests/*.test.mjs runtime/muse4ai-bridge/tests/*.test.mjs runtime/l2-handoff/*.test.cjs runtime/browser-driver/sessions.test.mjs runtime/browser-driver/native-login.test.mjs
 
   app:
     name: macOS App / build

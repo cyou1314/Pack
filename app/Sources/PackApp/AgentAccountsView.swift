@@ -11,6 +11,7 @@ let localAgentAccounts = AgentAccountManager(
 struct AgentAccountsView: View {
     @ObservedObject var state: AppState
     @State private var bindingTarget: AgentAccountSummary?
+    @State private var nativeLoginTarget: AgentAccountSummary?
     @State private var accounts: [AgentAccountSummary] = []
     @State private var note = ""
     @State private var loaded = false
@@ -45,6 +46,9 @@ struct AgentAccountsView: View {
         .task { await refresh() }
         .onDisappear { generation = UUID(); accounts = []; loaded = false; busy = false }
         .sheet(isPresented:$adding,onDismiss:{ Task { await refresh() } }) { AgentAccountCreateSheet() }
+        .sheet(item:$nativeLoginTarget) { account in
+            NativeLoginGuide(account:account)
+        }
         .sheet(item:$bindingTarget) { account in
             AgentBindingSheet(state:state,account:account,scope:state.collaborationScope)
         }
@@ -78,6 +82,9 @@ struct AgentAccountsView: View {
                     Text("待执行任务：\(monitor.tasks.count)").font(DesignTokens.fontSmall)
                     Button("停止接单") { state.stopManualPresence(account.id) }
                 }
+            }
+            if profile.mode == .nativeAccount && ["chatgpt","gemini","doubao"].contains(profile.providerID) {
+                Button("原生登录（开发版）…") { nativeLoginTarget = account }.disabled(busy)
             }
             if profile.providerID != "muse" {
                 Button("Hub 身份绑定…") { bindingTarget = account }
@@ -212,5 +219,31 @@ private struct AgentAccountKeySheet: View {
             try await localAgentAccounts.configureMissingAPIKey(id:account.id,key:value)
             dismiss()
         } catch { note = "保存结果未确认或凭证已存在。请关闭并刷新核对；不会自动覆盖。" }
+    }
+}
+
+
+private struct NativeLoginGuide: View {
+    @Environment(\.dismiss) private var dismiss
+    let account:AgentAccountSummary
+    private var command:String {
+        "node runtime/browser-driver/native-login-cli.mjs " + account.id.uuidString.lowercased()
+    }
+    var body: some View {
+        VStack(alignment:.leading,spacing:DesignTokens.settingsGap) {
+            Text("原生账号登录 · 开发版").font(DesignTokens.shellTitle)
+            Text(verbatim:account.profile.displayName)
+            Text("当前正式安装包尚未内置经过完整性验证的浏览器运行时。仅在可信 Pack 源码及已安装匹配 Chromium 的开发环境中使用以下命令。")
+                .foregroundStyle(DesignTokens.subText)
+            Text("在仓库根目录的终端执行：").font(DesignTokens.fontSmall)
+            Text(verbatim:command).font(.system(.body,design:.monospaced)).textSelection(.enabled)
+            Text("浏览器会打开独立档案。请自行登录平台；终端回车关闭并保留会话。不验证登录身份、模型或记忆，不启动执行器。")
+                .foregroundStyle(DesignTokens.subText)
+            HStack {
+                Spacer()
+                Button("关闭") { dismiss() }
+            }
+        }.font(DesignTokens.fontUI).padding(DesignTokens.settingsInset)
+        .frame(width:DesignTokens.settingsWidth)
     }
 }

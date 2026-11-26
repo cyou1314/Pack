@@ -170,3 +170,7 @@ Agent 身份认证后提供 API 手动执行入口，真实专用身份一次心
 ## 第二十七阶段：手动接单生命周期
 
 新增专用 presence start/renew/stop，90 秒服务端租约、会话围栏、停止/过期拒绝续租，旧会话不能关闭替代会话。新 provisioned 账号普通 heartbeat 不作为路由可接单依据，新建计划事务复核 presence；旧手工 bind 账号保留原兼容行为。macOS AppState 20 秒循环续租与轮询 open 专用任务，离开页面仍运行，账号页显示监听状态和停止入口；连接/Hub generation 变化退出，停止使用捕获的原 Hub/session，未确认靠 TTL。手动执行前先停止监听，避免 token/账号租约冲突；已分配任务仍可手动执行，完成后需显式重启监听。未自动认领、未自动授权出站；进程异常退出依赖 TTL，未持久化本机监听状态，待任务分页上限仍为 100；原生执行器尚未接此循环，生产 schema 仍关闭。
+
+## 第二十八阶段：独立原生账号交互登录（开发入口）
+
+新增 Node `native-login-cli.mjs`，只读取本机注册表中既有 canonical UUID 原生档案、固定 Provider origin，验证私有目录与普通 registry 文件、拒绝 API/错误引用/重复引用；复用 Swift/Node 共享 account lease 及 BrowserSessions 专用 profile lease，启动可见浏览器，用户自行完成登录，回车/正常关闭后保留 browser-data。已知 pre-launch 失败可释放；未知启动/关闭保留租约，不打印浏览器错误详情、不导出 cookie、无自动登录/挑战处理、无模型调用或心跳。App 原生账号卡提供开发版命令指引，不启动外部未验证 Node；正式 DMG 仍缺依赖锁/下载完整性/运行时打包和签名，原生 identity/model/memory 验证及页面 driver 尚待完成。新增 mock 生命周期测试并入 Runtime CI，真实 Provider 登录未验收。
