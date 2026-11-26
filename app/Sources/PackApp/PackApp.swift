@@ -9,6 +9,8 @@ struct RoomItem: Identifiable {
 
 @MainActor
 final class AppState: ObservableObject {
+    @Published var manualPresence: [UUID: ManualPresenceSnapshot] = [:]
+    var manualPresenceJobs: [UUID: Task<Void,Never>] = [:]
     @Published var messages: [RoomMessage] = []
     @Published var tasks: [PackTask] = []
     @Published var members: [MemberInfo] = []

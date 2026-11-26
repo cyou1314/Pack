@@ -443,7 +443,21 @@ def main():
             pname=conn.execute("SELECT name FROM members WHERE id=?",(pmid,)).fetchone()[0]
             assert "error" in dispatch("task_create",{"room":"pack-main","title":"legacy",
                 "body":"legacy","assignee_name":pname})
-            pplan=owner_call("collaboration_create",{**focus,"request_key":"b"*32,"leader":pmid})
+            pplan_args={**focus,"request_key":"b"*32,"leader":pmid}
+            assert "error" in owner_call("collaboration_create",pplan_args)
+            presence={"instance_id":instance,"session_id":"1"*32}
+            assert "error" in outsider("collaboration_presence_start",presence)
+            assert provisioned("collaboration_presence_start",presence)["accepting"] is True
+            assert "error" in provisioned("collaboration_presence_start",{**presence,"session_id":"2"*32})
+            assert provisioned("collaboration_presence_renew",presence)["accepting"] is True
+            assert provisioned("collaboration_presence_stop",presence)["accepting"] is False
+            assert "error" in provisioned("collaboration_presence_renew",presence)
+            assert "error" in provisioned("collaboration_presence_start",presence)
+            assert "error" in owner_call("collaboration_create",pplan_args)
+            next_presence={**presence,"session_id":"2"*32}
+            assert provisioned("collaboration_presence_start",next_presence)["accepting"] is True
+            assert "error" in provisioned("collaboration_presence_stop",presence)
+            pplan=owner_call("collaboration_create",pplan_args)
             assert pplan.get("status")=="active",pplan
             revoke_args={**status_args,"member_id":pmid}
             assert "error" in outsider("collaboration_executor_revoke",revoke_args)

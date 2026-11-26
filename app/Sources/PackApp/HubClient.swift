@@ -199,7 +199,8 @@ actor HubClient {
     // Do not route through the legacy reconnect/retry and logging path.
     func collaborationCallOnce(name: String, arguments: Data) async throws -> Data {
         let allowed: Set<String> = ["collaboration_executor_info", "collaboration_executor_identity", "task_claim",
-            "collaboration_context_get", "run_start", "task_complete", "task_block", "task_list", "heartbeat"]
+            "collaboration_context_get", "run_start", "task_complete", "task_block", "task_list", "heartbeat",
+            "collaboration_presence_start", "collaboration_presence_renew", "collaboration_presence_stop"]
         guard allowed.contains(name),
               let args = try JSONSerialization.jsonObject(with: arguments) as? [String: Any] else {
             throw HubError.badResponse("invalid collaboration call")

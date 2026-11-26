@@ -1340,6 +1340,7 @@ def _collaboration_privileged(me):
 COLLABORATION_EXECUTOR_TOOLS = frozenset({
     "heartbeat", "task_list", "task_claim", "collaboration_context_get", "collaboration_executor_info",
     "collaboration_instance_info", "collaboration_executor_identity",
+    "collaboration_presence_start", "collaboration_presence_renew", "collaboration_presence_stop",
     "run_start", "task_update", "task_complete", "task_block",
 })
 
@@ -1352,6 +1353,22 @@ def _collaboration_executor_binding(conn, member_id):
         return None
     from collaboration_context import executor_binding
     return executor_binding(conn,member_id)
+
+
+COLLABORATION_PRESENCE_TTL = 90
+
+
+def _collaboration_accepting(conn, member_id, now):
+    """New provisioned accounts use explicit presence; legacy fixtures/bindings
+    keep the previous heartbeat contract until migrated."""
+    member = conn.execute("SELECT name,last_heartbeat FROM members WHERE id=?",(member_id,)).fetchone()
+    if not member:
+        return False
+    presence = conn.execute("SELECT expires_at,stopped FROM collaboration_presence WHERE member_id=?",
+                            (member_id,)).fetchone()
+    if presence or member[0].startswith("pack-agent-"):
+        return bool(presence and not presence[1] and now < presence[0] <= now+COLLABORATION_PRESENCE_TTL)
+    return member[1] is not None and 0 <= now-member[1] <= RELAY_HEARTBEAT_FRESH
 
 
 def _collaboration_executor_gate(me, tool_name):
@@ -4348,6 +4365,68 @@ def build_server():
             finally:
                 conn.close()
 
+        def _presence_change(session_id, instance_id, action):
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import require_executor
+            from collaboration_store import write_transaction
+            if not re.fullmatch(r"[a-f0-9]{32}",session_id):
+                raise ValueError("invalid presence session")
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    require_executor(conn,me["id"])
+                    identity = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                    if not identity or identity[0]!=instance_id:
+                        raise ValueError("collaboration instance mismatch")
+                    now = _now()
+                    row = conn.execute("SELECT session_id,expires_at,stopped FROM collaboration_presence WHERE member_id=?",
+                                       (me["id"],)).fetchone()
+                    if action=="start":
+                        if row and row[0]==session_id:
+                            if row[2] or row[1]<=now:
+                                raise ValueError("presence session closed")
+                            expires = row[1]
+                        else:
+                            if row and not row[2] and row[1]>now:
+                                raise ValueError("another presence session active")
+                            expires = now+COLLABORATION_PRESENCE_TTL
+                            conn.execute("""
+                                INSERT INTO collaboration_presence(member_id,session_id,expires_at,stopped) VALUES(?,?,?,0)
+                                ON CONFLICT(member_id) DO UPDATE SET session_id=excluded.session_id,
+                                    expires_at=excluded.expires_at,stopped=0
+                                """,(me["id"],session_id,expires))
+                    elif action=="renew":
+                        if not row or row[0]!=session_id or row[2] or row[1]<=now:
+                            raise ValueError("presence session closed or replaced")
+                        expires = now+COLLABORATION_PRESENCE_TTL
+                        conn.execute("UPDATE collaboration_presence SET expires_at=? WHERE member_id=?",(expires,me["id"]))
+                    else:
+                        # A delayed stop may not close a replacement session.
+                        if not row or row[0]!=session_id:
+                            raise ValueError("presence session unavailable")
+                        expires = min(row[1],now)
+                        conn.execute("UPDATE collaboration_presence SET stopped=1,expires_at=? WHERE member_id=?",
+                                     (expires,me["id"]))
+                    if action!="stop":
+                        conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?",(now,me["id"]))
+                    return {"instance_id":instance_id,"member_id":me["id"],"session_id":session_id,
+                            "accepting":action!="stop","expires_at":expires}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_presence_start(instance_id: str, session_id: str) -> dict:
+            return _presence_change(session_id,instance_id,"start")
+
+        @mcp.tool
+        def collaboration_presence_renew(instance_id: str, session_id: str) -> dict:
+            return _presence_change(session_id,instance_id,"renew")
+
+        @mcp.tool
+        def collaboration_presence_stop(instance_id: str, session_id: str) -> dict:
+            return _presence_change(session_id,instance_id,"stop")
+
         @mcp.tool
         def collaboration_executor_identity() -> dict:
             """Authenticated dedicated identity, with its database and member ID."""
@@ -4483,7 +4562,7 @@ def build_server():
                         continue
                     if providers.get(row[1]) != row[2]:
                         continue
-                    online = row[4] is not None and 0 <= now-row[4] <= RELAY_HEARTBEAT_FRESH
+                    online = _collaboration_accepting(conn,row[0],now)
                     fresh = (row[5] is not None and 0 <= row[5] <= 100
                              and row[6] is not None and 0 <= now-row[6] <= RELAY_QUOTA_FRESH)
                     state = ("available" if row[5]<RELAY_QUOTA_HEADROOM else "limited") if fresh else "unknown"
@@ -4539,6 +4618,9 @@ def build_server():
                             binding = require_executor(conn,member_id)
                             if binding[0] != me["id"]:
                                 raise ValueError("collaboration executor owner mismatch")
+                            name = conn.execute("SELECT name FROM members WHERE id=?",(member_id,)).fetchone()[0]
+                            if name.startswith("pack-agent-") and not _collaboration_accepting(conn,member_id,now):
+                                raise ValueError("collaboration executor is not accepting new plans")
                         source = conn.execute(
                             "INSERT INTO messages(room_id,author_id,kind,body,created_at)"
                             " VALUES(?,?,'collaboration_request','[Private collaboration request]',?)",

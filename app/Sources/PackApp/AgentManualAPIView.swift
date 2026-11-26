@@ -3,7 +3,7 @@ import AppKit
 import PackCore
 import CryptoKit
 
-private struct ManualTask: Decodable, Identifiable, Sendable {
+struct ManualTask: Decodable, Identifiable, Sendable {
     let id: Int
     let room: String
     let status: String
@@ -13,8 +13,7 @@ private struct ManualTask: Decodable, Identifiable, Sendable {
         case collaborationContextRequired = "collaboration_context_required"
     }
 }
-private struct ManualTasks: Decodable, Sendable { let tasks: [ManualTask] }
-private struct ManualHeartbeat: Decodable, Sendable { let ok: Bool }
+struct ManualTasks: Decodable, Sendable { let tasks: [ManualTask] }
 
 struct AgentManualAPIView: View {
     @Environment(\.dismiss) private var dismiss
@@ -40,10 +39,17 @@ struct AgentManualAPIView: View {
             Text("手动 API 执行").font(DesignTokens.shellTitle)
             Text(verbatim:account.profile.displayName+" · "+(account.profile.modelID ?? ""))
             Text("当前房间：\(state.currentRoom) · 成员 #\(memberId)").foregroundStyle(DesignTokens.subText)
-            Text("先登记短时可接单，再在协作工作台创建任务。此处只执行选中的任务；每次模型请求均须确认实际正文。")
+            Text("启动接单后可关闭窗口并创建任务；监听器持续刷新队列。执行仍需选中任务并确认实际正文。")
                 .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             HStack {
-                Button("登记可手动接单…") { confirmReady = true }.disabled(busy || !available || uncertain)
+                if let monitor = state.manualPresence[account.id] {
+                    Text(monitor.label).font(DesignTokens.fontSmall)
+                    if monitor.running {
+                        Button("停止接单") { state.stopManualPresence(account.id) }.disabled(busy)
+                    }
+                }
+                Button("启动接单…") { confirmReady = true }
+                    .disabled(busy || !available || uncertain || state.manualPresenceJobs[account.id] != nil)
                 Button("刷新待执行任务") { Task { await refresh() } }.disabled(busy || !available)
                 if busy { ProgressView().controlSize(.small) }
             }
@@ -79,11 +85,16 @@ struct AgentManualAPIView: View {
         .frame(width:DesignTokens.settingsWidth)
         .interactiveDismissDisabled(busy)
         .task { await refresh() }
-        .alert("登记短时可接单？",isPresented:$confirmReady) {
+        .onChange(of: state.manualPresence[account.id]?.revision) { _, _ in
+            guard !busy, let monitor = state.manualPresence[account.id] else { return }
+            tasks = monitor.tasks.filter { $0.room == state.currentRoom }
+            if let selected, !tasks.contains(where:{$0.id == selected}) { self.selected = nil }
+        }
+        .alert("启动手动接单监听？",isPresented:$confirmReady) {
             Button("登记") { Task { await announceReady() } }
             Button("取消",role:.cancel) {}
         } message: {
-            Text("仅发送一次真实执行身份心跳，约 3 分钟内可参与候选分配。API Key 仅检查本机是否存在，未验证上游。请手动创建任务并回来执行；不会自动调用模型。")
+            Text("持续续租并查询待执行任务，离开页面仍接单。停止接单或失联后退出新任务分配。不会自动认领或调用模型。")
         }
         .confirmationDialog("认领并准备执行所选任务？",isPresented:$confirmExecute,titleVisibility:.visible) {
             Button("认领任务") { if let selected { Task { await execute(selected) } } }
@@ -124,24 +135,20 @@ struct AgentManualAPIView: View {
 
     @MainActor private func announceReady() async {
         guard !busy,available,!uncertain else { return }
-        busy = true; note = ""
-        defer { busy = false }
         do {
-            let dest = destination
-            let reply = try await withHub { hub in
-                _ = try await localAgentAccounts.manualAPIHost(hub:hub,destination:dest,checkLease:true)
-                let data = try await hub.callOnce(name:"heartbeat",arguments:Data("{}".utf8))
-                return try JSONDecoder().decode(ManualHeartbeat.self,from:data)
-            }
-            guard available,reply.ok else { throw AgentEnrollmentError.receiptMismatch }
-            note = "已登记一次接单心跳。请创建协作任务后回来刷新（额度未知时须显式允许）。"
-        } catch { note = "未确认接单登记，可能是凭证或账号租约不可用。" }
+            try state.startManualPresence(account:account,scope:scope,instance:instance,memberId:memberId)
+            note = "监听器启动中。可关闭窗口，返回协作工作台创建任务。"
+        } catch { note = "无法启动接单监听。" }
     }
 
     @MainActor private func execute(_ task: Int) async {
         guard !busy,available,!uncertain,tasks.contains(where:{$0.id == task}) else { return }
         busy = true; note = ""; selected = nil
         defer { busy = false }
+        // Stop new assignments and wait for the monitor to relinquish its
+        // token before manual execution. Existing assigned tasks remain valid.
+        await state.stopManualPresenceAndWait(account.id)
+        guard available else { return }
         do {
             let dest = destination
             let result = try await withHub { hub in
@@ -152,7 +159,7 @@ struct AgentManualAPIView: View {
             }
             guard available else { return }
             switch result {
-            case .review: note = "已提交成果，等待群主审核。"
+            case .review: note = "已提交成果，等待群主审核。接单已暂停，可手动重新启动。"
             case .blocked(let code,_): note = "协作已停止（\(code)）。"
             case .unavailable: note = "执行不可用：可能存在账号租约、身份或密钥问题。"
             case .claimUnknown,.stopUnknown,.deliveryUnknown:

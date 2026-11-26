@@ -72,6 +72,13 @@ struct AgentAccountsView: View {
             if account.credentialState == .apiKeyMissing {
                 Button("配置 API Key…") { keyTarget = account }.disabled(busy)
             }
+            if let monitor = state.manualPresence[account.id] {
+                Text(monitor.label).font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                if monitor.running {
+                    Text("待执行任务：\(monitor.tasks.count)").font(DesignTokens.fontSmall)
+                    Button("停止接单") { state.stopManualPresence(account.id) }
+                }
+            }
             if profile.providerID != "muse" {
                 Button("Hub 身份绑定…") { bindingTarget = account }
                     .disabled(busy || !state.collaborationOwnerAvailable)

@@ -88,6 +88,12 @@ CREATE TABLE IF NOT EXISTS collaboration_executors (
     revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
     UNIQUE(provider,access_kind,account_ref)
 );
+CREATE TABLE IF NOT EXISTS collaboration_presence (
+    member_id INTEGER PRIMARY KEY REFERENCES collaboration_executors(member_id),
+    session_id TEXT NOT NULL,
+    expires_at REAL NOT NULL,
+    stopped INTEGER NOT NULL CHECK(stopped IN (0,1))
+);
 CREATE TABLE IF NOT EXISTS collaboration_context_grants (
     run_id TEXT NOT NULL,
     step_key TEXT NOT NULL,
