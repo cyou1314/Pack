@@ -3,7 +3,7 @@ import PackCore
 
 // Device-local profiles are not Hub members. A single process-wide manager
 // owns metadata and credential setup; never reuse legacy member tokens.
-private let localAgentAccounts = AgentAccountManager(
+let localAgentAccounts = AgentAccountManager(
     directory: FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".pack",isDirectory:true)
         .appendingPathComponent("agents-v2",isDirectory:true))

@@ -162,3 +162,7 @@ opt-in schema 新增持久随机 instance_id（备份克隆同身份，需运维
 ## 第二十五阶段：macOS 专用身份绑定入口
 
 Agent 档案卡新增 Hub 身份绑定 sheet。只读 owner status 查询实例及档案，明确确认后创建；独立专用令牌认证同时校验数据库 ID、成员 ID、Provider、模式、档案 UUID。状态查询不创建令牌、不发送心跳；绑定及撤销采用捕获的 owner client/URL，服务端校验实例及档案，不自动重放。新增 owner status、dedicated identity，撤销要求实例/档案/成员三元组，已撤销不能重新绑定。异常结果先查询，保留原 Keychain 令牌，不自动替换或删除。仍未接入 Provider 真实验证、执行循环、持续在线状态或生产 schema；本轮为 opt-in UI 接线，旧 Hub 显示不可用。
+
+## 第二十六阶段：官方 API 手动单任务闭环
+
+Agent 身份认证后提供 API 手动执行入口，真实专用身份一次心跳登记（3 分钟候选窗口，仍需显式允许未知额度），当前房间 open 专用任务列表、单任务认领、原执行宿主/账号租约、逐次出站批准（展示实际 URL 与完整 JSON，摘要复核，不含密钥）、提交审核/失败停止/未知状态不重试。每个 Hub 调用前复核实例、成员和档案，使用同一进程 registry 与 Keychain；共享租约目录 ~/.pack/agents-v2/execution-leases，未来 Node 需共用。未实现连续心跳、后台轮询、上游有效性主动探测或跨重启未知结果恢复；一次接单心跳非持续在线证明，关闭面板不会撤回心跳，可能留下短时候选；数据库克隆仍需运维隔离。真实 Provider、macOS GUI 和生产 schema 未验收或启用。

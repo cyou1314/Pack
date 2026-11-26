@@ -1,7 +1,7 @@
 import SwiftUI
 import PackCore
 
-private let executorEnrollment = AgentExecutorEnrollment()
+let executorEnrollment = AgentExecutorEnrollment()
 
 struct AgentBindingSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -15,6 +15,7 @@ struct AgentBindingSheet: View {
     @State private var note = ""
     @State private var confirmBind = false
     @State private var confirmRevoke = false
+    @State private var showManual = false
 
     private var available: Bool { state.collaborationOwnerAvailable && scope == state.collaborationScope }
     private var destination: AgentExecutionDestination {
@@ -37,6 +38,13 @@ struct AgentBindingSheet: View {
             } else { Text("绑定状态尚未确认").foregroundStyle(DesignTokens.subText) }
             Text("绑定只验证 Hub 专用身份，不验证平台登录、API 可用性或模型能力；不会发送模型请求、上报心跳或启动执行器。")
                 .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            if verified, let instance, let member = binding?.memberId,
+               account.profile.mode == .officialAPI && account.credentialState == .apiKeyPresentUnverified {
+                Button("手动 API 执行…") { showManual = true }.disabled(busy || !available)
+                    .sheet(isPresented:$showManual) {
+                        AgentManualAPIView(state:state,account:account,scope:scope,instance:instance,memberId:member)
+                    }
+            }
             if !note.isEmpty { Text(note).foregroundStyle(DesignTokens.amber) }
             if !available { Text("中枢或房间已变化，请关闭后重新打开。").foregroundStyle(DesignTokens.amber) }
             HStack {

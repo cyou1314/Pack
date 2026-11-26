@@ -83,7 +83,10 @@ final class AgentAPICollaborationHostTests: XCTestCase {
 
     func testCompletePathUsesExistingAdapterAndReleasesLease() async throws {
         let (host,hub,http,root,ref) = try await fixture()
-        let result = await host.execute(taskID:1,maxOutputTokens:100,authorize:{ $0.bodySHA256.count == 64 })
+        let result = await host.execute(taskID:1,maxOutputTokens:100,authorize:{ approval in
+            approval.bodySHA256.count == 64 && String(data:approval.body,encoding:.utf8)?.contains("approved") == true
+                && String(data:approval.body,encoding:.utf8)?.contains("fixture-key") == false
+        })
         XCTAssertEqual(result,.review(usage:.init(inputTokens:4,outputTokens:2)))
         let calls = await hub.calls
         let count = await http.count

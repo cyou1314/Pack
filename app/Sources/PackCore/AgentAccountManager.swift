@@ -134,6 +134,24 @@ public actor AgentAccountManager {
         return summaries
     }
 
+    /// Uses the same process-owned registry; never opens a second snapshot.
+    public func manualAPIHost(hub: any AgentCollaborationHub, destination: AgentExecutionDestination,
+                              checkLease: Bool = false) async throws -> AgentAPICollaborationHost {
+        let registry = try registry()
+        guard destination.accessKind == "api",
+              case .apiCredentialPresent = try await AgentLocalAccountResolver(registry:registry,vault:vault).resolve(destination)
+        else { throw AgentAccountSetupError.invalidConfiguration }
+        try checkDirectory(directory.path,privateOnly:true)
+        let root = directory.appendingPathComponent("execution-leases",isDirectory:true)
+        if mkdir(root.path,0o700) != 0 && errno != EEXIST { throw AgentAccountSetupError.unsafeDirectory }
+        try checkDirectory(root.path,privateOnly:true)
+        if checkLease {
+            let lease = try AgentSharedAccountLease(root:root,accountRef:destination.accountRef)
+            try lease.release()
+        }
+        return AgentAPICollaborationHost(hub:hub,registry:registry,vault:vault,leaseRoot:root,expected:destination)
+    }
+
     /// Never overwrite, rotate, export or delete an existing key here.
     public func configureMissingAPIKey(id: UUID, key: String) async throws {
         let profile = try await registry().profile(id:id)

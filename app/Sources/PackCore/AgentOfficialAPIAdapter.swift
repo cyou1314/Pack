@@ -75,6 +75,8 @@ public struct AgentAPIAuthorization: Equatable, Sendable {
     public let destination: AgentExecutionDestination
     public let url: URL
     public let bodySHA256: String
+    /// Exact outgoing JSON, without credentials; transient approval UI only.
+    public let body: Data
     public let deadline: Date
 }
 
@@ -196,7 +198,7 @@ public struct AgentOfficialAPIAdapter: Sendable {
         guard let url = URL(string: endpoint) else { throw AgentAPIError.invalidRequest }
         let payload = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .withoutEscapingSlashes])
         let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
-        guard try await authorize(.init(destination: destination, url: url, bodySHA256: digest, deadline: deadline))
+        guard try await authorize(.init(destination: destination, url: url, bodySHA256: digest, body: payload, deadline: deadline))
         else { throw AgentAPIError.unauthorized }
         try Task.checkCancellation()
         guard try await registry.profile(id: id) == profile else { throw AgentAPIError.identityMismatch }
