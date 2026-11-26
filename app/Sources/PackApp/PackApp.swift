@@ -1,5 +1,6 @@
 import SwiftUI
 import Security
+import PackCore
 
 struct RoomItem: Identifiable {
     let id: Int
