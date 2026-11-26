@@ -1,6 +1,6 @@
 # Pack v2 状态与实施基线
 
-更新时间：2026-11-25
+更新时间：2026-11-26
 
 ## 1. 产品目标
 
@@ -13,72 +13,70 @@ Agent 接入必须保留两种明确模式，添加 Agent 时由用户选择：
 
 两种模式共用任务、会话编排、权限、审计和本地工作区，但凭证、上下文来源、工具能力与记忆边界必须分离。
 
-## 2. 当前仓库实际状态
+## 2. 当前交付状态（以 GitHub 实际提交为准）
 
-| 模块 | 当前实现 | v2 状态 |
+- 主分支基线：8458a500f458779e93b0f800b6cd97c5e70ea411。
+- 当前集成分支：codex/group-collaboration-policy。
+- 集成 PR：[ #52 ](https://github.com/cyou1314/Pack/pull/52)，仍为 Draft，未合并。
+- PR 当前提交：3fe96df42b808c07d338f3203348d29c7c77a1e5；包含 41 次提交、73 个文件，新增约 9,479 行。
+- 最新 CI：[运行 45774467891](https://github.com/cyou1314/Pack/actions/runs/45774467891)，Runtime、Hub、Browser/Chromium、macOS App 四个 Job 均通过。
+
+**CI 通过不等于真实产品链路验收。** 当前连接的 Mac 设备离线；尚未在用户本机执行构建、安装、数据库迁移、真实账号登录或真实 Provider 请求。不得把 CI 的 mock、fixture、隔离浏览器测试描述为真实账号验收。
+
+## 3. 模块实现状态
+
+| 模块 | 当前实现 | 尚未完成 / 验收边界 |
 |---|---|---|
-| macOS App | SwiftUI；Hub 配置、Keychain、成员列表、Muse 登录与会话交接 | 尚未形成多 Provider Agent 管理界面 |
-| 原生登录 | `MemberLoginWebView` 目前只注册 Muse；数据存储按成员名隔离 | ChatGPT、豆包等 Provider 尚未接入 |
-| 会话交接 | App 将 Muse Cookie 暂存到 device-only Keychain，再经本机 Unix socket 交给 Engine | 协议与外部 Engine 的一致性仍需验收 |
-| Hub | 本地 SQLite、MCP 工具、成员、任务、消息、附件、额度与审计 | 已有基础；继续强化状态机和恢复 |
-| Engine | DMG 构建从外部 `pack-headless-l2` 目录取 Electron 与 headless 源码 | 源码未纳入 Pack Git 仓库；DMG 已要求经审核的 Engine 产物锁，但实际锁仍待真实产物生成，干净克隆无法独立复现完整 DMG |
-| Runtime 目录 | 有独立 Node Runtime、Muse4AI Bridge、L2 handoff 参考实现与测试 | 当前 DMG 构建不打包该目录；不能把它的测试通过等同于已验证外部 Engine |
-| API 接入 | 仓库中有 Muse4AI Bridge 相关代码 | 尚无统一的官方 API Provider 注册、凭证和任务适配层 |
-| 安装器 | Hub、Engine、App 的 macOS 安装包；支持卸载保留数据与受验证的安全重装 | 完整跨 Mac 凭证迁移和恢复尚未完成 |
+| Agent Profile / Registry | PackCore 已有 UUID 档案、Provider Catalog、模式与凭证引用校验、单进程本地注册表 | 尚未完成完整账号生命周期、跨设备迁移与恢复 |
+| Agent 管理 UI | 集成分支新增本地 Agent 账号管理界面；API Key 使用 Keychain insert-only 配置 | 真实签名环境 Keychain、密钥轮换/删除流程仍需实机验收 |
+| OpenAI API | 新增文本 API Adapter，使用官方 Responses API | 未验证真实 Key、模型权限、生产限流和计费 |
+| Gemini API | 新增 Gemini Developer API 文本 Adapter，支持明确模型和 token usage 读取 | 未验证真实 Key、模型兼容性和真实请求 |
+| 火山引擎 API | 新增 Ark Chat Completions 文本 Adapter | 不等于豆包个人账号；模型参数兼容性仍需真实验证 |
+| ChatGPT / Gemini / 豆包原生账号 | Catalog、独立账号档案、手动登录开发入口和 Native Adapter 契约已存在 | 登录完成仍标记为未验证；没有完整的 Gemini/豆包页面 Driver；ChatGPT Driver 仍依赖受信任宿主提供真实页面选择器与身份观察器 |
+| 原生记忆与工具 | Native Profile 将记忆边界标记为 Provider Managed，不复制网页端 Cookie 或历史消息 | 尚未验证各 Provider 实际账号身份、记忆设置和原生工具能力；不能承诺平台记忆一定生效 |
+| 群聊协作 Hub | 增加 Focus / Compare / Team 计划、依赖 DAG、预算、专用执行身份、上下文授权、审核、取消、成果发布和用量账本 | 协作 Schema 默认不创建；生产数据库尚未迁移；真实 Provider 自动执行未启用 |
+| macOS 协作工作台 | 已接入协作列表、创建表单、成果查看、审核、取消和发布确认 | 未完成真实 GUI 操作验收、实时状态推送和完整异常恢复验收 |
+| Runtime | 新增 Provider-neutral Runner 契约、账号租约、无自动重试与不确定结果隔离；API 有手动单任务宿主 | Runner 尚未接入生产 Runtime 的自动启动与持续调度；Native 真实执行链路未接通 |
+| 浏览器开发载荷 | 固定依赖锁、Chromium 候选载荷、搬迁验证、开发版 App 子进程监管 | 当前是开发候选包；manifest 未批准发布，不能视为正式签名发布依赖 |
+| Installer / DB Migration | 协作迁移脚本加入安装程序白名单；迁移具备 dry-run、在线备份、SHA-256 manifest、事务回滚和幂等检查 | 安装不会自动启用协作 Schema；真实数据库迁移、备份恢复和 Mac 安装验收尚未执行 |
+| Engine | 现有 App / Hub / Engine 架构保留 | 外部 pack-headless-l2 源码与真实产物仍需固定版本；干净克隆完整构建 DMG 尚未验收 |
 
-## 3. 目标架构
+## 4. 安全与数据边界
 
-### App 层
+### Native Account
 
-- Agent Registry：统一管理 Agent Profile、Provider、模式、模型、账号、能力和状态。
-- Provider Catalog：声明登录入口、域名范围、支持的认证方式、能力和限制。
-- Credential Vault：所有 API Key、原生会话交接票据和 Hub 凭证进入 macOS Keychain。
-- Workspace：统一会话、任务、素材、文件、Prompt 和项目上下文。
-- Policy UI：由用户明确授权工具、文件、网络、浏览器和本机操作权限。
+- 每个账号使用独立本地 Profile 和浏览器数据目录。
+- 登录由用户手动完成；不自动填写密码，不绕过验证码、挑战或风控。
+- 不导出 Cookie，不将服务商私有记忆复制到 Pack。
+- 新会话可以使用服务商账号自身提供的记忆能力，但当前尚未验证实际记忆状态。
+- 页面状态、账号身份、模型和记忆设置必须由真实 Provider Driver 观察并复核；不能只凭域名或用户填写的名称判定已登录。
 
-当前已在 `PackCore` 中落地第一版 `AgentProfile` 类型和边界校验：Native Account 只能引用原生会话、使用 Provider Account 上下文；Official API 只能引用 API Key、使用 Pack Workspace 上下文；两种模式的记忆所有权不能混用。已新增 AgentRegistry、候选 Provider Catalog 和单进程 AgentRegistryStore（独立私有目录、版本化 JSON、原子写入）。尚未接入 App UI、实际 Keychain Vault、Provider 登录或 API 调用。
+### Official API
 
-### Agent Adapter 层
+- API Key 只进入 device-only Keychain；注册表只保存 UUID 引用。
+- 当前 Adapter 是文本调用，不开放模型工具、附件或多模态执行。
+- 每次请求展示准确目标、模型和不含密钥的请求正文，用户明确批准后才读取密钥并发送。
+- 不自动切换模型、不做应用层重试；网络结果或任务提交结果不确定时保留账号租约，禁止盲目重发。
+- Token usage 是 Provider 返回的报告值，不等于财务账单；当前不估算费用。
 
-统一接口至少应表达：
+### 群聊协作
 
-- `provider_id`、`agent_id`、`mode`；
-- 原生账号 Profile 或 API Credential Reference；
-- 模型、上下文窗口和能力声明；
-- 工具清单、权限范围和执行环境；
-- 记忆来源、读写权限与保留策略；
-- 超时、并发、取消和重试策略。
+- 协作数据库 Schema 由用户显式启用；先 dry-run，再备份，再执行事务迁移。
+- 专用 Agent 身份使用独立令牌和工具白名单；普通成员权限不能自动继承。
+- 上下文按任务步骤授权，不自动读取全房间历史或其他 Agent 的私有记忆。
+- Hub 取消不保证已经发出的 Provider 请求停止，也不保证不会产生费用。
+- 尚未完成全局侧信道审计和生产级数据隔离前，不得向不可信 Agent 投递敏感内容。
 
-Native Adapter 与 API Adapter 必须是不同实现，不得用 API Key 冒充原生个人账号，也不得假设 API 可以读取服务商网页账号的私人记忆。
+## 5. 当前主要风险与下一步
 
-- Native Account：每个 Provider 账号使用独立、持久化的 WebKit 数据目录；登录态、历史、个性化记忆和服务商原生工具留在该账号内，不跨 Agent 共享 Cookie，不把网页端私有记忆抓取后伪装成 Pack 记忆。
-- Official API：只使用官方数据面 API 和 API 凭证；凭证仅存 Keychain，Profile 只保存引用。上下文和可持久化记忆由 Pack Workspace 管理，工具调用必须显式声明并经过 Pack 权限策略。
-- 两种模式可以并存于同一 Provider，但必须创建不同 Profile；用户添加时明确选择模式，不能自动把 Native Profile 静默降级为 API Profile。
+1. **先完成 Native 身份验证链路。** 建立真实的账号身份登记、模型/记忆状态观察与发送前复核；先完成 ChatGPT，再按同一接口接入 Gemini、豆包。页面选择器和身份观察必须基于真实页面验收，不猜测 DOM。
+2. **完成 API 实机验证。** 先以 Gemini API 为重点，再验证 OpenAI 与 Ark；使用用户自己的 Key，在本机验证成功、拒绝、限流、超时、取消和结果不确定路径。测试日志不得包含密钥。
+3. **接通生产 Runtime。** 将可信宿主、账号租约、审批、Hub 任务提交和恢复策略接入实际应用运行循环；自动调度必须在手动闭环可靠后再启用。
+4. **完成协作安全审查。** 检查全部旧 Hub 读取/写入路径、消息、附件、审计和错误日志，验证普通 Agent 无法旁路专用身份和上下文授权。
+5. **完成 Mac 实机验收。** 先备份现有数据，执行只读检查与迁移 dry-run，再验证安装、升级、卸载、重装、数据库备份恢复和 Keychain。未经明确确认，不迁移真实生产数据库。
+6. **固定 Engine 依赖。** 纳入或固定 pack-headless-l2 源码版本，生成可审查的 Engine 产物锁，并从干净克隆验证完整 DMG。
 
-### Hub / Runtime / Engine 层
-
-- Hub 负责身份、任务状态机、协作、审计、配置和持久化。
-- Runtime 负责 Agent 生命周期、任务执行、超时、重试和恢复。
-- Engine 负责隔离的浏览器/桌面自动化及本机 IPC。
-- Provider 业务逻辑不得散落在 SwiftUI View 或通用任务状态机中。
-
-## 4. 当前已完成的安全与可靠性整改
-
-- Installer：LaunchAgent 所有权校验、独占写入、失败回滚、卸载保护、验证数据根目录后的安全重装。
-- Runtime：有界子进程、执行超时、输入/输出限制、取消和 Hub 瞬时错误重试分类。
-- Hub：任务取消/审核/转交/接力的状态比较更新；自动接力 Savepoint；附件哈希校验、原子写入和权限收紧；可搬迁备份清单与完整备份集轮换。
-- App：Hub URL 主机白名单、禁止 Hub 请求重定向、迁移凭证使用 device-only Keychain；原生会话交接增加数据上限和过期票据清理。
-
-这些改动仍需通过完整 CI 和 macOS 真机验收；代码提交或单元测试通过不等于端到端部署已验收。
-
-## 5. 下一阶段优先级
-
-1. **锁定 Engine 源码依赖**：将 `pack-headless-l2` 纳入组织仓库并固定 commit，或以受控 submodule/vendor 方式纳入；验证它实现的 IPC 协议与 App/L2 handoff 契约一致。
-2. **完成 App / Hub / Engine 端到端验收**：登录、会话交接、任务执行、取消、超时、崩溃恢复、卸载和安全重装。
-3. **Provider Registry**：先抽象 Provider Profile、账号身份和隔离存储，再添加 ChatGPT、豆包等原生登录入口。
-4. **官方 API 模式**：建立独立 API Adapter、Keychain 凭证管理、模型选择、速率限制、成本记录和权限策略。
-5. **统一任务与记忆边界**：为 Native 与 API 定义明确的上下文来源、记忆读写权限和可审计的上下文传递。
-6. **完整迁移与恢复**：设计包含数据库、附件、配置和受保护凭证的安全迁移流程；当前 DB+附件备份不是完整迁移包。
+当前 PR #52 保持 Draft，不因 CI 全绿直接合并。应先完成模块审查和 Mac 实机验收，再决定是否拆分、合并或继续补齐。
 
 ## 6. 发布验收底线
 
@@ -88,15 +86,12 @@ Native Adapter 与 API Adapter 必须是不同实现，不得用 API Key 冒充�
 - Native 与 API 凭证、账号、记忆和工具权限相互隔离。
 - 任务状态转换具备并发保护；进程有超时、输出/输入上限和可恢复策略。
 - 安装、升级、卸载、重装和数据迁移均有自动化测试与 macOS 真机验收记录。
+- Provider 真实账号与 API 请求分别验收；CI fixture 不能替代真实平台验收。
+- 协作 Schema 默认关闭，只有用户明确启用并完成备份后才允许迁移。
+- 不确定的模型调用或 Hub 提交不得自动重试。
 
-## 开源 Engine 候选
+## 相关文档
 
-详见 [ENGINE-OPTIONS.md](ENGINE-OPTIONS.md)。已完成文档初筛，未引入第三方依赖，也未替换现有 Engine。
-
-## Provider 扩展与 API 凭证
-
-Gemini / Gemini API 已纳入候选目录，新增 UUID 引用工厂和 API-only Keychain Vault。实际 Provider 接入、UI、签名环境 Keychain 验收仍待完成。详见 [AGENT-PROVIDERS.md](AGENT-PROVIDERS.md)。
-
-### Agent 双模式管理 UI（PR #52 草稿）
-
-新增本机 Agent 档案及 API Keychain insert-only 配置界面；原生登录、真实 API 验证、Hub 执行身份绑定与运行循环尚未接通。状态不等于已上线成员。详见 GROUP-COLLABORATION.md 第二十三阶段。
+- Engine 选型：ENGINE-OPTIONS.md
+- Provider 设计：AGENT-PROVIDERS.md
+- 群聊协作实施记录：GROUP-COLLABORATION.md
