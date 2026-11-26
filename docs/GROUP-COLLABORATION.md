@@ -194,3 +194,7 @@ Agent 身份认证后提供 API 手动执行入口，真实专用身份一次心
 ## 第三十三阶段：开发版原生浏览器 App 进程监管
 
 新增独立 dev bundle builder，候选载荷同 revision/arch 校验、固定 Resources 路径与显式 marker、ad-hoc seal/复验、不覆盖已有 App；标准 make-bundle/DMG 不变。AppState 持有单一 NativeLoginProcessSupervisor，无 shell、固定内置 Node/CLI、最小环境、stdout/stderr 丢弃；进程运行非登录证明，stdin EOF 正常关闭（父进程退出也触发）、45 秒未确认提示，不强杀或清除租约，异常不自动重启。CLI --managed-login 仅非 TTY 管道，用户手动操作浏览器，无身份登记/任务发送。Swift 测试覆盖子进程 EOF、并发和异常退出；dev bundle 实机签名/GUI 启动未验证，生产发布与真实 Provider 驱动仍禁用。开发包与原 Pack 共 bundle ID 和本地资料，打开前退出其他实例。
+
+## 第三十四阶段：协作数据库显式迁移
+
+新增 `collaboration_migrate.py`，作为安装包白名单程序文件。安装不自动创建协作 schema；需用户显式执行 `--enable-collaboration`。先 `--dry-run` 检查，再正式执行。迁移先用 SQLite backup API 做在线一致性快照，落到 `local-hub/backups/migrations/`，生成 SHA-256 manifest 并跑 integrity_check；随后在一个 `BEGIN IMMEDIATE` 中新增协作表、任务保护触发器和 `pack_schema_migrations` v1 标记。已有任务/消息/成员不重写。重复运行校验完整 schema 后幂等返回；部分/无版本旧协作对象、损坏 DB、非用户拥有/符号链接 DB 与 SQLite sidecar、非安全备份路径均 fail closed。迁移异常事务回滚且保留备份，不自动覆盖式恢复。CI 覆盖显式授权、dry-run、备份可读、数据保留、幂等、部分 schema 拒绝、失败原子回滚和路径安全。生产安装仍不自动启用协作 schema，正式数据库和 Mac 实机迁移尚未执行。

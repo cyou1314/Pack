@@ -33,6 +33,7 @@ HUB_PROGRAM_FILES = (
     'hub.py', 'room_watch.py', 'backup-db.sh', 'verify-backup.sh',
     'collaboration_policy.py', 'collaboration_store.py',
     'collaboration_dispatch.py', 'collaboration_guard.py', 'collaboration_context.py',
+    'collaboration_migrate.py',
 )
 INSTALLER_MARKER = 'com.cyou.pack.installer.v1'
 OWNER_MARKER = '.pack-installer-owner.json'

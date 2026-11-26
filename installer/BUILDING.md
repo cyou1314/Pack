@@ -69,3 +69,13 @@ DMG 构建与安装器使用固定 Hub 程序文件白名单，包括五个 coll
 Browser CI pins the checked-in npm lock and builds an isolated candidate using `stage-browser-candidate.sh NEW_DIRECTORY BROWSER_CACHE NODE_BINARY` with already installed, trusted development dependencies. `browser-payload.py create/verify --payload DIR --lock FILE --revision FULL_COMMIT --architecture arm64` inventories the exact payload and detects changes. Candidate reports explicitly have release_approved:false; do not substitute them for the approved Engine lock or install them on a user's Mac. Independent binary provenance, code-signing, redistribution notices, both target architectures, installer transaction integration and production feature gating remain required.
 
 For opt-in GUI testing only, use `bash app/make-browser-dev-bundle.sh /absolute/new/PackNativeDev.app CANDIDATE_DIRECTORY CANDIDATE_MANIFEST`. It verifies the same revision and local architecture before/after copying and signing, reserves a new destination, and enables the developer-only fixed bundled launch path. No production DMG changes or automatic dependency installation. The bundle shares Pack's existing identity/data; quit normal Pack before opening. The candidate must be explicitly trusted by the developer; ad-hoc signatures are not publisher assurance.
+
+### Explicit collaboration schema migration
+
+The installer deliberately does **not** create the optional collaboration schema. After Pack is installed and the Hub database exists, inspect first with:
+
+```bash
+~/.pack/local-hub/python/bin/python3 ~/.pack/local-hub/collaboration_migrate.py --enable-collaboration --dry-run
+```
+
+Only after reviewing `status: ready`, explicitly apply with the same command without `--dry-run`. The migration takes a SQLite online snapshot into `~/.pack/local-hub/backups/migrations/`, writes a SHA-256 manifest, verifies the backup with `PRAGMA integrity_check`, then uses one `BEGIN IMMEDIATE` transaction to add the collaboration tables, task-guard triggers and `pack_schema_migrations` v1 marker. Existing Hub tasks/messages/members are not rewritten. Repeat runs verify the marker and required objects and do not create another backup. Failure rolls back the schema transaction and retains the pre-migration snapshot; the tool never auto-restores a backup over a live database. Symlinked/unowned DBs, unsafe SQLite sidecars, incompatible Hub schemas, partial or unversioned collaboration objects fail closed. This is an explicit feature opt-in, not part of install/reinstall. Keep backups through acceptance and never downgrade a DB after enabling the collaboration ledger.

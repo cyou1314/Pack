@@ -10,7 +10,7 @@ ENGINE_LOCK="${PACK_BUILD_ENGINE_LOCK:-$ROOT/installer/engine.lock.json}"
 
 fail() { echo "Pack DMG preflight failed: $*" >&2; exit 1; }
 # Explicit program-only allowlist; parity with manager.py is checked in CI.
-HUB_PROGRAM_FILES=(hub.py room_watch.py backup-db.sh verify-backup.sh collaboration_policy.py collaboration_store.py collaboration_dispatch.py collaboration_guard.py collaboration_context.py)
+HUB_PROGRAM_FILES=(hub.py room_watch.py backup-db.sh verify-backup.sh collaboration_policy.py collaboration_store.py collaboration_dispatch.py collaboration_guard.py collaboration_context.py collaboration_migrate.py)
 [ -f "$ENGINE_LOCK" ] && [ ! -L "$ENGINE_LOCK" ] || fail "missing approved Engine lock: $ENGINE_LOCK (see installer/BUILDING.md)"
 for f in "${HUB_PROGRAM_FILES[@]}"; do
   [ -f "$ROOT/hub/$f" ] && [ ! -L "$ROOT/hub/$f" ] || fail "missing or unsafe Hub program file: $f"
