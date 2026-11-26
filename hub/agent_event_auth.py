@@ -32,6 +32,7 @@ def create_agent_event_pair_code(
     *,
     token_factory,
     hash_token,
+    policy=None,
 ) -> dict[str, Any]:
     """Issue a short-lived, single-use pairing code for one registered Agent."""
     agent_id = _required_text(agent_id, "agent_id")
@@ -59,6 +60,9 @@ def create_agent_event_pair_code(
             if agent["status"] not in PAIRABLE_AGENT_STATES or agent["provider_status"] != "active":
                 raise ValueError("agent_not_pairable")
 
+            if policy is not None:
+                policy.require_dispatcher(connection, actor)
+                policy.require_agent(connection, agent_id)
             now = float(context.clock())
             # Only one unused code can exist per Agent. A new code revokes the
             # previous one, including a locked code, without touching tokens.
@@ -102,6 +106,7 @@ def redeem_agent_event_pair_code(
     global_fail_max: int = PAIR_GLOBAL_FAIL_MAX,
     code_fail_lock: int = PAIR_CODE_FAIL_LOCK,
     token_ttl_seconds: int = AGENT_EVENT_TOKEN_TTL,
+    policy=None,
 ) -> dict[str, Any]:
     """Redeem a single-use code and return a write-only Agent event token once."""
     if not isinstance(code, str) or not code.strip() or len(code.strip()) > 256:
@@ -179,6 +184,11 @@ def redeem_agent_event_pair_code(
                 or agent["provider_status"] != "active"):
             known_fail("agent_unavailable")
 
+        if policy is not None:
+            try:
+                policy.require_agent(connection, agent["agent_id"])
+            except PermissionError:
+                known_fail("agent_binding_unavailable")
         token = token_factory()
         if not isinstance(token, str) or not 32 <= len(token) <= 256:
             raise RuntimeError("agent_event_token_generation_failed")
@@ -219,12 +229,14 @@ def redeem_agent_event_pair_code(
         connection.close()
 
 
-def authenticate_agent_event_token(context, token: str, *, hash_token) -> dict[str, Any] | None:
+def authenticate_agent_event_token(context, token: str, *, hash_token, policy=None) -> dict[str, Any] | None:
     """Resolve a valid Agent-only events:write token; never accepts member tokens."""
     if not isinstance(token, str) or not token or len(token) > 256:
         return None
     connection = context.connect()
     try:
+        if policy is not None:
+            connection.execute("BEGIN")
         row = connection.execute(
             """SELECT t.token_id,t.agent_id,t.scope,t.expires_at,
                       a.provider_id,a.status AS agent_status,
@@ -246,6 +258,11 @@ def authenticate_agent_event_token(context, token: str, *, hash_token) -> dict[s
             return None
         if row["provider_status"] != "active":
             return None
+        if policy is not None:
+            try:
+                policy.require_agent(connection, row["agent_id"])
+            except PermissionError:
+                return None
         return {
             "token_id": int(row["token_id"]),
             "agent_id": row["agent_id"],
@@ -256,10 +273,10 @@ def authenticate_agent_event_token(context, token: str, *, hash_token) -> dict[s
         connection.close()
 
 
-def get_agent_event_capabilities(context, token: str, *, hash_token) -> dict[str, Any]:
+def get_agent_event_capabilities(context, token: str, *, hash_token, policy=None) -> dict[str, Any]:
     """Return additive event-envelope capabilities for an authenticated Agent."""
     identity = authenticate_agent_event_token(
-        context, token, hash_token=hash_token,
+        context, token, hash_token=hash_token, policy=policy,
     )
     if identity is None:
         raise PermissionError("agent_event_unauthorized")
@@ -275,6 +292,8 @@ def revoke_agent_event_tokens(
     actor: dict[str, Any],
     agent_id: str,
     token_id: int | None = None,
+    *,
+    policy=None,
 ) -> dict[str, Any]:
     """Revoke one token or every active event token for an Agent."""
     agent_id = _required_text(agent_id, "agent_id")
@@ -294,6 +313,8 @@ def revoke_agent_event_tokens(
             ).fetchone()
             if not agent:
                 raise ValueError("agent_not_found")
+            if policy is not None:
+                policy.require_dispatcher(connection, actor)
             now = float(context.clock())
             if token_id is None:
                 cursor = connection.execute(

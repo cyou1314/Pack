@@ -203,6 +203,7 @@ def ingest_agent_event_with_token(
     *,
     hash_token,
     max_events_per_minute: int = 1200,
+    policy=None,
 ) -> dict[str, Any]:
     """Authenticate an Agent token and atomically append one scoped event.
 
@@ -245,6 +246,8 @@ def ingest_agent_event_with_token(
                 raise PermissionError("agent_event_unauthorized")
 
             agent_id = auth["agent_id"]
+            if policy is not None:
+                policy.require_agent(connection, agent_id)
             provider_id = auth["provider_id"]
             if "agentId" in event and event["agentId"] != agent_id:
                 raise ValueError("agent_identity_mismatch")
