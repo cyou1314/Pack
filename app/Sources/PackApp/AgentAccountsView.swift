@@ -47,7 +47,7 @@ struct AgentAccountsView: View {
         .onDisappear { generation = UUID(); accounts = []; loaded = false; busy = false }
         .sheet(isPresented:$adding,onDismiss:{ Task { await refresh() } }) { AgentAccountCreateSheet() }
         .sheet(item:$nativeLoginTarget) { account in
-            NativeLoginGuide(account:account)
+            NativeLoginGuide(account:account,supervisor:state.nativeLoginSupervisor)
         }
         .sheet(item:$bindingTarget) { account in
             AgentBindingSheet(state:state,account:account,scope:state.collaborationScope)
@@ -226,6 +226,10 @@ private struct AgentAccountKeySheet: View {
 private struct NativeLoginGuide: View {
     @Environment(\.dismiss) private var dismiss
     let account:AgentAccountSummary
+    @ObservedObject var supervisor:NativeLoginProcessSupervisor
+    @State private var starting = false
+    @State private var note = ""
+    @State private var confirm = false
     private var command:String {
         "node runtime/browser-driver/native-login-cli.mjs " + account.id.uuidString.lowercased()
     }
@@ -233,7 +237,26 @@ private struct NativeLoginGuide: View {
         VStack(alignment:.leading,spacing:DesignTokens.settingsGap) {
             Text("原生账号登录 · 开发版").font(DesignTokens.shellTitle)
             Text(verbatim:account.profile.displayName)
-            Text("当前正式安装包尚未内置经过完整性验证的浏览器运行时。仅在可信 Pack 源码及已安装匹配 Chromium 的开发环境中使用以下命令。")
+            if NativeBrowserDevBundle.available {
+                Text("当前为独立开发版 App，浏览器运行时随包提供。仅手动登录，不验证账号身份，不参与协作执行。")
+                    .foregroundStyle(DesignTokens.subText)
+                if supervisor.accountID == account.id {
+                    Text(phaseLabel).font(DesignTokens.fontSmall)
+                } else if supervisor.phase.active {
+                    Text("另一 Agent 正在使用登录浏览器。").foregroundStyle(DesignTokens.amber)
+                }
+                HStack {
+                    Button("打开独立登录浏览器…") { confirm = true }
+                        .disabled(starting || supervisor.phase.active)
+                    if supervisor.accountID == account.id && supervisor.phase == .running {
+                        Button("关闭浏览器并保存会话") { supervisor.stop() }
+                    }
+                    if starting { ProgressView().controlSize(.small) }
+                }
+                if !note.isEmpty { Text(note).foregroundStyle(DesignTokens.amber) }
+                Divider()
+            }
+            Text("当前正式安装包尚未内置经过发布验证的浏览器运行时。仅在可信 Pack 源码及已安装匹配 Chromium 的开发环境中使用以下命令。")
                 .foregroundStyle(DesignTokens.subText)
             Text("在仓库根目录的终端执行：").font(DesignTokens.fontSmall)
             Text(verbatim:command).font(.system(.body,design:.monospaced)).textSelection(.enabled)
@@ -243,9 +266,34 @@ private struct NativeLoginGuide: View {
                 .foregroundStyle(DesignTokens.subText)
             HStack {
                 Spacer()
-                Button("关闭") { dismiss() }
+                Button("关闭") { dismiss() }.disabled(starting)
             }
         }.font(DesignTokens.fontUI).padding(DesignTokens.settingsInset)
         .frame(width:DesignTokens.settingsWidth)
+        .interactiveDismissDisabled(starting)
+        .alert("启动开发版独立浏览器？",isPresented:$confirm) {
+            Button("启动") { Task { await launch() } }
+            Button("取消",role:.cancel) {}
+        } message: {
+            Text("只打开当前档案的浏览器。请自行登录，不会读取 Cookie、调用模型或验证个人记忆。")
+        }
+    }
+    private var phaseLabel:String {
+        switch supervisor.phase {
+        case .idle: return "尚未启动"
+        case .starting: return "启动中"
+        case .running: return "登录进程运行中 · 实际页面与登录状态未验证"
+        case .stopping: return "正在关闭并保存会话"
+        case .stopUnconfirmed: return "关闭未确认 · 不会强杀进程或清除租约"
+        case .closed: return "进程正常退出 · 登录身份未验证"
+        case .recoveryRequired: return "进程异常或启动失败 · 请检查租约，不要盲目删除"
+        }
+    }
+    @MainActor private func launch() async {
+        guard !starting,!supervisor.phase.active else { return }
+        starting = true; note = ""
+        defer { starting = false }
+        do { try await NativeBrowserDevBundle.open(account:account,supervisor:supervisor) }
+        catch { note = "启动失败：开发包完整性、运行时或账号状态不可用。" }
     }
 }

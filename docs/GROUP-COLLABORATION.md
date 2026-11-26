@@ -190,3 +190,7 @@ Agent 身份认证后提供 API 手动执行入口，真实专用身份一次心
 ## 第三十二阶段：浏览器开发依赖固定与可搬迁载荷候选
 
 依据两次成功 CI 日志一致的 npm tarball/SHA-512 重建仓库 package-lock.json，CI 不再每次重新解析依赖。固定 Chromium 1255/full+headless 与 FFmpeg 1013 目录，独立 CI cache；stage-browser-candidate.sh 按 allowlist 创建新目录，browser-payload.py 校验结构、程序文件、私有数据常见名称、相对内链，生成逐文件 SHA-256/模式/路径清单及整体摘要，显式 revision/arch；CI 使用独立 HOME、显式 browser path、复制 Node 测试搬迁启动并再次核对载荷。仅候选 manifest（release_approved:false），不等价于签名、上游二进制独立校验、许可证/双架构验收或正式发布；未接生产 DMG/installer，无本机文件改动。
+
+## 第三十三阶段：开发版原生浏览器 App 进程监管
+
+新增独立 dev bundle builder，候选载荷同 revision/arch 校验、固定 Resources 路径与显式 marker、ad-hoc seal/复验、不覆盖已有 App；标准 make-bundle/DMG 不变。AppState 持有单一 NativeLoginProcessSupervisor，无 shell、固定内置 Node/CLI、最小环境、stdout/stderr 丢弃；进程运行非登录证明，stdin EOF 正常关闭（父进程退出也触发）、45 秒未确认提示，不强杀或清除租约，异常不自动重启。CLI --managed-login 仅非 TTY 管道，用户手动操作浏览器，无身份登记/任务发送。Swift 测试覆盖子进程 EOF、并发和异常退出；dev bundle 实机签名/GUI 启动未验证，生产发布与真实 Provider 驱动仍禁用。开发包与原 Pack 共 bundle ID 和本地资料，打开前退出其他实例。

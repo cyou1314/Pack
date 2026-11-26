@@ -10,15 +10,36 @@ const controller=new AbortController();
 const interrupt=()=>controller.abort();
 process.once('SIGINT',interrupt);
 process.once('SIGTERM',interrupt);
+let managed=false;
 try {
   const diagnostic=process.argv.length===4&&process.argv[3]==='--diagnose';
-  if((process.argv.length!==3&&!diagnostic)||!process.stdin.isTTY||!process.stdout.isTTY)
+  managed=process.argv.length===4&&process.argv[3]==='--managed-login';
+  if(managed) {
+    // Parent owns the only write end. EOF also stops the browser if the
+    // App crashes/exits. No command language, credential or prompt channel.
+    if(process.stdin.isTTY||process.stdout.isTTY)throw Error('managed_pipe_required');
+    process.stdin.once('end',interrupt);
+    process.stdin.once('error',interrupt);
+    process.stdin.on('data',interrupt);
+    process.stdin.resume();
+  } else if((process.argv.length!==3&&!diagnostic)||!process.stdin.isTTY||!process.stdout.isTTY)
     throw Error('interactive_login_required');
   const directory=path.join(os.homedir(),'.pack','agents-v2');
   const binding=await resolveNativeLogin({directory,accountRef:process.argv[2]});
   console.log('Opening an isolated Pack browser. Sign in manually; do not enter passwords in this terminal.');
   const result=await runNativeLogin({binding,createSessions:createBrowserSessions,signal:controller.signal,
     waitForExit:({context,signal})=>new Promise(resolve=>{
+      if(managed) {
+        const finish=()=>{
+          context.off('close',finish);
+          signal?.removeEventListener('abort',finish);
+          resolve();
+        };
+        context.once('close',finish);
+        signal?.addEventListener('abort',finish,{once:true});
+        if(signal?.aborted)finish();
+        return;
+      }
       const rl=readline.createInterface({input:process.stdin,output:process.stdout});
       const finish=()=>{
         context.off('close',finish);
@@ -52,6 +73,12 @@ try {
   console.error('Native login could not be completed. Check profile, pinned browser dependencies and lease state. Do not remove a lease until the browser is confirmed stopped.');
   process.exitCode=1;
 } finally {
+  if(managed){
+    process.stdin.pause();
+    process.stdin.removeListener('end',interrupt);
+    process.stdin.removeListener('error',interrupt);
+    process.stdin.removeListener('data',interrupt);
+  }
   process.removeListener('SIGINT',interrupt);
   process.removeListener('SIGTERM',interrupt);
 }

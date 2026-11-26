@@ -9,6 +9,7 @@ struct RoomItem: Identifiable {
 
 @MainActor
 final class AppState: ObservableObject {
+    let nativeLoginSupervisor = NativeLoginProcessSupervisor()
     @Published var manualPresence: [UUID: ManualPresenceSnapshot] = [:]
     var manualPresenceJobs: [UUID: Task<Void,Never>] = [:]
     @Published var messages: [RoomMessage] = []

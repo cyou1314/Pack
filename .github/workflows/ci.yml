@@ -34,6 +34,7 @@ jobs:
           bash -n tests/hub-staging56/run_tests.sh
           bash -n installer/build-dmg.sh
           bash -n app/make-bundle.sh
+          bash -n app/make-browser-dev-bundle.sh
           bash -n app/test-make-bundle.sh
       - name: Python compile
         run: |
