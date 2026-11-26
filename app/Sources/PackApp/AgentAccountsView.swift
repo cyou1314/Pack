@@ -237,6 +237,8 @@ private struct NativeLoginGuide: View {
                 .foregroundStyle(DesignTokens.subText)
             Text("在仓库根目录的终端执行：").font(DesignTokens.fontSmall)
             Text(verbatim:command).font(.system(.body,design:.monospaced)).textSelection(.enabled)
+            Text("只读页面诊断：在同一命令末尾添加 --diagnose。回车时仅输出固定控件数量，不包含聊天内容或账号信息。")
+                .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             Text("浏览器会打开独立档案。请自行登录平台；终端回车关闭并保留会话。不验证登录身份、模型或记忆，不启动执行器。")
                 .foregroundStyle(DesignTokens.subText)
             HStack {

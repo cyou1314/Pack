@@ -4,13 +4,15 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { resolveNativeLogin,runNativeLogin } from './native-login.mjs';
 import { createBrowserSessions } from './playwright.mjs';
+import { diagnoseNativeSurface } from './native-diagnostics.mjs';
 
 const controller=new AbortController();
 const interrupt=()=>controller.abort();
 process.once('SIGINT',interrupt);
 process.once('SIGTERM',interrupt);
 try {
-  if(process.argv.length!==3||!process.stdin.isTTY||!process.stdout.isTTY)
+  const diagnostic=process.argv.length===4&&process.argv[3]==='--diagnose';
+  if((process.argv.length!==3&&!diagnostic)||!process.stdin.isTTY||!process.stdout.isTTY)
     throw Error('interactive_login_required');
   const directory=path.join(os.homedir(),'.pack','agents-v2');
   const binding=await resolveNativeLogin({directory,accountRef:process.argv[2]});
@@ -28,9 +30,18 @@ try {
       };
       context.once('close',finish);
       signal?.addEventListener('abort',finish,{once:true});
-      rl.once('line',finish);
+      rl.once('line',async()=>{
+        if(diagnostic&&!signal?.aborted){
+          try{
+            const report=await diagnoseNativeSurface({context,provider:binding.provider,signal});
+            if(!signal?.aborted)console.log(JSON.stringify(report,null,2));
+          }catch{console.error('Read-only diagnostic unavailable.');}
+        }
+        finish();
+      });
       rl.once('close',finish);
-      console.log('Press Enter to close and preserve the session. Login, identity and memory remain unverified.');
+      console.log(diagnostic?'After manually opening the intended provider page, press Enter to print fixed probe counts and close. No identity or execution verification.':
+        'Press Enter to close and preserve the session. Login, identity and memory remain unverified.');
       if(signal?.aborted) finish();
     })
   });

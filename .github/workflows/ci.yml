@@ -124,8 +124,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install pinned Playwright Core
-        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
+      - name: Generate and validate candidate dependency lock
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+          node verify-candidate-lock.mjs
+      - name: Preserve candidate lock for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-dependency-lock-candidate
+          path: runtime/browser-driver/package-lock.json
+          if-no-files-found: error
+      - name: Install exact candidate lock
+        run: npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
       - name: Install matching Chromium
         run: node node_modules/playwright-core/cli.js install chromium
       - name: Local browser isolation smoke

@@ -182,3 +182,7 @@ Agent 身份认证后提供 API 手动执行入口，真实专用身份一次心
 ## 第三十阶段：ChatGPT 页面传输层（隔离 Chromium fixture）
 
 新增 ChatGPT-specific Playwright driver，固定 https://chatgpt.com/ fresh-chat，限定 reviewed data-attribute selector contract，拒绝多页/旧消息/重复控件/非同源或未知状态。授权后核对实际 composer 文本，仅一次点击，绑定 local draft 与新 /c/ ID、用户 turn ID、唯一 assistant turn；明确终结标志+两次稳定读取+身份复核后交付，部分回复/切换/异常不重试。接 native identity verifier，需可信实际账号/工作空间/模型/记忆 observer；没有可用的真实页面合约，不默认激活。Chromium CI synthetic route 全网络拦截，测试实际浏览器 DOM、完整 adapter 调用、旧对话、重复发送控件、身份切换及稳定部分回复。此阶段不代表真实 ChatGPT 站点兼容，未接 App/CLI 实际执行，Gemini/豆包及生产 schema 不变。
+
+## 第三十一阶段：原生只读诊断与候选依赖锁
+
+开发版原生登录命令支持 --diagnose，用户手动进入 Provider 页面后回车输出固定候选控件计数、页面类别，拒绝多页/异源/导航变化；不采集聊天、账号、URL 或动态属性，不赋予身份认证/执行资格。ChatGPT 固定探针仅候选，Gemini/豆包仅 origin 分类。Browser CI 使用官方 registry 生成候选 lock，校验 v3、唯一固定版本、tarball URL 与 canonical SHA-512，artifact 保存供审核，再 npm ci；非正式发布信任根，未凭空填入哈希。正式锁文件/Chromium 与 Node 二进制完整性、签名许可、真实 Provider 适配、生产迁移仍未完成。
