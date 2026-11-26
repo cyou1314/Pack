@@ -74,8 +74,8 @@ PR #42 已合并到 Foundation 分支，不代表已进入 main。以下 PR 仍�
 
 - PR：[ #52 ](https://github.com/cyou1314/Pack/pull/52)
 - Base：main
-- 当前 head：ce6e2e8431a6cd5d8c40e956e1cdda06548019e4
-- Draft，43 次提交、73 个文件、约 9.5k 行新增。
+- 最新代码改动提交：3fe96df42b808c07d338f3203348d29c7c77a1e5；其后为文档/审计同步，当前 HEAD 以 PR 页面为准。
+- Draft，40+ 次提交、70+ 个文件、约 9.5k 行新增。
 
 PR #52 与 M2 PR #47 只有两个直接文件重叠：
 
