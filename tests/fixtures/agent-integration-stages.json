@@ -1,0 +1,62 @@
+[
+  {
+    "providerID": "muse",
+    "mode": "nativeAccount",
+    "stage": "legacyCompatibility",
+    "implementedCapabilities": []
+  },
+  {
+    "providerID": "chatgpt",
+    "mode": "nativeAccount",
+    "stage": "nativeDriverCandidate",
+    "implementedCapabilities": []
+  },
+  {
+    "providerID": "gemini",
+    "mode": "nativeAccount",
+    "stage": "nativeLoginDevelopment",
+    "implementedCapabilities": []
+  },
+  {
+    "providerID": "doubao",
+    "mode": "nativeAccount",
+    "stage": "nativeLoginDevelopment",
+    "implementedCapabilities": []
+  },
+  {
+    "providerID": "openai",
+    "mode": "officialAPI",
+    "stage": "manualTextAPI",
+    "implementedCapabilities": [
+      "message.send"
+    ]
+  },
+  {
+    "providerID": "gemini-api",
+    "mode": "officialAPI",
+    "stage": "manualTextAPI",
+    "implementedCapabilities": [
+      "message.send"
+    ]
+  },
+  {
+    "providerID": "volcengine",
+    "mode": "officialAPI",
+    "stage": "manualTextAPI",
+    "implementedCapabilities": [
+      "message.send"
+    ]
+  },
+  {
+    "providerID": "chatgpt",
+    "mode": "officialAPI",
+    "stage": "unsupported",
+    "implementedCapabilities": []
+  },
+  {
+    "providerID": "unknown",
+    "mode": "nativeAccount",
+    "stage": "unsupported",
+    "implementedCapabilities": []
+  }
+]

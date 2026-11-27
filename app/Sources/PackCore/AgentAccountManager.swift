@@ -18,6 +18,9 @@ public struct AgentAccountSummary: Identifiable, Sendable {
     public var id: UUID { profile.id }
     public let profile: AgentProfile
     public let credentialState: AgentLocalCredentialState
+    public var connectionReport: AgentConnectionReport {
+        .init(profile:profile,credentialState:credentialState)
+    }
 }
 
 /// Local metadata and insert-only credential setup. Deliberately not a Hub

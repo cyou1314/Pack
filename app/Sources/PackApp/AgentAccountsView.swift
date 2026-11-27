@@ -72,6 +72,12 @@ struct AgentAccountsView: View {
                 "Pack 组装任务上下文；持久记忆暂关闭。")
                 .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             Text(statusLabel(account.credentialState)).foregroundStyle(DesignTokens.amber)
+            let report = account.connectionReport
+            Text(integrationLabel(report.stage)).font(DesignTokens.fontSmall)
+            Text("已验证的模型执行能力：尚无 · 自动执行未启用")
+                .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            Text("Hub 专用身份：请在身份绑定页单独查询")
+                .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
             Text("档案 ID："+profile.id.uuidString.lowercased()).font(DesignTokens.fontSmall).textSelection(.enabled)
             if account.credentialState == .apiKeyMissing {
                 Button("配置 API Key…") { keyTarget = account }.disabled(busy)
@@ -94,6 +100,16 @@ struct AgentAccountsView: View {
         .frame(maxWidth:.infinity,alignment:.leading)
         .background(DesignTokens.shellSurface,in:RoundedRectangle(cornerRadius:DesignTokens.boardCardRadius))
         .overlay(RoundedRectangle(cornerRadius:DesignTokens.boardCardRadius).stroke(DesignTokens.hairline))
+    }
+
+    private func integrationLabel(_ stage:AgentIntegrationStage) -> String {
+        switch stage {
+        case .legacyCompatibility: return "旧版 Muse 兼容路径 · 新版执行能力未验证"
+        case .nativeLoginDevelopment: return "独立登录开发版 · 原生发送驱动待接入"
+        case .nativeDriverCandidate: return "独立登录与候选发送驱动 · 真实页面待验证"
+        case .manualTextAPI: return "已实现手动文本 API 适配器 · 实际调用需验证"
+        case .unsupported: return "尚无匹配的接入实现"
+        }
     }
 
     private func statusLabel(_ value:AgentLocalCredentialState) -> String {
