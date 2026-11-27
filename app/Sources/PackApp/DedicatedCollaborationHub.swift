@@ -51,6 +51,7 @@ struct InstanceBoundCollaborationHub: AgentCollaborationHub {
 func withNativeHubTaskBroker<T: Sendable>(
     hubURL: String, instance: AgentHubInstance, destination: AgentExecutionDestination,
     memberId: Int, taskID: Int,
+    authorize: @escaping @Sendable (NativeTaskApproval) async throws -> Bool,
     perform: @Sendable (NativeHubTaskBroker) async throws -> T
 ) async throws -> T {
     guard destination.accessKind == "native",memberId > 0,taskID > 0
@@ -59,7 +60,7 @@ func withNativeHubTaskBroker<T: Sendable>(
         let hub = InstanceBoundCollaborationHub(
             client:try DedicatedCollaborationHub(url:hubURL,memberToken:token),
             instance:instance,destination:destination,memberId:memberId)
-        let broker = try NativeHubTaskBroker(hub:hub,taskID:taskID,destination:destination)
+        let broker = try NativeHubTaskBroker(hub:hub,taskID:taskID,destination:destination,authorize:authorize)
         do {
             let result = try await perform(broker)
             await broker.close()

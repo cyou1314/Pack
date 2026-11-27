@@ -4,7 +4,7 @@
 export function createNativeHubTaskClient({taskId,exchange}={}){
   if(!Number.isSafeInteger(taskId)||taskId<=0||typeof exchange!=='function')
     throw Error('invalid_native_hub_client');
-  const tools=new Set(['task_claim','collaboration_context_get','run_start','task_complete','task_block']);
+  const tools=new Set(['task_claim','collaboration_context_get','run_start','task_complete','task_block','native_egress_authorize','native_send_authorize']);
   let sequence=0,busy=false,terminal=false;
   return async function hubCall(tool,args){
     if(terminal||busy||sequence>=16||!tools.has(tool)||args?.task_id!==taskId)
@@ -32,4 +32,22 @@ export function createNativeHubTaskClient({taskId,exchange}={}){
       throw Error('native_hub_outcome_unconfirmed');
     }finally{busy=false;}
   };
+}
+
+// These are local approval frames, never forwarded as Hub tools.
+export function nativeTaskApprovals(hubCall,taskId){
+  if(typeof hubCall!=='function'||!Number.isSafeInteger(taskId)||taskId<=0)
+    throw Error('invalid_native_approval_client');
+  return Object.freeze({
+    authorizeEgress:async ({request})=>{
+      if(request?.task_id!==taskId)return false;
+      return (await hubCall('native_egress_authorize',{task_id:taskId}))?.approved===true;
+    },
+    authorizeNativeSend:async value=>{
+      if(value?.taskID!==taskId)return false;
+      return (await hubCall('native_send_authorize',{task_id:taskId,origin:value.origin,
+        conversation_id:value.conversationID,text:value.text,sha256:value.textSHA256,
+        deadline:value.deadline}))?.approved===true;
+    }
+  });
 }
