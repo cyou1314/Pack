@@ -87,7 +87,7 @@ export function createNativeAccountAdapter({
   const binding=Object.freeze({...destination});
   // Snapshot only the fields BrowserSessions actually uses.
   const sessionProfile=Object.freeze({id:destination.account_ref,mode:'nativeAccount'});
-  let driver,opened=false,verified=false,used=false,inFlight=false,closed=false,verifying=false;
+  let driver,opened=false,verified=false,used=false,inFlight=false,closed=false,verifying=false,openUncertain=false;
   function live(signal,deadline) {
     if(signal?.aborted || !Number.isFinite(deadline) || now()>=deadline*1000)
       fail('native_deadline_or_cancelled');
@@ -101,10 +101,18 @@ export function createNativeAccountAdapter({
   }
   return {
     async verifyAccount(candidate) {
-      if(closed || used || verifying || opened || !sameDestination(candidate,binding)) return false;
+      if(closed || used || verifying || opened || openUncertain || !sameDestination(candidate,binding)) return false;
       verifying=true;
       try {
-        const context=await sessions.open(sessionProfile);
+        let context;
+        try { context=await sessions.open(sessionProfile); }
+        catch(error) {
+          // A launch timeout can leave Chromium alive. Preserve the outer
+          // account lease as well as BrowserSessions' recovery marker.
+          openUncertain=true;
+          try { if(sessions.status?.(sessionProfile)==='closed')openUncertain=false; } catch {}
+          throw error;
+        }
         opened=true;
         driver=await createPageDriver({context,provider:binding.provider,origin});
         if(!driver || ['inspect','prepareConversation','sendOnce','waitForReply'].some(k=>typeof driver[k]!=='function'))
@@ -162,6 +170,7 @@ export function createNativeAccountAdapter({
     async close() {
       if(inFlight || verifying) fail('native_execution_in_flight');
       if(closed) return;
+      if(openUncertain) fail('native_browser_open_unconfirmed');
       if(opened) await sessions.close(sessionProfile);
       closed=true;
     }

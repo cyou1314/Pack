@@ -52,7 +52,11 @@ export async function resolveNativeLogin({directory,accountRef}) {
   await checkedDirectory(browserRoot,true);
   await checkedDirectory(leaseRoot,true);
   return Object.freeze({profile:Object.freeze({id:accountRef,mode:'nativeAccount'}),
-    provider:p.providerID,origin,browserRoot,leaseRoot});
+    provider:p.providerID,origin,browserRoot,leaseRoot,
+    executionProfile:Object.freeze({id:accountRef,providerID:p.providerID,mode:'nativeAccount',
+      credentialReference:Object.freeze({kind:'nativeSession',vaultKey:accountRef}),
+      contextBoundary:p.contextBoundary,memoryBoundary:p.memoryBoundary,modelID:p.modelID??null,
+      enabledCapabilities:Object.freeze(['chat'])})});
 }
 
 /** User-operated login only. Do not inspect page contents or automate login.

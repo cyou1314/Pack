@@ -126,3 +126,21 @@ test('verification cannot be reopened concurrently or after a failed inspection'
   assert.equal(f.calls.filter(x=>x[0]==='open').length,1);
   await f.adapter.close();
 });
+
+test('unknown browser launch retains outer lease and cannot reopen',async()=>{
+  const f=fixture({options:{sessions:{
+    open:async()=>{throw Error('launch timed out')},
+    status:()=> 'recoveryRequired',close:async()=>assert.fail('unknown launch')
+  }}});
+  await assert.rejects(f.adapter.verifyAccount(f.destination),/launch timed out/);
+  assert.equal(await f.adapter.verifyAccount(f.destination),false);
+  await assert.rejects(f.adapter.close(),/open_unconfirmed/);
+});
+test('confirmed pre-launch failure permits account lease release',async()=>{
+  const f=fixture({options:{sessions:{
+    open:async()=>{throw Error('pre-launch error')},
+    status:()=> 'closed',close:async()=>assert.fail('never opened')
+  }}});
+  await assert.rejects(f.adapter.verifyAccount(f.destination),/pre-launch error/);
+  await f.adapter.close();
+});

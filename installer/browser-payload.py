@@ -13,8 +13,10 @@ DRIVER_FILES = (
     "package.json", "package-lock.json", "sessions.mjs", "playwright.mjs",
     "native-login.mjs", "native-login-cli.mjs", "native-diagnostics.mjs",
     "native-identity.mjs", "native-account-adapter.mjs", "chatgpt-page-driver.mjs",
+    "chatgpt-collaboration-host.mjs",
 )
 RUNTIME_FILES = ("account-execution-leases.mjs", "collaboration-runner.mjs")
+AGENT_CORE_FILES = ("collaboration-execution-supervisor.mjs",)
 BROWSERS = ("chromium-1255", "chromium_headless_shell-1255", "ffmpeg-1013")
 PRIVATE_NAMES = {"cookies", "login data", "web data", "local state", "history",
                  "browser-data", "native-sessions", "native-identities",
@@ -81,7 +83,10 @@ def snapshot(payload, revision, architecture):
     exact(root / "node/bin", ("node",))
     regular(root / "node/bin/node", executable=True)
     runtime = root / "runtime"
-    exact(runtime, (*RUNTIME_FILES, "browser-driver"))
+    exact(runtime, (*RUNTIME_FILES, "browser-driver", "agent-core"))
+    exact(runtime / "agent-core", AGENT_CORE_FILES)
+    for name in AGENT_CORE_FILES:
+        regular(runtime / "agent-core" / name)
     for name in RUNTIME_FILES:
         regular(runtime / name)
     driver = runtime / "browser-driver"

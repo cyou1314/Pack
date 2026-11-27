@@ -15,7 +15,9 @@ cp -L "$NODE" "$OUT/node/bin/node"
 for f in account-execution-leases.mjs collaboration-runner.mjs; do
   cp "$ROOT/runtime/$f" "$OUT/runtime/$f"
 done
-for f in package.json package-lock.json sessions.mjs playwright.mjs native-login.mjs native-login-cli.mjs native-diagnostics.mjs native-identity.mjs native-account-adapter.mjs chatgpt-page-driver.mjs; do
+mkdir "$OUT/runtime/agent-core"
+cp "$ROOT/runtime/agent-core/collaboration-execution-supervisor.mjs" "$OUT/runtime/agent-core/collaboration-execution-supervisor.mjs"
+for f in package.json package-lock.json sessions.mjs playwright.mjs native-login.mjs native-login-cli.mjs native-diagnostics.mjs native-identity.mjs native-account-adapter.mjs chatgpt-page-driver.mjs chatgpt-collaboration-host.mjs; do
   cp "$ROOT/runtime/browser-driver/$f" "$OUT/runtime/browser-driver/$f"
 done
 ditto "$ROOT/runtime/browser-driver/node_modules/playwright-core" "$OUT/runtime/browser-driver/node_modules/playwright-core"

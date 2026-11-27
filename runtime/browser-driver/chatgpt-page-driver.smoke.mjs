@@ -8,6 +8,7 @@ import {createChatGPTPageDriver} from './chatgpt-page-driver.mjs';
 import {enrollNativeIdentity,expectedNativeAccountProof} from './native-identity.mjs';
 import {createNativeAccountAdapter} from './native-account-adapter.mjs';
 import {AccountExecutionLeases} from '../account-execution-leases.mjs';
+import {createChatGPTCollaborationHost} from './chatgpt-collaboration-host.mjs';
 
 // Synthetic DOM contract, NOT live ChatGPT selectors. Every request is
 // fulfilled or blocked locally. No real provider credentials or network.
@@ -116,4 +117,74 @@ test('Chromium fixture: stable partial reply without terminal marker is never de
   await assert.rejects(f.driver.waitForReply(sent),/timeout/);
   await assert.rejects(f.driver.sendOnce({conversationID:draft.conversationID,text:'fixture'}),/invalid_send/);
   assert.equal(await f.page.locator('html').getAttribute('data-clicks'),'1');
+});
+
+test('Chromium fixture: dedicated host claims, approves, sends once, delivers and releases both leases', {timeout:90000},async t=>{
+  const parent=await fs.mkdtemp(path.join(os.tmpdir(),'pack-chatgpt-host-smoke-'));
+  const directory=path.join(parent,'agents-v2');
+  await fs.mkdir(directory,{mode:0o700});
+  const browserRoot=path.join(directory,'native-sessions'),leaseRoot=path.join(directory,'execution-leases');
+  await fs.mkdir(browserRoot,{mode:0o700});await fs.mkdir(leaseRoot,{mode:0o700});
+  await fs.writeFile(path.join(directory,'agent-registry.json'),JSON.stringify({schemaVersion:1,profiles:[profile]}),{mode:0o600});
+  const sessions=await createBrowserSessions({root:browserRoot,headless:true});
+  const manager=new AccountExecutionLeases({root:leaseRoot});
+  t.after(async()=>{
+    if(sessions.status(profile)==='open')await sessions.close(profile);
+    await fs.rm(parent,{recursive:true,force:true});
+  });
+  const observeIdentity=async({page})=>({url:page.url(),state:'ready',busy:false,
+    accountID:'fixture-account',workspaceID:'fixture-workspace',modelID:null,
+    memoryBoundary:'providerManaged',modelVerified:true,memoryVerified:true});
+  async function open(profile){
+    const context=await sessions.open(profile);
+    await context.route('**/*',route=>{
+      if(route.request().isNavigationRequest()&&route.request().url()==='https://chatgpt.com/')
+        return route.fulfill({status:200,contentType:'text/html',body:html()});
+      return route.abort();
+    });
+    const page=context.pages()[0]||await context.newPage();
+    await page.goto('https://chatgpt.com/');
+    return context;
+  }
+  const enrollmentLease=await manager.acquire(ref);
+  try{
+    const context=await open(profile),page=context.pages()[0];
+    await enrollNativeIdentity({root:directory,binding,observe:()=>observeIdentity({page}),confirm:async()=>true});
+  }finally{await sessions.close(profile);await enrollmentLease.release();}
+  let browser,approved,clicks,egress=0;
+  const calls=[],deadline=Date.now()/1000+75;
+  const scoped={run_id:'fixture-run',step_key:'answer',role:'answer',max_output_tokens:4096,
+    provider:'chatgpt',access_kind:'native',account_ref:ref,deadline,max_bytes:16384,
+    items:[{kind:'owner_message',source_id:1,sha256:'a'.repeat(64),text:'approved fixture task'}]};
+  const host=await createChatGPTCollaborationHost({directory,accountRef:ref,surface,observeIdentity,
+    timeoutMs:60000,
+    createSessions:async()=>({
+      open:async p=>{browser=await open(p);return browser;},
+      status:p=>sessions.status(p),
+      close:async p=>{
+        clicks=await browser.pages()[0].locator('html').getAttribute('data-clicks');
+        await sessions.close(p);
+      }
+    }),
+    hubCall:async(tool,args)=>{
+      calls.push(tool);
+      if(tool==='task_claim')return {task_id:1,status:'claimed',claim_token:'fixture',lease_expires:deadline};
+      if(tool==='collaboration_context_get')return structuredClone(scoped);
+      if(tool==='run_start')return {task_id:1,status:'running',fence:1};
+      if(tool==='task_complete'){
+        assert.equal(args.result,'Final answer');assert.ok(!('provider_usage' in args));
+        assert.equal(await browser.pages()[0].locator('[data-pack-fixture-text]').first().innerText(),approved.text);
+        return {task_id:1,status:'review'};
+      }
+      throw Error('unexpected tool');
+    },
+    authorizeEgress:async()=>{egress++;await assert.rejects(manager.acquire(ref),/account_lease_exists/);return true;},
+    authorizeNativeSend:async value=>{approved=value;return true;}
+  });
+  assert.deepEqual(await host.execute(1),{status:'review',usage:null});
+  assert.equal(egress,1);assert.equal(clicks,'1');
+  assert.deepEqual(calls,['task_claim','collaboration_context_get','run_start','collaboration_context_get','task_complete']);
+  assert.equal((await host.execute(1)).code,'task_already_attempted');
+  assert.equal(sessions.status(profile),'closed');
+  await (await manager.acquire(ref)).release();
 });

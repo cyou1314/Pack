@@ -24,6 +24,9 @@ class BrowserPayloadTests(unittest.TestCase):
         core.mkdir(parents=True)
         for name in payload.RUNTIME_FILES:
             (runtime / name).write_text("fixture")
+        (runtime / "agent-core").mkdir()
+        for name in payload.AGENT_CORE_FILES:
+            (runtime / "agent-core" / name).write_text("fixture")
         driver = core.parent.parent
         for name in payload.DRIVER_FILES:
             (driver / name).write_text("fixture")
@@ -54,6 +57,11 @@ class BrowserPayloadTests(unittest.TestCase):
             self.create()
         with self.assertRaises(ValueError):
             self.verify(arch="x86_64")
+
+    def test_missing_transitive_runtime_dependency(self):
+        (self.bundle / "runtime/agent-core/collaboration-execution-supervisor.mjs").unlink()
+        with self.assertRaises(ValueError):
+            self.create()
 
     def test_tampered_bytes_and_executable_mode(self):
         self.create()
