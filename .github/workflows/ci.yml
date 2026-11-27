@@ -74,6 +74,7 @@ jobs:
           python hub/test_registry_offline_chain.py
           python hub/test_agent_registry_shadow_port.py
           python hub/test_registry_rehearsal.py
+          python hub/test_registry_binding_migration.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py
           python installer/test_browser_payload.py

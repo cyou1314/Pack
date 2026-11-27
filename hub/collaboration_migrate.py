@@ -145,6 +145,17 @@ def _validate_v1(conn):
     tables, triggers = _objects(conn)
     collab_tables = {name for name in tables if name.startswith("collaboration_")}
     collab_triggers = {name for name in triggers if name.startswith("collaboration_")}
+    # Only the independently versioned, verified binding extension may
+    # accompany the frozen collaboration v1 schema. Do not adopt stray tables.
+    binding_ledger = "pack_registry_binding_migrations" in tables
+    if "collaboration_connection_bindings" in collab_tables or binding_ledger:
+        from registry_binding_migration import validate_binding_extension
+        try:
+            if not validate_binding_extension(conn):
+                raise RuntimeError("missing binding extension")
+        except (RuntimeError, sqlite3.Error) as exc:
+            raise MigrationError("incompatible binding extension") from exc
+        collab_tables.remove("collaboration_connection_bindings")
     if collab_tables != set(TABLE_COLUMNS) or collab_triggers != TRIGGERS:
         raise MigrationError("collaboration schema objects are incomplete or unexpected")
     for table, required in TABLE_COLUMNS.items():
@@ -155,7 +166,7 @@ def _validate_v1(conn):
     rows = conn.execute(
         "SELECT version,name,schema_sha256 FROM pack_schema_migrations ORDER BY version"
     ).fetchall()
-    if rows != [(VERSION, NAME, SCHEMA_HASH)]:
+    if [tuple(row) for row in rows] != [(VERSION, NAME, SCHEMA_HASH)]:
         raise MigrationError("migration ledger does not match this release")
 
 
@@ -165,7 +176,7 @@ def _schema_state(conn):
     collab = ({name for name in tables if name.startswith("collaboration_")} |
               {name for name in triggers if name.startswith("collaboration_")})
     if not marker:
-        if collab:
+        if collab or "pack_registry_binding_migrations" in tables:
             raise MigrationError(
                 "unversioned collaboration objects found; refusing automatic adoption")
         return "fresh"

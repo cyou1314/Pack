@@ -88,11 +88,7 @@ _AGENT_EVENT_GATEWAY_V5 = Migration(
 
 
 
-def _normalize(sql):
-    # Normalize whitespace outside the fixed DDL's string literals, without
-    # altering case-sensitive values such as the allowed token scope.
-    return "".join(part if i % 2 else re.sub(r"\s+", "", part).lower()
-                   for i, part in enumerate(sql.split("'")))
+from registry_ddl_compare import normalize_ddl as _normalize
 
 
 def _objects(migration):

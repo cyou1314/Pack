@@ -148,10 +148,7 @@ _V2_INDEXES = (
 )
 
 
-def _normalize_index(sql):
-    # All expected DDL is fixed and contains no whitespace inside literals.
-    # Normalize formatting and SQLite's removal of IF NOT EXISTS only.
-    return re.sub(r"\s+", "", sql).lower().replace("ifnotexists", "")
+from registry_ddl_compare import normalize_ddl as _normalize_index
 
 
 def _check_indexes(conn, statements, *, required):
