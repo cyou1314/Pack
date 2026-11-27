@@ -1572,7 +1572,18 @@ def _collaboration_workspace_snapshot(conn, run_id):
     out["publication"] = dict(message_id=publication[0],published_at=publication[1]) if publication else None
     out["final_result_available"] = bool(out["status"]=="succeeded" and final and
         final["status"]=="succeeded" and final["task_status"]=="done" and final["has_result"])
+    from collaboration_context import project_fan_in
+    out["context_budgets"] = project_fan_in(conn,run_id)
     return out
+
+
+def _collaboration_result_budgets(conn,run_id,step_key):
+    """Read-only direct downstream projections for the inspected result."""
+    from collaboration_context import project_fan_in
+    downstream = {r[0] for r in conn.execute(
+        "SELECT step_key FROM collaboration_dependencies WHERE run_id=? AND prerequisite=?",
+        (run_id,step_key))}
+    return [p for p in project_fan_in(conn,run_id) if p["step_key"] in downstream]
 
 
 def _collaboration_review_version(row):
@@ -4807,7 +4818,8 @@ def build_server():
                     raise ValueError("collaboration step result unavailable")
                 return {"run_id":run_id,"step_key":step_key,"task_id":row[0],
                         "approved":row[1]=="done","result":row[2],"role":row[3],
-                        "review_version":_collaboration_review_version(row) if row[1]=="review" and row[4] is None else None}
+                        "review_version":_collaboration_review_version(row) if row[1]=="review" and row[4] is None else None,
+                        "context_budgets":_collaboration_result_budgets(conn,run_id,step_key)}
             finally:
                 conn.close()
 

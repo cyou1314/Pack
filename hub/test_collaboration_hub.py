@@ -308,6 +308,9 @@ def main():
             workspace=owner_call("collaboration_workspace",{"room":"pack-main"})
             card=next(x for x in workspace["runs"] if x["run_id"]==managed)
             assert card["mode"]=="compare" and not card["final_result_available"],card
+            projected=next(x for x in card["context_budgets"] if x["step_key"]=="final")
+            assert projected["missing_results"]==2 and not projected["over_budget"],projected
+            assert projected["max_bytes"]==16384 and projected["suggested_encoded_text_bytes"]>0
             assert "managed-private-root-marker" not in str(workspace)
             assert "error" in outsider("collaboration_workspace",{"room":"pack-main"})
             assert "error" in owner_call("collaboration_result_get",{"run_id":managed})
@@ -339,6 +342,9 @@ def main():
                 assert execute("task_complete",delivery).get("status")=="review"
                 inspected=owner_call("collaboration_result_get",{"run_id":managed,"step_key":step["key"]})
                 assert inspected["result"]==result and inspected["approved"] is False,inspected
+                if step["key"].startswith("analysis-"):
+                    projection=next(x for x in inspected["context_budgets"] if x["step_key"]=="final")
+                    assert projection["unapproved_results"]==1 and not projection["over_budget"],projection
                 review_args={"run_id":managed,"step_key":step["key"],
                              "expected_version":inspected["review_version"],"approve":True}
                 assert "error" in outsider("collaboration_review",review_args)

@@ -3,7 +3,7 @@ import unittest
 
 from collaboration_store import initialize, write_transaction, create_run, claim_step, finish_step
 from collaboration_dispatch import bind_task, reserve_claim
-from collaboration_context import grant_context, read_context, revoke_context
+from collaboration_context import grant_context, read_context, revoke_context, project_fan_in, MAX_BYTES
 
 
 class ContextTests(unittest.TestCase):
@@ -78,6 +78,42 @@ class ContextTests(unittest.TestCase):
             self.conn.execute("UPDATE tasks SET result='changed' WHERE id=20")
             with self.assertRaisesRegex(ValueError,"source changed"):
                 read_context(self.conn,21,member_id=4,now=4)
+
+    def test_managed_fan_in_projection_exact_when_all_results_approved(self):
+        # Reuse the private managed request marker; root and direct results
+        # are measured in their actual serialized JSON representation.
+        root_text = '中文"\\\n' * 300
+        with write_transaction(self.conn):
+            self.conn.execute("UPDATE messages SET kind='collaboration_request' WHERE id=10")
+            self.conn.execute("INSERT INTO collaboration_requests(owner_id,request_key,source_message_id,run_id,body) VALUES(1,'fixture',10,?,?)",
+                              (self.run,root_text))
+            root=[("owner_message",10)]
+            before=project_fan_in(self.conn,self.run)
+            review=next(x for x in before if x["step_key"]=="review")
+            self.assertEqual(review["missing_results"],1)
+            self.assertFalse(review["over_budget"])
+            self.assertTrue(self.grant("work-0",2,root))
+            fence=self.bind("work-0",2,20)
+            result='\\\n"中' * 200
+            self.conn.execute("UPDATE tasks SET status='review',result=?,updated_at=3 WHERE id=20",(result,))
+            review=next(x for x in project_fan_in(self.conn,self.run) if x["step_key"]=="review")
+            self.assertEqual(review["unapproved_results"],1)
+            self.assertEqual(review["missing_results"],0)
+            self.conn.execute("UPDATE tasks SET result=? WHERE id=20",("中"*5000,))
+            large=next(x for x in project_fan_in(self.conn,self.run) if x["step_key"]=="review")
+            self.assertTrue(large["over_budget"])
+            self.assertGreater(large["minimum_bytes"],MAX_BYTES)
+            self.assertNotIn("text",large)
+            self.conn.execute("UPDATE tasks SET status='done',result=? WHERE id=20",(result,))
+            self.assertTrue(finish_step(self.conn,self.run,"work-0",fence=fence,succeeded=True,now=3))
+            review=next(x for x in project_fan_in(self.conn,self.run) if x["step_key"]=="review")
+            self.assertEqual(review["unapproved_results"],0)
+            self.assertTrue(self.grant("review",4,root+[("dependency_result",20)]))
+            self.bind("review",4,21)
+            actual=read_context(self.conn,21,member_id=4,now=4)
+            import json
+            self.assertEqual(review["minimum_bytes"],len(json.dumps(actual["items"],ensure_ascii=False,separators=(",",":")).encode("utf-8")))
+            self.assertEqual(actual["items"][1]["text"],result)
 
     def test_budget_revocation_and_destination(self):
         root=[("owner_message",10)]

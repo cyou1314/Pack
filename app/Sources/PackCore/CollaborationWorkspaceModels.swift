@@ -23,11 +23,32 @@ public struct CollaborationWorkspaceRun: Decodable, Identifiable, Sendable {
     public let steps: [CollaborationWorkspaceStep]
     public let finalResultAvailable: Bool
     public let publication: CollaborationPublication?
+    public let contextBudgets: [CollaborationContextBudget]?
     enum CodingKeys: String, CodingKey {
         case mode, status, deadline, steps, publication
         case runId = "run_id", callsUsed = "calls_used", maxCalls = "max_calls"
         case sourceMessageId = "source_message_id", roomId = "room_id"
         case finalResultAvailable = "final_result_available"
+        case contextBudgets = "context_budgets"
+    }
+}
+
+/// Hub projection, not a context grant or token estimate.
+public struct CollaborationContextBudget: Decodable, Identifiable, Sendable {
+    public var id: String { stepKey }
+    public let stepKey: String
+    public let maxBytes: Int
+    public let minimumBytes: Int
+    public let missingResults: Int
+    public let unapprovedResults: Int
+    public let dependencyCount: Int
+    public let suggestedEncodedTextBytes: Int
+    public let overBudget: Bool
+    enum CodingKeys: String, CodingKey {
+        case stepKey = "step_key", maxBytes = "max_bytes", minimumBytes = "minimum_bytes"
+        case missingResults = "missing_results", unapprovedResults = "unapproved_results"
+        case dependencyCount = "dependency_count", suggestedEncodedTextBytes = "suggested_encoded_text_bytes"
+        case overBudget = "over_budget"
     }
 }
 
@@ -60,9 +81,11 @@ public struct CollaborationWorkspaceResult: Decodable, Sendable {
     public let result: String
     public let sha256: String?
     public let reviewVersion: String?
+    public let contextBudgets: [CollaborationContextBudget]?
     enum CodingKeys: String, CodingKey {
         case runId = "run_id", stepKey = "step_key", approved, result, sha256
         case reviewVersion = "review_version"
+        case contextBudgets = "context_budgets"
     }
     public var canReview: Bool {
         !approved && stepKey != nil && !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&

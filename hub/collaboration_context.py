@@ -162,6 +162,71 @@ def _source(conn, *, run_id, step_key, room, owner_id, kind, source_id):
     return text, digest
 
 
+def _serialized_bytes(items):
+    return len(json.dumps(items, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def project_fan_in(conn, run_id):
+    """Owner-workspace advisory only; caller has authenticated and scoped run.
+
+    Use the same JSON accounting as grant_context. Submitted but unapproved
+    results are projections, not grants. Unknown results have an empty-text
+    lower bound, not an invented result. No text or digest leaves this report.
+    """
+    request = conn.execute("""
+        SELECT q.owner_id,q.source_message_id,r.room_id,r.status
+        FROM collaboration_requests q JOIN collaboration_runs r ON r.id=q.run_id
+        WHERE q.run_id=?
+        """, (run_id,)).fetchone()
+    if not request or request[3] != "active":
+        return []
+    try:
+        text, digest = _source(conn, run_id=run_id, step_key="", room=request[2],
+                               owner_id=request[0], kind="owner_message", source_id=request[1])
+    except ValueError:
+        return []
+    root = dict(kind="owner_message", source_id=request[1], sha256=digest, text=text)
+    projections = []
+    for (key,) in conn.execute("""
+        SELECT DISTINCT s.step_key FROM collaboration_steps s
+        JOIN collaboration_dependencies d ON d.run_id=s.run_id AND d.step_key=s.step_key
+        WHERE s.run_id=? AND s.status='pending' ORDER BY s.step_key
+        """, (run_id,)):
+        deps = conn.execute("""
+            SELECT d.prerequisite,l.task_id,t.status,t.result,p.status
+            FROM collaboration_dependencies d
+            LEFT JOIN collaboration_task_links l ON l.run_id=d.run_id AND l.step_key=d.prerequisite
+            LEFT JOIN tasks t ON t.id=l.task_id
+            LEFT JOIN collaboration_steps p ON p.run_id=d.run_id AND p.step_key=d.prerequisite
+            WHERE d.run_id=? AND d.step_key=? ORDER BY d.prerequisite
+            """, (run_id,key)).fetchall()
+        known = [root]
+        empty = [root]
+        pending = 0
+        provisional = 0
+        for _,tid,task_status,result,step_status in deps:
+            # Future IDs are unknown: 1 is a lower bound on decimal length.
+            item = dict(kind="dependency_result", source_id=tid or 1,
+                        sha256="0"*64, text="")
+            empty.append(item.copy())
+            if (task_status in ("review","done") and step_status in ("running","succeeded")
+                    and isinstance(result,str) and result.strip()):
+                item["text"] = result
+                if task_status != "done" or step_status != "succeeded":
+                    provisional += 1
+            else:
+                pending += 1
+            known.append(item)
+        minimum = _serialized_bytes(known)
+        overhead = _serialized_bytes(empty)
+        projections.append(dict(step_key=key, max_bytes=MAX_BYTES,
+            minimum_bytes=minimum, missing_results=pending,
+            unapproved_results=provisional, dependency_count=len(deps),
+            suggested_encoded_text_bytes=max(0,(MAX_BYTES-overhead)//len(deps)),
+            over_budget=minimum>MAX_BYTES))
+    return projections
+
+
 def _resolve(conn, run_id, step_key, row, owner_id, refs):
     items = []
     for kind, source_id in refs:
@@ -169,7 +234,7 @@ def _resolve(conn, run_id, step_key, row, owner_id, refs):
                                owner_id=owner_id, kind=kind, source_id=source_id)
         items.append(dict(kind=kind, source_id=source_id, sha256=digest, text=text))
     # Budget includes the serialized data and provenance, not just raw text.
-    if len(json.dumps(items, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > MAX_BYTES:
+    if _serialized_bytes(items) > MAX_BYTES:
         raise ValueError("collaboration context byte budget exceeded")
     return items
 

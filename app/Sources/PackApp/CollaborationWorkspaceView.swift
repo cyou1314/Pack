@@ -121,6 +121,9 @@ struct CollaborationWorkspaceView: View {
                     }
                 }
             }
+            if let budgets = run.contextBudgets, !budgets.isEmpty {
+                ForEach(budgets) { budget in budgetRow(budget) }
+            }
             Divider()
             HStack {
                 Button("用量") { Task { await readUsage(run.id) } }.disabled(busy)
@@ -139,6 +142,23 @@ struct CollaborationWorkspaceView: View {
         .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.boardCardRadius))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.boardCardRadius).stroke(DesignTokens.hairline))
     }
+    private func budgetRow(_ value: CollaborationContextBudget) -> some View {
+        VStack(alignment:.leading,spacing:DesignTokens.detailSpacing) {
+            Text("后续 \(value.stepKey) · 上下文至少 \(value.minimumBytes) / \(value.maxBytes) 字节")
+                .foregroundStyle(value.overBudget ? DesignTokens.amber : DesignTokens.subText)
+            if value.missingResults > 0 || value.unapprovedResults > 0 {
+                Text("尚缺 \(value.missingResults) 份成果 · \(value.unapprovedResults) 份待审核；实际输入可能变化")
+                    .foregroundStyle(DesignTokens.subText)
+            }
+            Text("均分建议：每份依赖成果 JSON 文本净增约 \(value.suggestedEncodedTextBytes) 字节；非 Token 限额")
+                .foregroundStyle(DesignTokens.subText)
+            if value.overBudget {
+                Text("当前投影已超预算。若成果保持不变，后续派发可能失败；原文不会自动截断。")
+                    .foregroundStyle(DesignTokens.amber)
+            }
+        }.font(DesignTokens.fontSmall)
+    }
+
     private func usageCard(_ value: CollaborationWorkspaceUsage) -> some View {
         VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
             Text("执行用量 · \(value.runId.prefix(8))").font(DesignTokens.fontTitle)
@@ -158,6 +178,13 @@ struct CollaborationWorkspaceView: View {
             }
             // Verbatim plain text; no model-generated clickable links or markup.
             Text(verbatim: value.result).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            if let budgets = value.contextBudgets, !budgets.isEmpty {
+                ForEach(budgets) { budget in budgetRow(budget) }
+                if budgets.contains(where:{ $0.overBudget }) {
+                    Text("通过审核仍会保留原始成果；若下一步无法容纳上下文，协作可能停止。")
+                        .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.amber)
+                }
+            }
             if value.canReview, let step = value.stepKey, let version = value.reviewVersion,
                runs.contains(where: { $0.id == value.runId && $0.status == "active" &&
                    $0.steps.contains { $0.key == step && $0.taskStatus == "review" } }) {
