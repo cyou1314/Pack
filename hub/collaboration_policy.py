@@ -93,21 +93,31 @@ def suggest_roles(*, mode, candidates, worker_count=1, max_calls=5, allow_unknow
     if calls > max_calls:
         raise ValueError("call budget exceeded")
     eligible = [c for c in candidates if c["online"] and c["queue"] == 0
-                and not c["active_plan"]
+                and not c["active_plan"] and c.get("execution_allowed", True)
                 and (c["quota_state"] == "available" or
                      allow_unknown_quota and c["quota_state"] == "unknown")]
-    # Prefer observed headroom; do not pretend to rank model intelligence.
-    eligible.sort(key=lambda c: (c["quota_state"] != "available",
-                    c["quota_pct"] if c["quota_state"] == "available" else 101,
-                    c["member_id"]))
-    selected, refs = [], set()
-    for c in eligible:
-        if c["account_ref"] in refs:
-            continue
-        refs.add(c["account_ref"])
-        selected.append(c)
-        if len(selected) == needed:
+    # Same ecosystem in two access modes is not evidence of independent
+    # models. Prefer another provider family within the same readiness tier;
+    # keep quota-known candidates ahead of quota-unknown candidates.
+    # This is a deterministic heuristic, not a quality or latency ranking.
+    families = {"chatgpt": "openai", "openai": "openai",
+                "gemini": "gemini", "gemini-api": "gemini",
+                "doubao": "bytedance", "volcengine": "bytedance"}
+    def family(c):
+        return families.get(c.get("provider"), c.get("provider", "unknown"))
+    selected, refs, used_families = [], set(), set()
+    while len(selected) < needed:
+        remaining = [c for c in eligible if c["account_ref"].lower() not in refs]
+        if not remaining:
             break
+        c = min(remaining, key=lambda c: (
+            c["quota_state"] != "available",
+            mode != "focus" and family(c) in used_families,
+            c["quota_pct"] if c["quota_state"] == "available" else 101,
+            c["member_id"]))
+        selected.append(c)
+        refs.add(c["account_ref"].lower())
+        used_families.add(family(c))
     if len(selected) != needed:
         return None
     ids = [str(c["member_id"]) for c in selected]

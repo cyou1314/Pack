@@ -53,7 +53,10 @@ def main():
             assert wait_port(port)
             def dispatch(name,args):
                 return asyncio.run(call(port,token,name,args))
-            owner=dispatch("member_register",{"name":"owner"})["member_id"]
+            owner_reg=dispatch("member_register",{"name":"owner"})
+            owner=owner_reg["member_id"]
+            def owner_call(name,args):
+                return asyncio.run(call(port,owner_reg["token"],name,args))
             worker=dispatch("member_register",{"name":"registry-worker","provider":"chatgpt"})
             mid=worker["member_id"]
             account="12345678-1234-4234-8234-123456789abc"
@@ -81,6 +84,19 @@ def main():
                     grant_context(conn,run,"answer",actor_id=owner,member_id=mid,
                                   refs=[("owner_message",msg)],now=now)
                 return run,task
+            assert agent("heartbeat",{}).get("ok") is True
+            route_args={"mode":"focus","allow_unknown_quota":True}
+            request={"room":"pack-main","request_key":"d"*32,"body":"gate fixture",
+                     "mode":"focus","leader":mid,"deadline":time.time()+600,"max_calls":1}
+            def preview_allowed(allowed):
+                value=owner_call("collaboration_route_preview",route_args)
+                candidate=next(c for c in value["candidates"] if c["member_id"]==mid)
+                assert candidate["execution_allowed"] is allowed,value
+                assert (value["suggestion"] is not None) is allowed,value
+            preview_allowed(False)
+            assert "error" in owner_call("collaboration_create",request)
+            assert owner_call("collaboration_request_lookup",{"room":"pack-main",
+                "request_key":request["request_key"]})["run_id"] is None
             run,task=card()
             assert "error" in agent("task_claim",{"task_id":task})
             state("enabled")
@@ -98,6 +114,9 @@ def main():
             assert snapshot(conn,other_run)["calls_used"]==0
             assert conn.execute("SELECT status FROM tasks WHERE id=?",(other_task,)).fetchone()[0]=="open"
             state("paused")
+            assert "error" in owner_call("collaboration_create",request)
+            paused_preview=owner_call("collaboration_route_preview",route_args)
+            assert next(c for c in paused_preview["candidates"] if c["member_id"]==mid)["execution_allowed"] is False
             assert "error" in agent("collaboration_context_get",args)
             assert "error" in agent("run_start",args)
             state("enabled")

@@ -4601,8 +4601,9 @@ def build_server():
             require(me,"member")
             from collaboration_context import _owner, require_executor
             from collaboration_policy import suggest_roles
-            conn = db()
+            conn = _registry_execution_db()
             try:
+                conn.execute("BEGIN")
                 _owner(conn,me["id"])
                 now = _now()
                 candidates = []
@@ -4623,18 +4624,24 @@ def build_server():
                     """,(now,me["id"])).fetchall()
                 for row in rows:
                     try:
-                        require_executor(conn,row[0])
+                        binding = require_executor(conn,row[0])
                     except ValueError:
                         continue
                     if providers.get(row[1]) != row[2]:
                         continue
+                    execution_allowed = True
+                    try:
+                        _registry_execution_gate(conn,row[0],binding)
+                    except PermissionError:
+                        execution_allowed = False
                     online = _collaboration_accepting(conn,row[0],now)
                     fresh = (row[5] is not None and 0 <= row[5] <= 100
                              and row[6] is not None and 0 <= now-row[6] <= RELAY_QUOTA_FRESH)
                     state = ("available" if row[5]<RELAY_QUOTA_HEADROOM else "limited") if fresh else "unknown"
                     candidates.append(dict(member_id=row[0],member_name=row[9],provider=row[1],access_kind=row[2],
                         account_ref=row[3],online=online,queue=row[7],active_plan=bool(row[8]),
-                        quota_state=state,quota_pct=row[5] if fresh else None))
+                        quota_state=state,quota_pct=row[5] if fresh else None,
+                        execution_allowed=execution_allowed))
                 suggestion = suggest_roles(mode=mode,candidates=candidates,worker_count=worker_count,
                     max_calls=max_calls,allow_unknown_quota=allow_unknown_quota)
                 return {"mode":mode,"suggestion":suggestion,"candidates":[
@@ -4652,7 +4659,7 @@ def build_server():
             require(me,"member")
             from collaboration_context import _owner, require_executor, MAX_BYTES
             from collaboration_store import write_transaction, create_run, _time
-            conn = db()
+            conn = _registry_execution_db()
             try:
                 with write_transaction(conn):
                     _owner(conn,me["id"])
@@ -4684,6 +4691,7 @@ def build_server():
                             binding = require_executor(conn,member_id)
                             if binding[0] != me["id"]:
                                 raise ValueError("collaboration executor owner mismatch")
+                            _registry_execution_gate(conn,member_id,binding)
                             name = conn.execute("SELECT name FROM members WHERE id=?",(member_id,)).fetchone()[0]
                             if name.startswith("pack-agent-") and not _collaboration_accepting(conn,member_id,now):
                                 raise ValueError("collaboration executor is not accepting new plans")

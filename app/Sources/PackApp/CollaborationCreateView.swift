@@ -93,9 +93,18 @@ struct CollaborationCreateView: View {
                 options.maxCalls = max(options.maxCalls,options.plannedCalls)
             }
             if options.mode != .focus {
-                Stepper("并行成员数：\(options.workers)", value: $options.workers, in: 1...max(1,options.mode.maxWorkers))
+                Stepper(options.mode == .compare ? "额外独立分析成员：\(options.workers)" : "并行执行成员：\(options.workers)",
+                        value: $options.workers, in: 1...max(1,options.mode.maxWorkers))
             }
             Stepper("调用预算：\(options.maxCalls) 次（计划 \(options.plannedCalls) 次）", value: $options.maxCalls, in: 1...8)
+            if options.valid {
+                Text("首批 \(options.firstWaveCalls) 个任务 · \(options.sequentialWaves) 个依赖阶段（非耗时估计）")
+                    .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+                if options.maxCalls > options.plannedCalls {
+                    Button("预算设为计划所需次数") { options.maxCalls = options.plannedCalls }
+                        .font(DesignTokens.fontSmall)
+                }
+            }
             Picker("截止时间（提交后）", selection: $minutes) {
                 Text("15 分钟").tag(15); Text("30 分钟").tag(30)
                 Text("1 小时").tag(60); Text("4 小时").tag(240); Text("24 小时").tag(1440)
@@ -103,7 +112,7 @@ struct CollaborationCreateView: View {
             Toggle("允许额度未知的候选账号", isOn: $options.allowUnknownQuota)
             Button("获取角色分配建议") { Task { await loadPreview() } }
                 .disabled(!options.valid)
-            Text("仅依据中枢已知心跳、任务占用与额度筛选，不代表已登录或模型能力验证。")
+            Text("按接单状态、任务占用、执行权限与额度筛选；多 Agent 优先选择不同平台家族。不代表已登录或模型能力验证。")
                 .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
         }
     }
@@ -112,7 +121,7 @@ struct CollaborationCreateView: View {
         VStack(alignment: .leading, spacing: DesignTokens.detailSpacing) {
             Text("角色分配预览").font(DesignTokens.fontTitle)
             if let route = value.suggestion, value.accepts(options) {
-                Text("\(options.mode == .focus ? "回答" : "主导 / 汇总")：\(memberLabel(route.leader, value))")
+                Text("\(options.mode == .focus ? "回答" : options.mode == .compare ? "独立分析 + 汇总" : "主导 / 汇总")：\(memberLabel(route.leader, value))")
                 ForEach(route.workers, id: \.self) { member in
                     Text("\(options.mode == .compare ? "独立分析" : "执行")：\(memberLabel(member, value))")
                 }
@@ -129,6 +138,7 @@ struct CollaborationCreateView: View {
                     Text(candidate.provider).foregroundStyle(DesignTokens.subText)
                     Spacer()
                     Text(candidate.eligible(allowUnknown: options.allowUnknownQuota) ? "候选" :
+                         candidate.executionAllowed == false ? "执行未获准" :
                          !candidate.online ? "离线" : candidate.activePlan || candidate.queue > 0 ? "占用" :
                          candidate.quotaState == "unknown" ? "额度未知" : "额度受限")
                         .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)

@@ -2,10 +2,10 @@ import XCTest
 @testable import PackCore
 
 final class CollaborationCreateModelsTests: XCTestCase {
-    private func preview(duplicate: Bool = false, quota: String = "available") throws -> CollaborationRoutePreview {
+    private func preview(duplicate: Bool = false, quota: String = "available", executionAllowed: Bool = true) throws -> CollaborationRoutePreview {
         let candidates: [[String:Any]] = [1,2].map {
             ["member_id":$0,"member_name":"Agent \($0)","provider":"openai","access_kind":"api",
-             "online":true,"queue":0,"active_plan":false,"quota_state":quota]
+             "online":true,"queue":0,"active_plan":false,"quota_state":quota,"execution_allowed":executionAllowed]
         }
         let obj: [String:Any] = ["mode":"compare","requires_owner_confirmation":true,
           "candidates":candidates,"suggestion":["leader":1,"workers":[duplicate ? 1 : 2],"planned_calls":3]]
@@ -33,5 +33,21 @@ final class CollaborationCreateModelsTests: XCTestCase {
         XCTAssertFalse(unknown.accepts(options))
         options.allowUnknownQuota = true
         XCTAssertTrue(unknown.accepts(options))
+    }
+    func testExecutionGateAndStructuralWaves() throws {
+        var options = CollaborationRouteOptions()
+        XCTAssertEqual(options.firstWaveCalls,1)
+        XCTAssertEqual(options.sequentialWaves,1)
+        options.mode = .compare
+        XCTAssertEqual(options.firstWaveCalls,2)
+        XCTAssertEqual(options.sequentialWaves,2)
+        XCTAssertFalse(try preview(executionAllowed:false).accepts(options))
+        options.workers = 2
+        XCTAssertEqual(options.firstWaveCalls,3)
+        XCTAssertEqual(options.plannedCalls,4)
+        options.mode = .team
+        XCTAssertEqual(options.firstWaveCalls,2)
+        XCTAssertEqual(options.sequentialWaves,3)
+        XCTAssertEqual(options.plannedCalls,4)
     }
 }

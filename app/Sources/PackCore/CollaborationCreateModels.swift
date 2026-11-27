@@ -15,6 +15,14 @@ public struct CollaborationRouteOptions: Equatable, Sendable {
     public var allowUnknownQuota = false
     public init() {}
     public var plannedCalls: Int { mode == .focus ? 1 : workers + 2 }
+    /// Structural waves, not timing estimates. Each wave still needs
+    /// available accounts, execution admission and owner review.
+    public var firstWaveCalls: Int {
+        switch mode { case .focus: return 1; case .compare: return workers+1; case .team: return workers }
+    }
+    public var sequentialWaves: Int {
+        switch mode { case .focus: return 1; case .compare: return 2; case .team: return 3 }
+    }
     public var valid: Bool {
         (1...8).contains(maxCalls) && plannedCalls <= maxCalls &&
         (mode == .focus || (1...mode.maxWorkers).contains(workers))
@@ -31,12 +39,16 @@ public struct CollaborationRouteCandidate: Decodable, Identifiable, Sendable {
     public let queue: Int
     public let activePlan: Bool
     public let quotaState: String
+    // Optional for compatibility with older Hub previews. Missing is not
+    // proof of verified login; the actual claim gate remains authoritative.
+    public let executionAllowed: Bool?
     enum CodingKeys: String, CodingKey {
         case memberId = "member_id", memberName = "member_name", provider, accessKind = "access_kind"
         case online, queue, activePlan = "active_plan", quotaState = "quota_state"
+        case executionAllowed = "execution_allowed"
     }
     public func eligible(allowUnknown: Bool) -> Bool {
-        memberId > 0 && online && queue == 0 && !activePlan &&
+        memberId > 0 && online && queue == 0 && !activePlan && executionAllowed != false &&
         (quotaState == "available" || (allowUnknown && quotaState == "unknown"))
     }
 }
