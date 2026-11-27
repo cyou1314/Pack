@@ -148,7 +148,8 @@ def _validate_v1(conn):
     # Only the independently versioned, verified binding extension may
     # accompany the frozen collaboration v1 schema. Do not adopt stray tables.
     binding_ledger = "pack_registry_binding_migrations" in tables
-    if "collaboration_connection_bindings" in collab_tables or binding_ledger:
+    if ("collaboration_connection_bindings" in collab_tables or binding_ledger
+            or "pack_registry_agent_controls" in tables):
         from registry_binding_migration import validate_binding_extension
         try:
             if not validate_binding_extension(conn):
@@ -176,7 +177,8 @@ def _schema_state(conn):
     collab = ({name for name in tables if name.startswith("collaboration_")} |
               {name for name in triggers if name.startswith("collaboration_")})
     if not marker:
-        if collab or "pack_registry_binding_migrations" in tables:
+        if (collab or "pack_registry_binding_migrations" in tables
+                or "pack_registry_agent_controls" in tables):
             raise MigrationError(
                 "unversioned collaboration objects found; refusing automatic adoption")
         return "fresh"
