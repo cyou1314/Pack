@@ -139,3 +139,18 @@ test('concurrent identical downloads publish a single file without overwrite',as
     assert.deepEqual(readFileSync(path.join(directory,'images/task-1-asset1.png')),data);
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
+
+test('noncanonical asset names are distinct from legacy sanitized and ordinary IDs',async()=>{
+  const directory=mkdtempSync(path.join(tmpdir(),'pack-engine-asset-name-'));
+  const data=Buffer.from('original');
+  try{
+    const client=createMuseEngineClient({key,directory,fetchImpl:async()=>new Response(data)});
+    const a=await client.downloadImage(output(data,'a/b'),1);
+    const b=await client.downloadImage(output(data,'a_b'),1);
+    const c=await client.downloadImage(output(data,'a?b'),1);
+    assert.equal(new Set([a,b,c]).size,3);
+    assert.ok(a.includes('task-1-~hashed-'));
+    assert.ok(b.endsWith('task-1-a_b.png'));
+    assert.equal(readdirSync(path.join(directory,'images')).length,3);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});

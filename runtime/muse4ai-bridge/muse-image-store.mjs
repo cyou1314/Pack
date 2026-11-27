@@ -19,7 +19,7 @@ function metadata(out,taskId){
   // Preserve established filenames for normal asset IDs; hash noncanonical
   // or long IDs rather than collapsing different IDs to the same basename.
   const asset=/^[A-Za-z0-9_-]{1,128}$/.test(out.asset_id)
-    ?out.asset_id:'hashed-'+sha(out.asset_id);
+    ?out.asset_id:'~hashed-'+sha(out.asset_id);
   return {filename:'task-'+taskId+'-'+asset+'.'+EXT[out.mime],
           bytes:out.bytes??null,digest:out.sha256?.toLowerCase()??null};
 }
@@ -54,7 +54,9 @@ async function existingFile(filename){
       hash.update(buffer.subarray(0,bytesRead));
     }
     const after=await handle.stat();
-    if(before.size!==size||after.size!==size||before.mtimeMs!==after.mtimeMs||before.ctimeMs!==after.ctimeMs)
+    // Removing a publisher's temporary hard link changes ctime, not bytes.
+    // mtime, size and the streamed digest are the content checks here.
+    if(before.size!==size||after.size!==size||before.mtimeMs!==after.mtimeMs)
       throw error('image_asset_conflict');
     return {size,digest:hash.digest('hex')};
   }finally{await handle.close();}
