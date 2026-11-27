@@ -88,10 +88,11 @@ public enum AgentCollaborationExecutionResult: Equatable, Sendable {
 private struct Claim: Decodable {
     let taskID: Int
     let status: String
-    let token: String
-    let expires: Double
+    let token: String?
+    let expires: Double?
+    let code: String?
     enum CodingKeys: String, CodingKey {
-        case taskID = "task_id", status, token = "claim_token", expires = "lease_expires"
+        case taskID = "task_id", status, token = "claim_token", expires = "lease_expires", code
     }
 }
 private struct Receipt: Decodable {
@@ -190,25 +191,30 @@ public actor AgentAPICollaborationHost {
         let claim: Claim
         do { claim = try await call("task_claim", ["task_id": taskID]) }
         catch { return .claimUnknown }
-        guard claim.taskID == taskID, claim.status == "claimed", !claim.token.isEmpty,
-              claim.expires.isFinite else { return .claimUnknown }
-        let args: [String: Any] = ["task_id": taskID, "claim_token": claim.token]
+        if claim.taskID == taskID, claim.status == "unavailable", claim.token == nil,
+           let code = claim.code, ["execution_capacity","execution_account_busy"].contains(code) {
+            return .unavailable
+        }
+        guard claim.taskID == taskID, claim.status == "claimed",
+              let claimToken = claim.token, !claimToken.isEmpty,
+              let claimExpires = claim.expires, claimExpires.isFinite else { return .claimUnknown }
+        let args: [String: Any] = ["task_id": taskID, "claim_token": claimToken]
         let initial: AgentCollaborationContext
         do {
             initial = try await call("collaboration_context_get", args)
             guard initial.destination == expected, !initial.runID.isEmpty, !initial.stepKey.isEmpty,
                   initial.maxBytes == 16*1024, initial.deadline.isFinite,
                   initial.role.matches(stepKey: initial.stepKey), initial.maxOutputTokens == initial.role.outputLimit,
-                  min(initial.deadline, claim.expires) > Date().timeIntervalSince1970
-            else { return await stop(taskID, claim.token, "context_unavailable") }
-        } catch { return await stop(taskID, claim.token, "context_unavailable") }
+                  min(initial.deadline, claimExpires) > Date().timeIntervalSince1970
+            else { return await stop(taskID, claimToken, "context_unavailable") }
+        } catch { return await stop(taskID, claimToken, "context_unavailable") }
         do {
             let registered: Receipt = try await call("run_start", args)
             guard registered.taskID == taskID, registered.status == "running", registered.fence == 1
-            else { return await stop(taskID, claim.token, "run_registration_unknown") }
-        } catch { return await stop(taskID, claim.token, "run_registration_unknown") }
+            else { return await stop(taskID, claimToken, "run_registration_unknown") }
+        } catch { return await stop(taskID, claimToken, "run_registration_unknown") }
 
-        let deadline = Date(timeIntervalSince1970: min(initial.deadline, claim.expires))
+        let deadline = Date(timeIntervalSince1970: min(initial.deadline, claimExpires))
         let outcome: AgentAPIOutcome
         // Unknown send or delivery must retain the on-disk account marker.
         retain = true
@@ -220,27 +226,27 @@ public actor AgentAPICollaborationHost {
                     // Re-check after human approval, before actual send. The
                     // exact prepared request is bound by the adapter's digest.
                     let current: AgentCollaborationContext = try await self.call("collaboration_context_get", [
-                        "task_id": taskID, "claim_token": claim.token
+                        "task_id": taskID, "claim_token": claimToken
                     ])
                     return current == initial && Date() < deadline
                 })
         } catch let error as AgentAPIError where error == .unauthorized ||
                     error == .invalidRequest || error == .identityMismatch || error == .accountUnavailable {
-            let stopped = await stop(taskID, claim.token, "provider_rejected")
+            let stopped = await stop(taskID, claimToken, "provider_rejected")
             if case .blocked = stopped { retain = false }
             return stopped
         } catch {
-            return await stop(taskID, claim.token, "provider_outcome_unknown")
+            return await stop(taskID, claimToken, "provider_outcome_unknown")
         }
         switch outcome {
         case .failed(let code, let usage):
-            let stopped = await stop(taskID, claim.token, code, usage)
+            let stopped = await stop(taskID, claimToken, code, usage)
             if case .blocked = stopped { retain = false }
             return stopped
         case .succeeded(let text, let usage):
             do {
                 var args: [String: Any] = [
-                    "task_id": taskID, "claim_token": claim.token, "result": text
+                    "task_id": taskID, "claim_token": claimToken, "result": text
                 ]
                 if let usage = usage {
                     args["provider_usage"] = ["input_tokens": usage.inputTokens, "output_tokens": usage.outputTokens]

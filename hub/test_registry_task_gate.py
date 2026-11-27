@@ -92,6 +92,11 @@ def main():
             assert ct.startswith("rg1."),claim
             args={"task_id":task,"claim_token":ct}
             assert "error" not in agent("collaboration_context_get",args)
+            other_run,other_task=card()
+            denied=agent("task_claim",{"task_id":other_task})
+            assert denied=={"task_id":other_task,"status":"unavailable","code":"execution_account_busy"},denied
+            assert snapshot(conn,other_run)["calls_used"]==0
+            assert conn.execute("SELECT status FROM tasks WHERE id=?",(other_task,)).fetchone()[0]=="open"
             state("paused")
             assert "error" in agent("collaboration_context_get",args)
             assert "error" in agent("run_start",args)
@@ -100,7 +105,7 @@ def main():
             assert "error" in agent("collaboration_context_get",args)
             assert conn.execute("SELECT COUNT(*) FROM runs WHERE task_id=?",(task,)).fetchone()[0]==0
             assert dispatch("task_cancel",{"task_id":task})["status"]=="cancelled"
-            run2,task2=card()
+            run2,task2=other_run,other_task
             claim2=agent("task_claim",{"task_id":task2})
             ct2=claim2["claim_token"]
             assert ct2.startswith("rg3."),claim2
@@ -111,6 +116,52 @@ def main():
             result=agent("task_complete",{"task_id":task2,"claim_token":ct2,"result":"fixture"})
             assert result.get("status")=="review",result
             assert snapshot(conn,run2)["calls_used"]==1
+            # Fill the shared Hub capacity with distinct identities, including
+            # both native and API modes. No actual Provider is invoked.
+            active=[]
+            for i in range(5):
+                name=f"capacity-worker-{i}"
+                provider,access,provider_id,mode,auth_kind=(
+                    ("openai","api","openai","official_api","api_key") if i%2
+                    else ("chatgpt","native","openai","native_account","none"))
+                worker2=dispatch("member_register",{"name":name,"provider":provider})
+                mid2=worker2["member_id"]
+                account2=f"00000000-0000-4000-8000-{i+1:012d}"
+                aid,cid=f"capacity-a{i}",f"capacity-c{i}"
+                with write_transaction(conn):
+                    register_executor(conn,actor_id=owner,member_id=mid2,
+                                      provider=provider,access_kind=access,account_ref=account2)
+                    conn.execute("INSERT INTO agents(agent_id,provider_id,legacy_member_id,display_name,status,created_at,updated_at) "
+                                 "VALUES(?,?,?,?,'active',1,1)",(aid,provider_id,mid2,name))
+                    conn.execute("INSERT INTO agent_connections(connection_id,agent_id,mode,auth_kind,status,created_at,updated_at) "
+                                 "VALUES(?,?,?,?,'connected',1,1)",(cid,aid,mode,auth_kind))
+                    bind_connection(conn,actor_id=owner,member_id=mid2,account_ref=account2,agent_id=aid,connection_id=cid)
+                    set_execution_state(conn,actor_id=owner,member_id=mid2,state="enabled",now=time.time())
+                    msg=conn.execute("INSERT INTO messages(room_id,author_id,kind,body,created_at) "
+                                     "VALUES(?,?,'chat','capacity fixture',?)",(room,owner,now)).lastrowid
+                rr,tt=fixture(conn,room,owner,mid2,msg,now,deadline=now+600)
+                with write_transaction(conn):
+                    grant_context(conn,rr,"answer",actor_id=owner,member_id=mid2,
+                                  refs=[("owner_message",msg)],now=now)
+                active.append((rr,tt,worker2["token"]))
+            def claim_capacity(row):
+                return asyncio.run(call(port,row[2],"task_claim",{"task_id":row[1]}))
+            for row in active[:4]:
+                assert claim_capacity(row)["status"]=="claimed"
+            refused=claim_capacity(active[4])
+            assert refused=={"task_id":active[4][1],"status":"unavailable","code":"execution_capacity"},refused
+            assert snapshot(conn,active[4][0])["calls_used"]==0
+            # A second independent database connection sees the same durable
+            # capacity; no reliance on Node/Swift process-local counters.
+            from registry_claim_capacity import admission_refusal
+            separate=hub.db()
+            try:
+                separate.execute("BEGIN IMMEDIATE")
+                assert admission_refusal(separate,mid2)=="execution_capacity"
+            finally:
+                separate.close()
+            assert dispatch("task_cancel",{"task_id":active[0][1]})["status"]=="cancelled"
+            assert claim_capacity(active[4])["status"]=="claimed"
             # Ordinary legacy member remains operational even when the
             # process opt-in is on.
             legacy=dispatch("member_register",{"name":"legacy-worker","provider":"muse"})

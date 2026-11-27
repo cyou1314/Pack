@@ -4202,6 +4202,13 @@ def build_server():
                     validate_executor_claim(conn,task_id,member_id=me["id"],now=now)
                     generation = _registry_execution_gate(conn,me["id"],binding)
                     if generation is not None:
+                        from registry_claim_capacity import admission_refusal
+                        refusal = admission_refusal(conn,me["id"])
+                        if refusal:
+                            # A definitive pre-claim refusal, before spending
+                            # budget or mutating task state. The transaction
+                            # is closed by finally, with no writes to commit.
+                            return {"task_id":task_id,"status":"unavailable","code":refusal}
                         tok = f"rg{generation}.{tok}"
                 if _is_external(me):
                     # 件二：external 只许认领绑定房内、指派给本人、非引擎

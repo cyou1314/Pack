@@ -137,6 +137,10 @@ export function createCollaborationRunner({
       let claim;
       try { claim = await hubCall('task_claim',{task_id}); }
       catch { return {status:'claimUnknown',usage:null}; }
+      if (claim?.task_id===task_id && claim.status==='unavailable' &&
+          ['execution_capacity','execution_account_busy'].includes(claim.code) &&
+          !Object.hasOwn(claim,'claim_token'))
+        return {status:'unavailable',code:claim.code,usage:null};
       if (claim?.task_id!==task_id || claim.status!=='claimed' ||
           typeof claim.claim_token!=='string' || !claim.claim_token ||
           !Number.isFinite(claim.lease_expires))

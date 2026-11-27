@@ -31,6 +31,13 @@ export class CollaborationExecutionSupervisor {
     let status="unknown";
     try {
       const result=await operation();
+      if(result?.status==="unavailable" &&
+         ["execution_capacity","execution_account_busy"].includes(result.code)){
+        // Trusted runner only returns these from an explicit pre-claim
+        // Hub receipt. No attempt was spent; allow a later user request.
+        status=null;
+        return result;
+      }
       if(["review","blocked","claimUnknown","stopUnknown","deliveryUnknown"].includes(result?.status)){
         status=result.code==="provider_outcome_unknown"?"providerUnknown":result.status;
         return result;
@@ -40,7 +47,7 @@ export class CollaborationExecutionSupervisor {
       return {status:"stopUnknown",code:"execution_outcome_unknown",usage:null};
     } finally {
       this.#active.delete(taskId);
-      this.#completed.set(taskId,status);
+      if(status!==null) this.#completed.set(taskId,status);
     }
   }
   stopAdmission(){this.#stopping=true;}

@@ -26,6 +26,8 @@ private actor HostHub: AgentCollaborationHub {
     let deliveryUnknown: Bool
     var calls: [String] = []
     var reads = 0
+    var refuseClaim = false
+    func refuseNextClaim() { refuseClaim = true }
     init(destination: AgentExecutionDestination, changed: Bool, deliveryUnknown: Bool) {
         self.destination = destination
         self.changed = changed
@@ -39,7 +41,13 @@ private actor HostHub: AgentCollaborationHub {
         let result: [String: Any]
         switch name {
         case "collaboration_executor_info": return try JSONEncoder().encode(destination)
-        case "task_claim": result = ["task_id": id, "status":"claimed","claim_token":"fixture","lease_expires":deadline]
+        case "task_claim":
+            if refuseClaim {
+                refuseClaim = false
+                result = ["task_id": id, "status":"unavailable","code":"execution_capacity"]
+            } else {
+                result = ["task_id": id, "status":"claimed","claim_token":"fixture","lease_expires":deadline]
+            }
         case "collaboration_context_get":
             reads += 1
             result = ["run_id":"run","step_key":"answer","provider":destination.provider,
@@ -106,6 +114,21 @@ final class AgentAPICollaborationHostTests: XCTestCase {
         let calls = await hub.calls
         XCTAssertEqual(count,0)
         XCTAssertEqual(calls.last,"task_block")
+    }
+
+    func testDefinitiveCapacityRefusalAllowsLaterExplicitAttempt() async throws {
+        let (host,hub,http,_,_) = try await fixture()
+        await hub.refuseNextClaim()
+        let refused = await host.execute(taskID:1,maxOutputTokens:100,authorize:{ _ in true })
+        XCTAssertEqual(refused,.unavailable)
+        let before = await host.executionStatus()
+        XCTAssertEqual(before.tracked,0)
+        let countBefore = await http.count
+        XCTAssertEqual(countBefore,0)
+        let result = await host.execute(taskID:1,maxOutputTokens:100,authorize:{ _ in true })
+        XCTAssertEqual(result,.review(usage:.init(inputTokens:4,outputTokens:2)))
+        let countAfter = await http.count
+        XCTAssertEqual(countAfter,1)
     }
 
     func testSharedAdmissionAcrossHostsRejectsDuplicateBeforeClaim() async throws {

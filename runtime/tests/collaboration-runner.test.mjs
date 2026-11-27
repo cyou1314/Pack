@@ -172,3 +172,17 @@ test('admission capacity and stop do not invoke a rejected operation',async()=>{
   assert.equal((await supervisor.execute(4,never)).code,'supervisor_stopping');
   assert.equal(supervisor.snapshot().active,0);
 });
+
+test('definitive Hub capacity refusal does not spend a local attempt',async()=>{
+  const f=fixture(),call=f.options.hubCall;
+  let refused=true;
+  const runner=createCollaborationRunner({...f.options,hubCall:async(tool,args)=>{
+    if(tool==='task_claim'&&refused){refused=false;return {task_id:args.task_id,status:'unavailable',code:'execution_capacity'};}
+    return call(tool,args);
+  }});
+  assert.equal((await runner.execute(10)).code,'execution_capacity');
+  assert.equal(runner.executionStatus().tracked,0);
+  assert.equal(f.count(),0);
+  assert.equal((await runner.execute(10)).status,'review');
+  assert.equal(f.count(),1);
+});
