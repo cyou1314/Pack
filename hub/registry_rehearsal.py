@@ -18,6 +18,7 @@ from contextlib import closing
 
 from collaboration_migrate import _database_path, _validate_hub_schema, MigrationError
 from registry_offline_chain import CHAIN, checksum, _verify_schema, apply_offline_chain
+from agent_registry_shadow import build_shadow_report
 
 
 def _readonly(path):
@@ -148,6 +149,12 @@ def rehearse(db_path, output_root):
             applied=apply_offline_chain(conn,now=time.time())
             if _inspect(conn)["current_version"]!=len(CHAIN):
                 raise RuntimeError("rehearsal ledger incomplete")
+            shadow=build_shadow_report(conn)
+            result["shadow"]={"ok":shadow.get("ok",False),
+                              "mismatch_count":shadow.get("mismatch_count",0),
+                              "authorization_ready":False}
+            if not shadow.get("ok"):
+                raise RuntimeError("registry shadow mismatch")
             if conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]!="delete":
                 raise RuntimeError("rehearsal journal conversion failed")
         _sync(work)

@@ -72,6 +72,7 @@ jobs:
           python hub/test_agent_session_projector_port.py
           python hub/test_event_recovery_e2e.py
           python hub/test_registry_offline_chain.py
+          python hub/test_agent_registry_shadow_port.py
           python hub/test_registry_rehearsal.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py

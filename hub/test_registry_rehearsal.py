@@ -48,6 +48,7 @@ class RegistryRehearsalTests(unittest.TestCase):
         before=digest(self.db)
         report=rehearse(self.db,self.output)
         self.assertEqual(report["status"],"rehearsed")
+        self.assertEqual(report["shadow"],{"ok":True,"mismatch_count":0,"authorization_ready":False})
         root=Path(report["directory"])
         backup=root/report["backup"]
         work=root/report["rehearsal"]
