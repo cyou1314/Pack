@@ -44,3 +44,29 @@ struct InstanceBoundCollaborationHub: AgentCollaborationHub {
         return try await client.callOnce(name:name,arguments:arguments)
     }
 }
+
+/// Trusted App boundary for a single explicitly selected native task.
+/// The caller may wire broker.exchange to a private child pipe in a later
+/// integration; neither the token nor a generic Hub client crosses it.
+func withNativeHubTaskBroker<T: Sendable>(
+    hubURL: String, instance: AgentHubInstance, destination: AgentExecutionDestination,
+    memberId: Int, taskID: Int,
+    perform: @Sendable (NativeHubTaskBroker) async throws -> T
+) async throws -> T {
+    guard destination.accessKind == "native",memberId > 0,taskID > 0
+    else { throw AgentEnrollmentError.invalidIdentity }
+    return try await executorEnrollment.withExistingToken(instance:instance,destination:destination) { token in
+        let hub = InstanceBoundCollaborationHub(
+            client:try DedicatedCollaborationHub(url:hubURL,memberToken:token),
+            instance:instance,destination:destination,memberId:memberId)
+        let broker = try NativeHubTaskBroker(hub:hub,taskID:taskID,destination:destination)
+        do {
+            let result = try await perform(broker)
+            await broker.close()
+            return result
+        } catch {
+            await broker.close()
+            throw error
+        }
+    }
+}
