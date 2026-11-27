@@ -58,6 +58,34 @@ final class NativeHubTaskBrokerTests: XCTestCase {
         XCTAssertEqual(calls,["task_claim","collaboration_context_get","run_start","collaboration_context_get","task_complete"])
     }
 
+    func testRealNodeChildPrivatePipeRoundTrip() async throws {
+        guard let node = ProcessInfo.processInfo.environment["PACK_TEST_NODE"] else {
+            throw XCTSkip("Node executable not explicitly configured for integration test")
+        }
+        let root = URL(fileURLWithPath:#filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let fixtureFile = root.appendingPathComponent("tests/fixtures/native-hub-pipe-child.mjs")
+        let (broker,hub) = try fixture()
+        try await NativeTaskProcessChannel.run(executable:URL(fileURLWithPath:node),
+            arguments:[fixtureFile.path],directory:root,environment:["PATH":"/usr/bin:/bin"],
+            broker:broker,timeoutSeconds:20)
+        let calls = await hub.calls
+        XCTAssertEqual(calls,["task_claim","collaboration_context_get","run_start","collaboration_context_get","task_complete"])
+    }
+
+    func testMalformedChildFrameNeverCallsHub() async throws {
+        let (broker,hub) = try fixture()
+        do {
+            try await NativeTaskProcessChannel.run(executable:URL(fileURLWithPath:"/usr/bin/printf"),
+                arguments:["abcd"],directory:FileManager.default.temporaryDirectory,
+                environment:[:],broker:broker,timeoutSeconds:5)
+            XCTFail("oversized header accepted")
+        } catch {}
+        let calls = await hub.calls
+        XCTAssertTrue(calls.isEmpty)
+    }
+
     func testForeignTaskUnknownToolAndWrongClaimNeverReachHub() async throws {
         let (broker,hub) = try fixture()
         for (tool,args) in [

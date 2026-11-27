@@ -129,8 +129,11 @@ jobs:
         run: python installer/test_engine_lock.py
       - name: App bundle output path safety
         run: bash app/test-make-bundle.sh
-      - name: Swift unit tests
-        run: swift test --package-path app
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Swift unit tests and private Node pipe integration
+        run: PACK_TEST_NODE="$(command -v node)" swift test --package-path app
       - name: Swift app bundle build
         run: |
           STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-app-ci.XXXXXX")"
