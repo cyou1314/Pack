@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 import {listActiveTasks, approvalDecision, validHost} from '../runtime-helpers.mjs';
 import {completeWithEnvelope, discoverPublishedHub, settleTaskMemory, loadTaskMemory, transferFromReply, transferInstructions} from './pack-contracts.mjs';
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, createWriteStream } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
+import {createMuseEngineClient, resolveMuseApiBaseUrl} from './muse-engine-client.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,21 +14,11 @@ export function resolveRuntimeConfigPath(env = process.env) {
     ? path.resolve(DIR, env.PACK_RUNTIME_CONFIG)
     : path.resolve(DIR, '..', 'config.json');
 }
-export function resolveMuseApiBaseUrl(env = process.env) {
-  const value = String(env.PACK_MUSE_API_URL || 'http://127.0.0.1:47821').trim();
-  let url;
-  try { url = new URL(value); } catch { throw Error('invalid_local_muse_api_url'); }
-  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
-      || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
-    throw Error('invalid_local_muse_api_url');
-  }
-  return url.origin;
-}
+export {resolveMuseApiBaseUrl} from './muse-engine-client.mjs';
 const CFG = resolveRuntimeConfigPath();
 const ADDR_TOKEN = path.join(DIR, '.addr_token');
 const LOCAL = resolveMuseApiBaseUrl();
 const PERIOD = 20000;
-const MAX_IMAGE = 100 * 1024 * 1024;
 export const tag = body => /\[M4A(?:-image)?\]/.test(body || '');
 export const kind = body => /\[M4A-image\]/.test(body || '') ? 'image' : 'chat';
 export const eligible = t => t.status === 'open' && t.assignee === 'absent' && tag(t.body);
@@ -101,37 +89,11 @@ function envelopeFor(active) {
   }
   return { verdict:'done', summary:Array.from(result).slice(0,500).join(''), artifacts:active.artifacts || [], self_check:{ran:true,evidence:'Muse4AI 返回完成结果'}, known_issues:['Muse4AI 会话自主浏览无法逐次执行出口检查',...(active.memorySettlement?.issue?[active.memorySettlement.issue]:[])], followups:[] };
 }
-class Muse {
-  constructor(key) { this.key = key; }
-  async request(endpoint, method='GET', body, idem) {
-    const r = await fetch(LOCAL + endpoint, { method, signal:AbortSignal.timeout(30000), headers: {
-      authorization:'Bearer ' + this.key, ...(body ? {'content-type':'application/json'} : {}), ...(idem ? {'idempotency-key':idem} : {})
-    }, ...(body ? {body:JSON.stringify(body)} : {}) });
-    if (!r.ok) throw Error('muse_http_' + r.status);
-    return r.json();
-  }
-  async image(job, id) {
-    const out = job.outputs?.find(x => x.kind === 'image' && x.available && x.asset_id);
-    if (!out) throw Error('image_output_missing');
-    if (!['image/png','image/jpeg','image/webp'].includes(out.mime) || out.bytes > MAX_IMAGE) throw Error('image_output_invalid');
-    const ext = {'image/png':'png','image/jpeg':'jpg','image/webp':'webp'}[out.mime];
-    const dir = path.join(DIR, 'images'); mkdirSync(dir, {recursive:true, mode:0o700});
-    const dest = path.join(dir, `task-${id}-${String(out.asset_id).replace(/[^A-Za-z0-9_-]/g,'_')}.${ext}`), tmp = dest + '.part';
-    const res = await fetch(LOCAL + '/v1/assets/' + encodeURIComponent(out.asset_id) + '/content', { headers:{authorization:'Bearer ' + this.key}, signal:AbortSignal.timeout(120000) });
-    if (!res.ok || !res.body) throw Error('image_download_failed');
-    let size = 0; const hash = createHash('sha256');
-    const reader = async function* () { for await (const chunk of Readable.fromWeb(res.body)) { size += chunk.length; if (size > MAX_IMAGE) throw Error('image_too_large'); hash.update(chunk); yield chunk; } };
-    await pipeline(reader(), createWriteStream(tmp, {mode:0o600}));
-    if ((out.bytes != null && size !== out.bytes) || (out.sha256 && hash.digest('hex') !== out.sha256)) throw Error('image_integrity_failed');
-    renameSync(tmp, dest);
-    return `图片已生成并保存至本机：${dest}`;
-  }
-}
 async function run() {
   process.umask(0o077);
   const cfg = JSON.parse(readFileSync(CFG,'utf8')); const key = readFileSync(KEY,'utf8').trim();
   if (cfg.memberName !== 'absent' || !cfg.memberToken || !/^msk_.{20,}$/.test(key)) throw Error('invalid_configuration');
-  const hub = new Hub(cfg.memberToken), muse = new Muse(key);
+  const hub = new Hub(cfg.memberToken), muse = createMuseEngineClient({baseUrl:LOCAL,key,directory:DIR});
   let active = existsSync(STATE) ? JSON.parse(readFileSync(STATE,'utf8')) : null;
   async function approvalRequestOnce(body) {
     if (!active.requestIntent) {
@@ -151,10 +113,10 @@ async function run() {
   }
   async function stopLostTask() {
     if (['running','cancel_pending'].includes(active?.phase) && active.jobId) {
-      try { await muse.request('/v1/jobs/' + encodeURIComponent(active.jobId) + '/cancel','POST',{}); log(`task ${active.task.id} cancel requested after transfer`); }
+      try { await muse.cancelJob(active.jobId); log(`task ${active.task.id} cancel requested after transfer`); }
       catch {
         try {
-          const job=await muse.request('/v1/jobs/' + encodeURIComponent(active.jobId));
+          const job=await muse.getJob(active.jobId);
           if (!['completed','failed','cancelled','needs_review'].includes(job.state)) throw Error('still_active');
         } catch { active.phase='cancel_pending'; persist(active); log(`task ${active.task.id} cancel unconfirmed after transfer; will retry`); return; }
       }
@@ -167,7 +129,7 @@ async function run() {
       if (!hub.sid) { await hub.init(); log('hub connected'); }
       await hub.call('heartbeat');
       if (!heartbeatLogged) { log('hub heartbeat ok'); heartbeatLogged = true; }
-      if (!announced) { const s = await muse.request('/v1/status'); if (s.key?.scope !== 'generate') throw Error('wrong_scope'); log('bridge up: absent; Muse4AI authenticated'); announced = true; }
+      if (!announced) { const s = await muse.status(); if (s.key?.scope !== 'generate') throw Error('wrong_scope'); log('bridge up: absent; Muse4AI authenticated'); announced = true; }
       if (!active) {
         const list = await listActiveTasks((...args) => hub.call(...args), {assignee_name:'absent'});
         const task = list.find(t => eligible(t) || (['claimed','working'].includes(t.status) && t.lease_expires == null && t.assignee === 'absent' && tag(t.body)));
@@ -280,13 +242,13 @@ async function run() {
             }
           } else if (active.phase === 'claimed') {
             const body = {kind:kind(active.task.body), prompt:memoryBlock(active.memory || []) + '\n\n' + promptFor(active.task) + transferInstructions(active.task), account:'absent'};
-            const result = await muse.request('/v1/jobs','POST',body,`pack-task-${task.id}-attempt-${active.attempt}-fence-${active.fence}`);
+            const result = await muse.submitJob(body,`pack-task-${task.id}-attempt-${active.attempt}-fence-${active.fence}`);
             if (!result.jobs?.[0]?.id) throw Error('missing_muse_job');
             active.jobId = result.jobs[0].id; active.phase = 'running'; persist(active); log(`task ${task.id} submitted to Muse4AI`);
           } else if (active.phase === 'running') {
-            const job = await muse.request('/v1/jobs/' + encodeURIComponent(active.jobId));
+            const job = await muse.getJob(active.jobId);
             if (job.state === 'completed') {
-              if (kind(active.task.body) === 'image') active.result = await muse.image(job, task.id);
+              if (kind(active.task.body) === 'image') active.result = await muse.downloadImage(job, task.id);
               else if (typeof job.result?.text === 'string' && !job.result.text_truncated && job.result.text.length) active.result = job.result.text;
               else { active.phase = 'blocked'; active.reason = 'Muse4AI 回复为空或过长，需人工检查'; persist(active); continue; }
               active.phase = 'complete'; persist(active);
