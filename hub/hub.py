@@ -1369,6 +1369,14 @@ def _registry_execution_db():
     return conn
 
 
+def _registry_claim_generation(claim_token):
+    """Parse only after the existing holder check validates the full secret."""
+    match = re.fullmatch(r"rg([1-9][0-9]{0,18})\.[A-Za-z0-9_-]+", claim_token)
+    if not match:
+        raise PermissionError("agent_execution_unfenced_claim")
+    return int(match[1])
+
+
 def _registry_execution_gate(conn, member_id, binding, *, claim_token=None):
     """Fence new work for explicitly Registry-bound collaboration identities.
 
@@ -1395,10 +1403,7 @@ def _registry_execution_gate(conn, member_id, binding, *, claim_token=None):
     if claim_token is not None:
         # Server-issued opaque token carries its claim generation; the holder
         # check has already verified the entire secret against the task row.
-        match = re.fullmatch(r"rg([1-9][0-9]{0,18})\\.[A-Za-z0-9_-]+", claim_token)
-        if not match:
-            raise PermissionError("agent_execution_unfenced_claim")
-        generation = int(match[1])
+        generation = _registry_claim_generation(claim_token)
     result = require_execution(conn,member_id=member_id,account_ref=binding[3],
                                expected_generation=generation,
                                feature_enabled=REGISTRY_EXECUTION_ENABLED)

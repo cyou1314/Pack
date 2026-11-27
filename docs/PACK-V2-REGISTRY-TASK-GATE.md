@@ -20,3 +20,7 @@ remain incomplete. No new public management route. A task run registration
 is not an atomic external model submission. Existing task claim secrets
 remain opaque to clients; no client should parse them. Test actual MCP
 claim/context/run paths on disposable database; no real Provider calls.
+
+Follow-up: CI run 45929400885 exposed an over-escaped literal dot in the
+claim-generation matcher. Correct the expression and directly test valid
+and malformed token shapes, retaining the full MCP regression.

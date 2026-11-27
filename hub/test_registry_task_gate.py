@@ -16,7 +16,20 @@ from registry_binding_migration import apply_binding_extension, apply_control_ex
 from agent_execution_control import set_execution_state
 
 
+def check_generation_parser():
+    assert hub._registry_claim_generation("rg1.secret-_") == 1
+    assert hub._registry_claim_generation("rg9223372036854775807.secret") == 9223372036854775807
+    for invalid in ("rg0.secret", "rg01.secret", "rg1", "rg1.", "rg1Xsecret",
+                    "rg1\\xsecret", "rg1.secret.extra", "rg1.secret\\n", "legacy-secret"):
+        try:
+            hub._registry_claim_generation(invalid)
+        except PermissionError:
+            continue
+        raise AssertionError("invalid generation token was accepted")
+
+
 def main():
+    check_generation_parser()
     with tempfile.TemporaryDirectory(prefix="pack-registry-claim-") as temp:
         hub.BASE=temp
         hub.DB_PATH=os.path.join(temp,"pack.db")
