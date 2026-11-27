@@ -27,6 +27,7 @@ public actor AgentAccountManager {
     private let vault: AgentCredentialVault
     private var store: AgentRegistryStore?
     private var lockFD: Int32 = -1
+    private var admissions: [String:AgentCollaborationAdmission] = [:]
 
     public init(directory: URL, vault: AgentCredentialVault = .init()) {
         self.directory = directory
@@ -136,7 +137,8 @@ public actor AgentAccountManager {
 
     /// Uses the same process-owned registry; never opens a second snapshot.
     public func manualAPIHost(hub: any AgentCollaborationHub, destination: AgentExecutionDestination,
-                              checkLease: Bool = false) async throws -> AgentAPICollaborationHost {
+                              checkLease: Bool = false,
+                              instance: AgentHubInstance? = nil) async throws -> AgentAPICollaborationHost {
         let registry = try registry()
         guard destination.accessKind == "api",
               case .apiCredentialPresent = try await AgentLocalAccountResolver(registry:registry,vault:vault).resolve(destination)
@@ -149,7 +151,24 @@ public actor AgentAccountManager {
             let lease = try AgentSharedAccountLease(root:root,accountRef:destination.accountRef)
             try lease.release()
         }
-        return AgentAPICollaborationHost(hub:hub,registry:registry,vault:vault,leaseRoot:root,expected:destination)
+        let admission: AgentCollaborationAdmission
+        if let instance {
+            guard instance.isValid else { throw AgentAccountSetupError.invalidConfiguration }
+            if let existing = admissions[instance.instanceId] {
+                admission = existing
+            } else {
+                // Bound memory without evicting unresolved Hub histories.
+                guard admissions.count < 32 else { throw AgentAccountSetupError.invalidConfiguration }
+                admission = .init()
+                admissions[instance.instanceId] = admission
+            }
+        } else {
+            // Compatibility for callers without a verified instance. They
+            // receive only host-local admission, never a guessed shared scope.
+            admission = .init()
+        }
+        return AgentAPICollaborationHost(hub:hub,registry:registry,vault:vault,
+                                         leaseRoot:root,expected:destination,admission:admission)
     }
 
     /// Never overwrite, rotate, export or delete an existing key here.

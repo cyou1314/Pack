@@ -110,17 +110,20 @@ public actor AgentAPICollaborationHost {
     private let adapter: AgentOfficialAPIAdapter
     private let leaseRoot: URL
     private let expected: AgentExecutionDestination
+    private let admission: AgentCollaborationAdmission
     private var executing = false
 
     public init(hub: any AgentCollaborationHub, registry: AgentRegistryStore,
                 vault: AgentCredentialVault = .init(),
                 transport: any AgentHTTPTransport = AgentURLSessionTransport(),
-                leaseRoot: URL, expected: AgentExecutionDestination) {
+                leaseRoot: URL, expected: AgentExecutionDestination,
+                admission: AgentCollaborationAdmission = .init()) {
         self.hub = hub
         self.resolver = .init(registry: registry, vault: vault)
         self.adapter = .init(registry: registry, vault: vault, transport: transport)
         self.leaseRoot = leaseRoot
         self.expected = expected
+        self.admission = admission
     }
 
     private func call<T: Decodable>(_ name: String, _ args: [String: Any] = [:]) async throws -> T {
@@ -156,6 +159,20 @@ public actor AgentAPICollaborationHost {
               expected.accessKind == "api", !Task.isCancelled else { return .unavailable }
         executing = true
         defer { executing = false }
+        guard await admission.begin(taskID) else { return .unavailable }
+        let result = await executeOnce(taskID:taskID,maxOutputTokens:maxOutputTokens,authorize:authorize)
+        await admission.finish(taskID,result:result)
+        return result
+    }
+
+    public func executionStatus() async -> AgentCollaborationAdmission.Snapshot {
+        await admission.snapshot()
+    }
+
+    private func executeOnce(taskID: Int, maxOutputTokens: Int,
+                             authorize: @escaping @Sendable (AgentAPIAuthorization) async throws -> Bool)
+        async -> AgentCollaborationExecutionResult {
+        guard !Task.isCancelled else { return .unavailable }
         // Confirm dedicated server identity BEFORE claiming or reading context.
         do {
             let actual: AgentExecutionDestination = try await call("collaboration_executor_info")

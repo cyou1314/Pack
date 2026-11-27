@@ -60,7 +60,8 @@ private actor HostHub: AgentCollaborationHub {
     }
 }
 final class AgentAPICollaborationHostTests: XCTestCase {
-    private func fixture(changed: Bool = false, deliveryUnknown: Bool = false) async throws
+    private func fixture(changed: Bool = false, deliveryUnknown: Bool = false,
+                         admission: AgentCollaborationAdmission = .init()) async throws
         -> (AgentAPICollaborationHost, HostHub, HostHTTP, URL, String) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes:[.posixPermissions:0o700])
@@ -77,7 +78,7 @@ final class AgentAPICollaborationHostTests: XCTestCase {
         let dest = AgentExecutionDestination(accountRef:ref,provider:"openai",accessKind:"api")
         let hub = HostHub(destination:dest,changed:changed,deliveryUnknown:deliveryUnknown)
         let http = HostHTTP()
-        let host = AgentAPICollaborationHost(hub:hub,registry:registry,vault:vault,transport:http,leaseRoot:root,expected:dest)
+        let host = AgentAPICollaborationHost(hub:hub,registry:registry,vault:vault,transport:http,leaseRoot:root,expected:dest,admission:admission)
         return (host,hub,http,root,ref)
     }
 
@@ -107,6 +108,50 @@ final class AgentAPICollaborationHostTests: XCTestCase {
         XCTAssertEqual(calls.last,"task_block")
     }
 
+    func testSharedAdmissionAcrossHostsRejectsDuplicateBeforeClaim() async throws {
+        let admission = AgentCollaborationAdmission()
+        let (first,_,http,_,_) = try await fixture(admission:admission)
+        let (second,hub,otherHTTP,_,_) = try await fixture(admission:admission)
+        let result = await first.execute(taskID:1,maxOutputTokens:100,authorize:{ _ in true })
+        XCTAssertEqual(result,.review(usage:.init(inputTokens:4,outputTokens:2)))
+        let duplicate = await second.execute(taskID:1,maxOutputTokens:100,authorize:{ _ in true })
+        XCTAssertEqual(duplicate,.unavailable)
+        let calls = await hub.calls
+        let count = await http.count
+        let other = await otherHTTP.count
+        XCTAssertTrue(calls.isEmpty)
+        XCTAssertEqual(count,1)
+        XCTAssertEqual(other,0)
+        let status = await first.executionStatus()
+        XCTAssertEqual(status.outcomes,["review":1])
+    }
+
+    func testAdmissionCapacityUnknownAndStop() async {
+        let admission = AgentCollaborationAdmission(maxConcurrent:1,maxTracked:2)
+        let first = await admission.begin(1)
+        let duplicate = await admission.begin(1)
+        let capacity = await admission.begin(2)
+        XCTAssertTrue(first)
+        XCTAssertFalse(duplicate)
+        XCTAssertFalse(capacity)
+        await admission.finish(1,result:.claimUnknown)
+        let retry = await admission.begin(1)
+        let second = await admission.begin(2)
+        XCTAssertFalse(retry)
+        XCTAssertTrue(second)
+        await admission.finish(2,result:.unavailable)
+        let safeRetry = await admission.begin(2)
+        XCTAssertTrue(safeRetry)
+        await admission.finish(2,result:.deliveryUnknown(usage:nil))
+        let full = await admission.begin(3)
+        XCTAssertFalse(full)
+        await admission.stopAdmission()
+        let status = await admission.snapshot()
+        XCTAssertFalse(status.accepting)
+        XCTAssertEqual(status.active,0)
+        XCTAssertEqual(status.outcomes,["claimUnknown":1,"deliveryUnknown":1])
+    }
+
     func testUnknownDeliveryRetainsCrossProcessMarker() async throws {
         let (host,hub,http,root,ref) = try await fixture(deliveryUnknown:true)
         let result = await host.execute(taskID:1,maxOutputTokens:100,authorize:{ _ in true })
@@ -117,5 +162,9 @@ final class AgentAPICollaborationHostTests: XCTestCase {
         XCTAssertEqual(count,1)
         XCTAssertEqual(calls.filter{$0 == "task_complete"}.count,1)
         XCTAssertFalse(calls.contains("task_block"))
+        let duplicate = await host.execute(taskID:1,maxOutputTokens:100,authorize:{ _ in true })
+        XCTAssertEqual(duplicate,.unavailable)
+        let after = await hub.calls
+        XCTAssertEqual(after,calls)
     }
 }

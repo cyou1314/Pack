@@ -150,9 +150,9 @@ struct AgentManualAPIView: View {
         await state.stopManualPresenceAndWait(account.id)
         guard available else { return }
         do {
-            let dest = destination
+            let dest = destination, pinned = instance
             let result = try await withHub { hub in
-                let host = try await localAgentAccounts.manualAPIHost(hub:hub,destination:dest)
+                let host = try await localAgentAccounts.manualAPIHost(hub:hub,destination:dest,instance:pinned)
                 return await host.execute(taskID:task,maxOutputTokens:4096,authorize:{ approval in
                     await approve(approval,task:task)
                 })
@@ -161,7 +161,7 @@ struct AgentManualAPIView: View {
             switch result {
             case .review: note = "已提交成果，等待群主审核。接单已暂停，可手动重新启动。"
             case .blocked(let code,_): note = "协作已停止（\(code)）。"
-            case .unavailable: note = "执行不可用：可能存在账号租约、身份或密钥问题。"
+            case .unavailable: note = "执行不可用：请检查任务是否已执行、并发容量、账号租约、身份或密钥。"
             case .claimUnknown,.stopUnknown,.deliveryUnknown:
                 uncertain = true; note = "执行结果未确认；不会自动重试。"
             }
