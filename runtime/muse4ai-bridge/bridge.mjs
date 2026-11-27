@@ -3,6 +3,7 @@ import {listActiveTasks, approvalDecision, validHost} from '../runtime-helpers.m
 import {completeWithEnvelope, discoverPublishedHub, settleTaskMemory, loadTaskMemory, transferFromReply, transferInstructions} from './pack-contracts.mjs';
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
 import {createMuseEngineClient, resolveMuseApiBaseUrl} from './muse-engine-client.mjs';
+import {diagnoseMuseEngine,readMuseDiagnosticKey} from './muse-engine-diagnostics.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -129,7 +130,7 @@ async function run() {
       if (!hub.sid) { await hub.init(); log('hub connected'); }
       await hub.call('heartbeat');
       if (!heartbeatLogged) { log('hub heartbeat ok'); heartbeatLogged = true; }
-      if (!announced) { const s = await muse.status(); if (s.key?.scope !== 'generate') throw Error('wrong_scope'); log('bridge up: absent; Muse4AI authenticated'); announced = true; }
+      if (!announced) { const s = await muse.status(); if (s.key?.scope !== 'generate') throw Error('wrong_scope'); log('bridge up: absent; local Muse4AI credential accepted (remote identity unverified)'); announced = true; }
       if (!active) {
         const list = await listActiveTasks((...args) => hub.call(...args), {assignee_name:'absent'});
         const task = list.find(t => eligible(t) || (['claimed','working'].includes(t.status) && t.lease_expires == null && t.assignee === 'absent' && tag(t.body)));
@@ -285,4 +286,21 @@ async function run() {
     await sleep(PERIOD);
   }
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) run().catch(() => { console.error('bridge fatal: configuration or local state unavailable'); process.exitCode=1; });
+async function diagnoseOnly(){
+  const key=await readMuseDiagnosticKey(KEY);
+  const muse=createMuseEngineClient({baseUrl:LOCAL,key,directory:DIR});
+  const report=await diagnoseMuseEngine({client:muse});
+  console.log(JSON.stringify(report,null,2));
+  // Zero means a report was obtained, not account or execution verification.
+  if(report.credential!=='accepted')process.exitCode=2;
+}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args=process.argv.slice(2);
+  const operation=args.length===0?run:
+    args.length===1&&args[0]==='--diagnose'?diagnoseOnly:null;
+  if(!operation){
+    console.error('usage: node bridge.mjs [--diagnose]');process.exitCode=2;
+  }else{
+    operation().catch(()=>{console.error('bridge fatal: configuration or local state unavailable');process.exitCode=1;});
+  }
+}

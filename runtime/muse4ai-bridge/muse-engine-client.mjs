@@ -12,6 +12,20 @@ export function resolveMuseApiBaseUrl(env = process.env) {
   return url.origin;
 }
 
+// A status report may contain account metadata. Bound its size before
+// parsing; never return raw status bodies from the diagnostic CLI.
+async function boundedStatus(response){
+  const limit=1024*1024;
+  if(!response.body)throw Error('muse_status_invalid');
+  let length=0;const chunks=[];
+  for await(const chunk of response.body){
+    length+=chunk.length;
+    if(length>limit)throw Error('muse_status_too_large');
+    chunks.push(Buffer.from(chunk));
+  }
+  return JSON.parse(Buffer.concat(chunks,length).toString('utf8'));
+}
+
 function segment(value) {
   if(typeof value!=='string'||!value||value.length>256||value==='.'||value==='..'||
      /[\x00-\x1f\x7f]/.test(value)) throw Error('invalid_muse_identifier');
@@ -33,7 +47,7 @@ export function createMuseEngineClient({baseUrl,key,directory,fetchImpl=globalTh
       ...(idem?{'idempotency-key':idem}:{})
     },...(body?{body:JSON.stringify(body)}:{})});
     if(!r.ok)throw Error('muse_http_'+r.status);
-    return r.json();
+    return endpoint==='/v1/status'?boundedStatus(r):r.json();
   }
   return Object.freeze({
     providerId:'muse',
