@@ -93,6 +93,8 @@ BACKOFF_BASE_SECONDS = {"quota": 1800, "transient": 60, "task": 300, "unknown": 
 # 隔离测试可注入时钟偏移（秒），把本进程的「现在」整体平移以验退避到期，
 # 免真睡；线上不设此变量、恒为 0。只影响本增量的时间源 _now()。
 TIME_OFFSET = float(os.environ.get("PACK_HUB_TIME_OFFSET", "0"))
+# Explicit process-local opt-in; never inferred from schema presence.
+REGISTRY_EXECUTION_ENABLED = os.environ.get("PACK_REGISTRY_EXECUTION", "") == "1"
 
 
 def _now():
@@ -1353,6 +1355,54 @@ def _collaboration_executor_binding(conn, member_id):
         return None
     from collaboration_context import executor_binding
     return executor_binding(conn,member_id)
+
+
+def _registry_execution_db():
+    conn = db()
+    # Set before any transaction. Legacy-only databases retain their prior
+    # connection behavior. Schema migrations must occur with services stopped.
+    if REGISTRY_EXECUTION_ENABLED or conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name IN "
+            "('collaboration_connection_bindings','pack_registry_binding_migrations',"
+            "'pack_registry_agent_controls') LIMIT 1").fetchone():
+        conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _registry_execution_gate(conn, member_id, binding, *, claim_token=None):
+    """Fence new work for explicitly Registry-bound collaboration identities.
+
+    Legacy unbound executors remain on their old path with the opt-in off.
+    With opt-in on, dedicated executors must have a versioned active binding.
+    Ordinary legacy members are not migrated implicitly.
+    """
+    if binding is None:
+        return None
+    from registry_binding_migration import validate_binding_extension
+    if not validate_binding_extension(conn):
+        if REGISTRY_EXECUTION_ENABLED:
+            raise PermissionError("agent_registry_binding_required")
+        return None
+    row = conn.execute(
+        "SELECT 1 FROM collaboration_connection_bindings WHERE member_id=?",
+        (member_id,)).fetchone()
+    if not row:
+        if REGISTRY_EXECUTION_ENABLED:
+            raise PermissionError("agent_registry_binding_required")
+        return None
+    from agent_execution_control import require_execution
+    generation = None
+    if claim_token is not None:
+        # Server-issued opaque token carries its claim generation; the holder
+        # check has already verified the entire secret against the task row.
+        match = re.fullmatch(r"rg([1-9][0-9]{0,18})\\.[A-Za-z0-9_-]+", claim_token)
+        if not match:
+            raise PermissionError("agent_execution_unfenced_claim")
+        generation = int(match[1])
+    result = require_execution(conn,member_id=member_id,account_ref=binding[3],
+                               expected_generation=generation,
+                               feature_enabled=REGISTRY_EXECUTION_ENABLED)
+    return result["generation"]
 
 
 COLLABORATION_PRESENCE_TTL = 90
@@ -4132,7 +4182,7 @@ def build_server():
         执行体据此跳过该任务。返回 claim_token，后续更新凭它。"""
         me = authenticate()
         require(me)
-        conn = db()
+        conn = _registry_execution_db()
         try:
             tok = secrets.token_urlsafe(24)
             now = _now()
@@ -4141,9 +4191,13 @@ def build_server():
                     conn.execute("BEGIN IMMEDIATE")
                 now = _now()
                 linked = _collaboration_link(conn, task_id)
-                if _collaboration_executor_binding(conn,me["id"]) is not None:
+                binding = _collaboration_executor_binding(conn,me["id"])
+                if binding is not None:
                     from collaboration_context import validate_executor_claim
                     validate_executor_claim(conn,task_id,member_id=me["id"],now=now)
+                    generation = _registry_execution_gate(conn,me["id"],binding)
+                    if generation is not None:
+                        tok = f"rg{generation}.{tok}"
                 if _is_external(me):
                     # 件二：external 只许认领绑定房内、指派给本人、非引擎
                     # 标记的卡（未指派卡不许抢）。staging51 红队修复：
@@ -4868,9 +4922,11 @@ def build_server():
             me = authenticate()
             require(me, "member")
             from collaboration_context import read_context
-            conn = db()
+            conn = _registry_execution_db()
             try:
                 _holder(conn, me, task_id, claim_token)
+                _registry_execution_gate(conn,me['id'],_collaboration_executor_binding(conn,me['id']),
+                                         claim_token=claim_token)
                 result = read_context(conn, task_id, member_id=me["id"], now=_now())
                 audit(conn, me["name"], "collaboration_context_get",
                       f"task {task_id} items={len(result['items'])}")
@@ -5718,10 +5774,12 @@ def build_server():
         与认领/租约互补：认领防抢单，本登记防同一认领被双进程重复执行。"""
         me = authenticate()
         require(me)
-        conn = db()
+        conn = _registry_execution_db()
         try:
             with _lock:
                 t = _holder(conn, me, task_id, claim_token)
+                _registry_execution_gate(conn,me['id'],_collaboration_executor_binding(conn,me['id']),
+                                         claim_token=claim_token)
                 if _is_external(me) and t["room_id"] != me["bound_room_id"]:
                     raise ValueError("forbidden: task is outside the bound room")
                 if t["status"] not in ("claimed", "working"):

@@ -76,6 +76,7 @@ jobs:
           python hub/test_registry_rehearsal.py
           python hub/test_registry_binding_migration.py
           python hub/test_agent_execution_control.py
+          python hub/test_registry_task_gate.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py
           python installer/test_browser_payload.py
