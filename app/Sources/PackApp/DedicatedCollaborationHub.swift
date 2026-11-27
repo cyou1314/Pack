@@ -71,3 +71,24 @@ func withNativeHubTaskBroker<T: Sendable>(
         }
     }
 }
+
+/// Composition boundary for a future reviewed bundled native worker.
+/// Do not expose these trusted program paths as task data or UI text inputs.
+/// Preserve the authoritative Hub receipt even on an uncertain child exit.
+func runNativeTaskProcess(
+    hubURL: String, instance: AgentHubInstance, destination: AgentExecutionDestination,
+    memberId: Int, taskID: Int, executable: URL, arguments: [String], directory: URL,
+    environment: [String:String],
+    authorize: @escaping NativeTaskExecutionController.ApprovalHandler
+) async throws -> NativeTaskRunReport {
+    try await withNativeHubTaskBroker(hubURL:hubURL,instance:instance,destination:destination,
+        memberId:memberId,taskID:taskID,authorize:authorize) { broker in
+        var clean = false
+        do {
+            try await NativeTaskProcessChannel.run(executable:executable,arguments:arguments,
+                directory:directory,environment:environment,broker:broker)
+            clean = true
+        } catch {}
+        return NativeTaskRunReport(receipt:await broker.outcome(),childExitConfirmed:clean)
+    }
+}
