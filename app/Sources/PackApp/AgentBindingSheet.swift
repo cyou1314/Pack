@@ -45,6 +45,10 @@ struct AgentBindingSheet: View {
                         AgentManualAPIView(state:state,account:account,scope:scope,instance:instance,memberId:member)
                     }
             }
+            if verified,account.profile.mode == .nativeAccount {
+                Text("原生执行入口未开放：需要完成真实平台身份与页面驱动验收。Hub 绑定不代表可以发送模型请求。")
+                    .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.amber)
+            }
             if !note.isEmpty { Text(note).foregroundStyle(DesignTokens.amber) }
             if !available { Text("中枢或房间已变化，请关闭后重新打开。").foregroundStyle(DesignTokens.amber) }
             HStack {

@@ -14,6 +14,7 @@ DRIVER_FILES = (
     "native-login.mjs", "native-login-cli.mjs", "native-diagnostics.mjs",
     "native-identity.mjs", "native-account-adapter.mjs", "chatgpt-page-driver.mjs",
     "chatgpt-collaboration-host.mjs", "native-collaboration-host.mjs", "native-hub-task-client.mjs", "native-task-pipe.mjs",
+    "native-task-worker.mjs", "native-task-worker-cli.mjs",
 )
 RUNTIME_FILES = ("account-execution-leases.mjs", "collaboration-runner.mjs")
 AGENT_CORE_FILES = ("collaboration-execution-supervisor.mjs",)

@@ -84,6 +84,26 @@ final class NativeHubTaskBrokerTests: XCTestCase {
             broker:broker,timeoutSeconds:20)
         let calls = await hub.calls
         XCTAssertEqual(calls,["task_claim","collaboration_context_get","run_start","collaboration_context_get","collaboration_context_get","task_complete"])
+        let receipt = await broker.outcome()
+        XCTAssertEqual(receipt,.review)
+    }
+
+    func testRealNodeWorkerDenialDoesNotStartOrSend() async throws {
+        guard let node = ProcessInfo.processInfo.environment["PACK_TEST_NODE"] else {
+            throw XCTSkip("Node executable not explicitly configured")
+        }
+        let root = URL(fileURLWithPath:#filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let fixtureFile = root.appendingPathComponent("tests/fixtures/native-hub-pipe-child.mjs")
+        let (broker,hub) = try fixture(authorize:{ _ in false })
+        try await NativeTaskProcessChannel.run(executable:URL(fileURLWithPath:node),
+            arguments:[fixtureFile.path,"deny"],directory:root,environment:["PATH":"/usr/bin:/bin"],
+            broker:broker,timeoutSeconds:20)
+        let calls = await hub.calls
+        XCTAssertEqual(calls,["task_claim","collaboration_context_get","task_block"])
+        let receipt = await broker.outcome()
+        XCTAssertEqual(receipt,.blocked)
     }
 
     func testMalformedChildFrameNeverCallsHub() async throws {
