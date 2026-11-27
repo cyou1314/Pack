@@ -30,3 +30,9 @@ still require explicit allowlists and disclosure controls.
 Next integrate the existing collaboration runner with a single supervised
 execution ownership boundary, then connect per-Agent transport and lifecycle
 control. Preserve Muse legacy path until real Mac acceptance.
+
+CI follow-up: run 45934316046 found that Foundation's barrel referenced
+getAgentEventCapabilities, which the earlier main-based delivery worker does
+not export. Remove only that unsupported export and add an import-surface
+regression. The capabilities handshake is not implemented or advertised here;
+review Gateway session binding and capability negotiation before porting it.

@@ -13,4 +13,5 @@ export {RuntimeSupervisor} from "./supervisor.mjs";
 export {createContextPackage} from "./context-package.mjs";
 // Provider adapters are registered explicitly by the trusted host.
 export {SqliteEventStore} from "./sqlite-event-store.mjs";
-export {AgentEventDeliveryWorker, getAgentEventCapabilities} from "./event-delivery-worker.mjs";
+// The main-based worker has no capabilities handshake export yet.
+export {AgentEventDeliveryWorker} from "./event-delivery-worker.mjs";
