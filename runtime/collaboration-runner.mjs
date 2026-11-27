@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { CollaborationExecutionSupervisor } from './agent-core/collaboration-execution-supervisor.mjs';
 
 // Opt-in collaboration execution contract. All callbacks are trusted local
 // host dependencies; none is selected by model output. No secret export,
@@ -113,10 +114,12 @@ const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).
 // local owner authorization for the exact fingerprint and destination.
 export function createCollaborationRunner({
   hubCall, resolveProfile, resolveAdapter, authorizeEgress, accountLeases,
-  timeoutMs = 60000, now = () => Date.now()
+  timeoutMs = 60000, now = () => Date.now(),
+  executionSupervisor = new CollaborationExecutionSupervisor()
 }) {
   if ([hubCall,resolveProfile,resolveAdapter,authorizeEgress,now].some(x=>typeof x!=='function') ||
       typeof accountLeases?.acquire!=='function' ||
+      !(executionSupervisor instanceof CollaborationExecutionSupervisor) ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000)
     fail('invalid_runner_configuration');
   const busy = new Set();
@@ -130,9 +133,7 @@ export function createCollaborationRunner({
     } catch {}
     return {status:'stopUnknown',code,usage};
   }
-  return {
-    async execute(task_id) {
-      if (!positiveID(task_id)) fail('invalid_task_id');
+  async function executeOnce(task_id) {
       let claim;
       try { claim = await hubCall('task_claim',{task_id}); }
       catch { return {status:'claimUnknown',usage:null}; }
@@ -207,6 +208,7 @@ export function createCollaborationRunner({
             return {status:'review',usage};
           }
         } catch {}
+        uncertain.add(account);
         return {status:'deliveryUnknown',usage};
       } catch {
         if (invoked && account) uncertain.add(account);
@@ -223,6 +225,12 @@ export function createCollaborationRunner({
         }
         if (locked) busy.delete(account);
       }
-    }
+  }
+  return {
+    execute(task_id) {
+      if (!positiveID(task_id)) fail('invalid_task_id');
+      return executionSupervisor.execute(task_id,()=>executeOnce(task_id));
+    },
+    executionStatus:()=>executionSupervisor.snapshot()
   };
 }

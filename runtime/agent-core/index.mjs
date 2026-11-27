@@ -15,3 +15,4 @@ export {createContextPackage} from "./context-package.mjs";
 export {SqliteEventStore} from "./sqlite-event-store.mjs";
 // The main-based worker has no capabilities handshake export yet.
 export {AgentEventDeliveryWorker} from "./event-delivery-worker.mjs";
+export {CollaborationExecutionSupervisor} from './collaboration-execution-supervisor.mjs';

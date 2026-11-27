@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {CollaborationExecutionSupervisor} from '../agent-core/collaboration-execution-supervisor.mjs';
 import {createCollaborationRunner,validateContext,destinationFor} from '../collaboration-runner.mjs';
 
 const id='12345678-1234-4234-8234-123456789abc';
@@ -127,4 +128,47 @@ test('role and budget must match step',()=>{
  const f=fixture();assert.throws(()=>validateContext({...f.context,role:'review'}));
  assert.throws(()=>validateContext({...f.context,max_output_tokens:8192}));
  assert.equal(validateContext({...f.context,step_key:'review',role:'review',max_output_tokens:2048}).role,'review');
+});
+
+test('shared supervisor rejects concurrent duplicate and same task replay before Hub claim',async()=>{
+  const f=fixture(),supervisor=new CollaborationExecutionSupervisor({maxConcurrent:2});
+  let release;const gate=new Promise(resolve=>{release=resolve;});
+  const a=createCollaborationRunner({...f.options,executionSupervisor:supervisor,
+    authorizeEgress:async()=>{await gate;return true;}});
+  const b=createCollaborationRunner({...f.options,executionSupervisor:supervisor});
+  const first=a.execute(10);
+  assert.equal((await b.execute(10)).code,'task_in_flight');
+  release();
+  assert.equal((await first).status,'review');
+  assert.equal((await b.execute(10)).code,'task_already_attempted');
+  assert.equal(f.calls.filter(x=>x.tool==='task_claim').length,1);
+  assert.equal(f.count(),1);
+});
+
+test('uncertain completion blocks same task and same runner account without resending',async()=>{
+  const f=fixture(),call=f.options.hubCall;
+  const runner=createCollaborationRunner({...f.options,hubCall:async(tool,args)=>{
+    const result=await call(tool,args);
+    if(tool==='task_complete')throw Error('lost receipt');
+    return result;
+  }});
+  assert.equal((await runner.execute(10)).status,'deliveryUnknown');
+  assert.equal((await runner.execute(10)).code,'task_already_attempted');
+  assert.equal((await runner.execute(11)).code,'account_unavailable');
+  assert.equal(f.count(),1);
+  assert.equal(runner.executionStatus().outcomes.deliveryUnknown,1);
+});
+
+test('admission capacity and stop do not invoke a rejected operation',async()=>{
+  const supervisor=new CollaborationExecutionSupervisor({maxConcurrent:1,maxTracked:2});
+  let release;const gate=new Promise(resolve=>{release=resolve;});
+  const first=supervisor.execute(1,async()=>{await gate;return {status:'review'};});
+  const never=()=>{throw Error('should not invoke');};
+  assert.equal((await supervisor.execute(2,never)).code,'execution_capacity');
+  release();await first;
+  assert.equal((await supervisor.execute(2,async()=>{throw Error('lost');})).status,'stopUnknown');
+  assert.equal((await supervisor.execute(3,never)).code,'execution_tracking_full');
+  supervisor.stopAdmission();
+  assert.equal((await supervisor.execute(4,never)).code,'supervisor_stopping');
+  assert.equal(supervisor.snapshot().active,0);
 });
