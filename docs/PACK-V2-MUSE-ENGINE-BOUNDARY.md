@@ -10,9 +10,9 @@ The bridge continues its existing retry with the same idempotency key; this
 relies on the installed local Engine's implementation, not a guarantee
 from Pack or an official remote API. No private protocol implementation.
 
-Image artifact byte/hash checks are preserved. Existing legacy artifact
-path/partial-file/overwrite handling is not redesigned in this slice;
-review it before production cutover. No changes to Electron, login storage,
+Image artifact handling was subsequently hardened in
+PACK-V2-MUSE-IMAGE-STORE.md; the original client extraction itself did
+not redesign that behavior. No changes to Electron, login storage,
 installed API, account data or production configuration. Copy the sibling
 client together with bridge.mjs when deploying a loose bridge. The legacy
 API is not the verified account collaboration adapter. Native login,

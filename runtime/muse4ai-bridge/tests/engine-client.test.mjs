@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync,readdirSync,writeFileSync,mkdirSync,symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -53,5 +53,89 @@ test('image asset download retains file format and verifies bytes and hash',asyn
     assert.equal(await client.downloadImage(job,1),'图片已生成并保存至本机：'+path.join(directory,'images/task-1-asset1.png'));
     assert.deepEqual(readFileSync(path.join(directory,'images/task-1-asset1.png')),data);
     await assert.rejects(()=>client.downloadImage({outputs:[{...job.outputs[0],sha256:'0'.repeat(64)}]},2),/image_integrity_failed/);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+function output(data,asset_id='asset1',digest=true){
+  return {outputs:[{kind:'image',available:true,asset_id,mime:'image/png',bytes:data.length,
+    ...(digest?{sha256:createHash('sha256').update(data).digest('hex')}:{})}]};
+}
+test('verified duplicate reuses original without network and conflict never overwrites',async()=>{
+  const directory=mkdtempSync(path.join(tmpdir(),'pack-engine-reuse-'));
+  const data=Buffer.from('original');let calls=0;
+  try{
+    const client=createMuseEngineClient({key,directory,fetchImpl:async()=>{calls++;return new Response(data);}});
+    const job=output(data);
+    const first=await client.downloadImage(job,1);
+    assert.equal(await client.downloadImage(job,1),first);
+    assert.equal(calls,1);
+    await assert.rejects(()=>client.downloadImage(output(Buffer.from('modified')),1),/image_asset_conflict/);
+    assert.equal(calls,1);
+    assert.deepEqual(readFileSync(path.join(directory,'images/task-1-asset1.png')),data);
+    assert.deepEqual(readdirSync(path.join(directory,'images')),['task-1-asset1.png']);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+test('missing digest requires comparison with downloaded bytes and preserves old file',async()=>{
+  const directory=mkdtempSync(path.join(tmpdir(),'pack-engine-no-digest-'));
+  const data=Buffer.from('original');let calls=0,payload=data;
+  try{
+    const client=createMuseEngineClient({key,directory,fetchImpl:async()=>{calls++;return new Response(payload);}});
+    const job=output(data,'asset1',false);
+    const first=await client.downloadImage(job,1);
+    assert.equal(await client.downloadImage(job,1),first);
+    assert.equal(calls,2);
+    payload=Buffer.from('modified');
+    await assert.rejects(()=>client.downloadImage(job,1),/image_asset_conflict/);
+    assert.equal(calls,3);
+    assert.deepEqual(readFileSync(path.join(directory,'images/task-1-asset1.png')),data);
+    assert.deepEqual(readdirSync(path.join(directory,'images')),['task-1-asset1.png']);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+test('failed integrity and interrupted stream clean only newly created partial files',async()=>{
+  const directory=mkdtempSync(path.join(tmpdir(),'pack-engine-partial-'));
+  const data=Buffer.from('original');
+  try{
+    const dir=path.join(directory,'images');mkdirSync(dir,{mode:0o700});
+    const old=path.join(dir,'legacy.part');writeFileSync(old,'preserve',{mode:0o600});
+    const client=createMuseEngineClient({key,directory,fetchImpl:async()=>new Response(Buffer.from('modified'))});
+    await assert.rejects(()=>client.downloadImage(output(data),1),/image_integrity_failed/);
+    const interrupted=createMuseEngineClient({key,directory,fetchImpl:async()=>new Response(new ReadableStream({
+      pull(controller){controller.error(Error('fixture_interrupted'));}
+    }))});
+    await assert.rejects(()=>interrupted.downloadImage(output(data),1),/fixture_interrupted/);
+    assert.deepEqual(readdirSync(dir),['legacy.part']);
+    assert.equal(readFileSync(old,'utf8'),'preserve');
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+test('unsafe paths and malformed metadata fail closed before network',async()=>{
+  const directory=mkdtempSync(path.join(tmpdir(),'pack-engine-path-'));
+  const data=Buffer.from('original');let calls=0;
+  try{
+    const dir=path.join(directory,'images'),outside=path.join(directory,'outside');
+    mkdirSync(dir,{mode:0o700});writeFileSync(outside,data,{mode:0o600});
+    symlinkSync(outside,path.join(dir,'task-1-asset1.png'));
+    const client=createMuseEngineClient({key,directory,fetchImpl:async()=>{calls++;return new Response(data);}});
+    await assert.rejects(()=>client.downloadImage(output(data),1),/image_storage_unsafe/);
+    for(const patch of [{bytes:-1},{bytes:100*1024*1024+1},{sha256:'bad'},{mime:'text/html'}]){
+      const job=output(data);Object.assign(job.outputs[0],patch);
+      await assert.rejects(()=>client.downloadImage(job,2),/image_output_invalid/);
+    }
+    await assert.rejects(()=>client.downloadImage(output(data),'../bad'),/image_output_invalid/);
+    assert.equal(calls,0);
+    assert.deepEqual(readFileSync(outside),data);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+test('concurrent identical downloads publish a single file without overwrite',async()=>{
+  const directory=mkdtempSync(path.join(tmpdir(),'pack-engine-race-'));
+  const data=Buffer.from('original');let calls=0;
+  let release;const gate=new Promise(resolve=>{release=resolve;});
+  try{
+    const client=createMuseEngineClient({key,directory,fetchImpl:async()=>{
+      calls++;if(calls===2)release();await gate;return new Response(data);
+    }});
+    const [first,second]=await Promise.all([client.downloadImage(output(data),1),client.downloadImage(output(data),1)]);
+    assert.equal(first,second);assert.equal(calls,2);
+    assert.deepEqual(readdirSync(path.join(directory,'images')),['task-1-asset1.png']);
+    assert.deepEqual(readFileSync(path.join(directory,'images/task-1-asset1.png')),data);
   }finally{rmSync(directory,{recursive:true,force:true});}
 });

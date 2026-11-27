@@ -248,7 +248,17 @@ async function run() {
           } else if (active.phase === 'running') {
             const job = await muse.getJob(active.jobId);
             if (job.state === 'completed') {
-              if (kind(active.task.body) === 'image') active.result = await muse.downloadImage(job, task.id);
+              if (kind(active.task.body) === 'image') {
+                try { active.result = await muse.downloadImage(job, task.id); }
+                catch(e) {
+                  if (!['image_output_missing','image_output_invalid','image_integrity_failed',
+                         'image_too_large','image_asset_conflict','image_storage_unsafe'].includes(e.message)) throw e;
+                  // Completed remote job, but its local artifact is unsafe or
+                  // inconsistent. Do not regenerate or overwrite on retry.
+                  active.phase='blocked'; active.reason='Muse4AI 图片产物需人工核对（'+e.message+'）';
+                  persist(active); continue;
+                }
+              }
               else if (typeof job.result?.text === 'string' && !job.result.text_truncated && job.result.text.length) active.result = job.result.text;
               else { active.phase = 'blocked'; active.reason = 'Muse4AI 回复为空或过长，需人工检查'; persist(active); continue; }
               active.phase = 'complete'; persist(active);
