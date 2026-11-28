@@ -113,11 +113,19 @@ public struct AgentRegistry: Sendable {
     }
 }
 
+public enum AgentProvisioningError: Error, Equatable {
+    case operationInProgress
+    /// Metadata was not committed and credential cleanup failed.
+    /// Retain the profile identity for explicit recovery; never retry blindly.
+    case credentialCleanupRequired(profileID: UUID)
+}
+
 /// Single-process metadata store. No secret material is written deliberately;
 /// callers must provide opaque vault references, not raw credential strings.
 public actor AgentRegistryStore {
     private let file: URL
     private var registry: AgentRegistry
+    private var provisioning = false
 
     private static func attributesIfPresent(_ url: URL) throws -> [FileAttributeKey: Any]? {
         do {
@@ -160,19 +168,78 @@ public actor AgentRegistryStore {
         registry = next
     }
 
+    /// Creates a new API profile and its credential as one compensated operation.
+    /// The store must have a single owner for its directory. Other writers and
+    /// process termination between Keychain and disk are not covered.
+    public func provisionAPIProfile(_ profile: AgentProfile, apiKey: String,
+                                    vault: AgentCredentialVault) async throws {
+        try ensureIdle()
+        guard profile.mode == .officialAPI else { throw AgentRegistryError.unsupportedMode }
+        var next = registry
+        try next.insert(profile)
+        provisioning = true
+        defer { provisioning = false }
+
+        try Task.checkCancellation()
+        // Duplicate or failed inserts are not ours to remove.
+        try await vault.insert(apiKey, for: profile)
+        do {
+            try Task.checkCancellation()
+            try persist(next)
+        } catch {
+            let provisioningError = error
+            do {
+                try await vault.remove(for: profile)
+            } catch AgentVaultError.missing {
+                // The desired rollback state already holds.
+            } catch {
+                throw AgentProvisioningError.credentialCleanupRequired(profileID: profile.id)
+            }
+            throw provisioningError
+        }
+    }
+
+    /// Replaces an existing API credential for a registered profile.
+    /// Does not create a missing secret or change profile identity.
+    /// Once the backend succeeds, cancellation cannot undo the replacement.
+    public func rotateAPICredential(id: UUID, apiKey: String,
+                                    vault: AgentCredentialVault) async throws {
+        try ensureIdle()
+        guard let profile = registry.profiles.first(where: { $0.id == id }) else {
+            throw AgentRegistryError.unknownProfile
+        }
+        guard profile.mode == .officialAPI else {
+            throw AgentRegistryError.unsupportedMode
+        }
+        provisioning = true
+        defer { provisioning = false }
+
+        try Task.checkCancellation()
+        try await vault.replace(apiKey, for: profile)
+    }
+
+    private func ensureIdle() throws {
+        guard !provisioning else { throw AgentProvisioningError.operationInProgress }
+    }
+
+    /// Metadata-only insertion retained for legacy/import callers.
+    /// New API profiles should use provisionAPIProfile.
     public func insert(_ profile: AgentProfile) throws {
+        try ensureIdle()
         var next = registry
         try next.insert(profile)
         try persist(next)
     }
 
     public func update(_ profile: AgentProfile) throws {
+        try ensureIdle()
         var next = registry
         try next.update(profile)
         try persist(next)
     }
 
     public func remove(id: UUID) throws {
+        try ensureIdle()
         var next = registry
         try next.remove(id: id)
         try persist(next)
