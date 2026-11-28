@@ -4816,15 +4816,22 @@ def build_server():
                     """,(run_id,step_key)).fetchone()
                 if not row or not isinstance(row[2],str) or len(row[2].encode("utf-8"))>16*1024:
                     raise ValueError("collaboration step result unavailable")
+                from collaboration_compact_handoff import inspect_handoff
+                from collaboration_handoff_migration import validate_handoff_extension
                 return {"run_id":run_id,"step_key":step_key,"task_id":row[0],
                         "approved":row[1]=="done","result":row[2],"role":row[3],
+                        "compact_handoff":inspect_handoff(conn,task_id=row[0],owner_id=me["id"]),
+                        "handoff_available":bool(validate_handoff_extension(conn)
+                            and row[1]=="review" and row[4] is None
+                            and row[3] in ("worker","independent-analysis","review")),
                         "review_version":_collaboration_review_version(row) if row[1]=="review" and row[4] is None else None,
                         "context_budgets":_collaboration_result_budgets(conn,run_id,step_key)}
             finally:
                 conn.close()
 
         @mcp.tool
-        def collaboration_review(run_id: str, step_key: str, expected_version: str, approve: bool) -> dict:
+        def collaboration_review(run_id: str, step_key: str, expected_version: str, approve: bool,
+                                 handoff_text: str | None = None) -> dict:
             """Owner-only review of the exact inspected plain-text step revision."""
             me = authenticate()
             require(me,"member")
@@ -4850,7 +4857,7 @@ def build_server():
                             or len(row["result"].encode("utf-8"))>16*1024
                             or expected_version != _collaboration_review_version(row)):
                         raise ValueError("collaboration review version unavailable or changed")
-                    result = _review_task_locked(conn,me,row["id"],approve,"")
+                    result = _review_task_locked(conn,me,row["id"],approve,"",handoff_text=handoff_text)
                     result.update(run_id=run_id,step_key=step_key,
                                   run_status=conn.execute(
                                       "SELECT status FROM collaboration_runs WHERE id=?",(run_id,)).fetchone()[0])
@@ -4859,7 +4866,8 @@ def build_server():
                 conn.close()
 
         @mcp.tool
-        def collaboration_review_batch(run_id: str, versions: dict[str, str]) -> dict:
+        def collaboration_review_batch(run_id: str, versions: dict[str, str],
+                                       handoffs: dict[str, str] | None = None) -> dict:
             """Owner approves one complete parallel wave of inspected results atomically.
             No implicit approval of uninspected results, no automatic replay.
             """
@@ -4871,6 +4879,12 @@ def build_server():
                     or any(not isinstance(k,str) or not isinstance(v,str)
                            or not re.fullmatch(r"[a-f0-9]{64}",v) for k,v in versions.items())):
                 raise ValueError("invalid collaboration batch")
+            if handoffs is None:
+                handoffs = {}
+            if (not isinstance(handoffs,dict) or not set(handoffs)<=set(versions)
+                    or any(not isinstance(v,str) or not v.strip()
+                           or len(v.encode("utf-8"))>16*1024 for v in handoffs.values())):
+                raise ValueError("invalid collaboration batch handoffs")
             conn = db()
             try:
                 with _lock, write_transaction(conn):
@@ -4907,7 +4921,8 @@ def build_server():
                                 or versions[key]!=_collaboration_review_version(row)):
                             raise ValueError("collaboration batch version unavailable or changed")
                     for key,_,_,task_id,_ in pending:
-                        result = _review_task_locked(conn,me,task_id,True,"",strict_dispatch=True)
+                        result = _review_task_locked(conn,me,task_id,True,"",strict_dispatch=True,
+                                                     handoff_text=handoffs.get(key))
                         if result["status"]!="done":
                             raise RuntimeError("collaboration batch transition failed")
                     status = conn.execute("SELECT status FROM collaboration_runs WHERE id=?",(run_id,)).fetchone()[0]
@@ -5228,7 +5243,7 @@ def build_server():
         finally:
             conn.close()
 
-    def _review_task_locked(conn, me, task_id, approve, note, *, strict_dispatch=False):
+    def _review_task_locked(conn, me, task_id, approve, note, *, strict_dispatch=False, handoff_text=None):
         """Shared dispatcher/owner transition, caller owns the transaction."""
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
@@ -5237,6 +5252,8 @@ def build_server():
             raise ValueError(f"task {task_id} not in review (status={t['status']})")
         now = _now()
         linked = _collaboration_active_task(conn, task_id, now)
+        if handoff_text is not None and (not approve or linked is None):
+            raise ValueError("compact handoff requires collaboration approval")
         if linked is not None and not approve:
             _collaboration_stop(conn, linked, "failed", me["name"],
                                 "review_rejected", now)
@@ -5276,6 +5293,11 @@ def build_server():
                 (task_id,)).fetchone()
             if not state or state[0] != "succeeded":
                 raise RuntimeError("collaboration: review did not succeed")
+            if handoff_text is not None:
+                from collaboration_compact_handoff import record_approved_handoff
+                record_approved_handoff(conn,run_id=linked,task_id=task_id,
+                                        actor_id=me["id"],text=handoff_text,now=now)
+                audit(conn,me["name"],"collaboration_handoff_approve",f"task {task_id}")
             # Managed runs advance only after approved prerequisites.
             # Roll back *all* new grants/cards if any dispatch is
             # invalid; retain the approved work and stop the run.
@@ -5286,8 +5308,8 @@ def build_server():
                 except ValueError:
                     conn.execute("ROLLBACK TO collaboration_advance")
                     conn.execute("RELEASE collaboration_advance")
-                    if strict_dispatch:
-                        raise ValueError("collaboration batch dispatch unavailable") from None
+                    if strict_dispatch or handoff_text is not None:
+                        raise ValueError("collaboration next-step dispatch unavailable") from None
                     _collaboration_stop(conn,linked,"failed",me["name"],
                                         "next_step_unavailable",now)
                 else:

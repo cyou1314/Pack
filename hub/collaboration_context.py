@@ -125,7 +125,7 @@ def _required_results(conn, run_id, step_key):
     return {row[1] for row in rows}
 
 
-def _source(conn, *, run_id, step_key, room, owner_id, kind, source_id):
+def _source(conn, *, run_id, step_key, room, owner_id, kind, source_id, use_handoff=True):
     if kind == "owner_message":
         row = conn.execute(
             "SELECT body,edited_at,created_at FROM messages WHERE id=? AND room_id=? "
@@ -159,6 +159,10 @@ def _source(conn, *, run_id, step_key, room, owner_id, kind, source_id):
     digest = hashlib.sha256(json.dumps(
         [kind, source_id, *tuple(row)], ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")).hexdigest()
+    if kind == "dependency_result" and use_handoff:
+        from collaboration_compact_handoff import compact_dependency
+        return compact_dependency(conn,task_id=source_id,owner_id=owner_id,
+                                  original=text,source_sha256=digest)
     return text, digest
 
 
@@ -214,6 +218,10 @@ def project_fan_in(conn, run_id):
                 item["text"] = result
                 if task_status != "done" or step_status != "succeeded":
                     provisional += 1
+                else:
+                    item["text"],item["sha256"] = _source(
+                        conn,run_id=run_id,step_key=key,room=request[2],
+                        owner_id=request[0],kind="dependency_result",source_id=tid)
             else:
                 pending += 1
             known.append(item)

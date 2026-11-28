@@ -10,6 +10,8 @@ from test_task_lifecycle_guards import hub, free_port, wait_port, call
 from collaboration_store import initialize, write_transaction, create_run, snapshot
 from collaboration_dispatch import bind_task, reserve_claim
 from collaboration_guard import install_task_guards
+from collaboration_migrate import migrate
+from collaboration_handoff_migration import apply_handoff_extension, validate_handoff_extension
 from collaboration_context import grant_context, revoke_context, register_executor, revoke_executor
 
 
@@ -58,8 +60,11 @@ def main():
         conn = hub.db()
         try:
             assert not hub._collaboration_present(conn), "legacy schema must stay unchanged"
-            initialize(conn)
-            install_task_guards(conn)
+            migrate(hub.DB_PATH,enabled=True)
+            conn.execute("PRAGMA foreign_keys=ON")
+            assert apply_handoff_extension(conn,now=time.time())
+            assert validate_handoff_extension(conn)
+            conn.execute("PRAGMA foreign_keys=OFF")
             port = free_port()
             server = hub.build_server()
             threading.Thread(target=server.run, kwargs={
@@ -372,9 +377,19 @@ def main():
             assert "error" in owner_call("collaboration_review_batch",{**batch_args,"versions":{**versions,"analysis-1":large["review_version"]}})
             assert all(conn.execute("SELECT status FROM tasks WHERE id=?",(steps[k]["task_id"],)).fetchone()[0]=="review" for k in versions)
             assert owner_call("collaboration_status",{"run_id":managed})["steps"][-1]["task_id"] is None
-            with write_transaction(conn):
-                conn.execute("UPDATE tasks SET result=? WHERE id=?",("second result",tid))
-            batch=owner_call("collaboration_review_batch",batch_args)
+            compact_args={**batch_args,"versions":{**versions,"analysis-1":large["review_version"]},
+                          "handoffs":{"analysis-1":"second result"}}
+            assert large["handoff_available"] is True
+            assert "error" in outsider("collaboration_review_batch",compact_args)
+            assert "error" in owner_call("collaboration_review_batch",{**compact_args,
+                "handoffs":{"analysis-1":"中"*5400}})
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_compact_handoffs").fetchone()[0]==0
+            assert all(conn.execute("SELECT status FROM tasks WHERE id=?",(steps[k]["task_id"],)).fetchone()[0]=="review" for k in versions)
+            batch=owner_call("collaboration_review_batch",compact_args)
+            preserved=owner_call("collaboration_result_get",{"run_id":managed,"step_key":"analysis-1"})
+            assert preserved["result"]=="中"*5400 and preserved["approved"] is True,preserved
+            assert preserved["compact_handoff"]["text"]=="second result"
+            assert preserved["compact_handoff"]["wire_text"].endswith("\nsecond result")
             assert batch=={"run_id":managed,"approved_steps":["analysis-0","analysis-1"],"run_status":"active"},batch
             assert "error" in owner_call("collaboration_review_batch",batch_args)
             status=owner_call("collaboration_status",{"run_id":managed})
@@ -382,7 +397,7 @@ def main():
             assert final["task_id"],status
             context=finish_managed(final,members[0],"final result")
             assert context["role"]=="synthesis" and context["max_output_tokens"]==4096,context
-            assert {i["text"] for i in context["items"] if i["kind"]=="dependency_result"}=={"first result","second result"}
+            assert {i["text"] for i in context["items"] if i["kind"]=="dependency_result"}=={"first result",preserved["compact_handoff"]["wire_text"]}
             assert owner_call("collaboration_status",{"run_id":managed})["status"]=="succeeded"
             assert conn.execute("""SELECT COUNT(*) FROM messages m
                 JOIN collaboration_task_links l ON l.task_id=m.task_id WHERE l.run_id=?""",(managed,)).fetchone()[0]==0

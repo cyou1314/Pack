@@ -81,6 +81,22 @@ class CollaborationMigrationTests(unittest.TestCase):
         self.assertEqual(again["status"], "already_enabled")
         self.assertIsNone(again["backup"])
 
+    def test_optional_handoff_extension_preserves_v1_and_rejects_bad_ledger(self):
+        from collaboration_handoff_migration import apply_handoff_extension, validate_handoff_extension
+        migration.migrate(self.db,enabled=True,backup_dir=self.backups)
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            self.assertFalse(validate_handoff_extension(conn))
+            self.assertTrue(apply_handoff_extension(conn,now=123))
+            self.assertFalse(apply_handoff_extension(conn,now=124))
+            migration._validate_v1(conn)
+            self.assertEqual(conn.execute("SELECT body FROM tasks WHERE id=7").fetchone()[0],"preserve me")
+            self.assertEqual(conn.execute("SELECT schema_sha256 FROM pack_schema_migrations").fetchone()[0],migration.SCHEMA_HASH)
+            conn.execute("UPDATE pack_collaboration_handoff_migrations SET checksum='bad'")
+            conn.commit()
+            with self.assertRaisesRegex(migration.MigrationError,"handoff extension"):
+                migration._validate_v1(conn)
+
     def test_partial_or_unversioned_schema_fails_closed_before_backup(self):
         with sqlite3.connect(self.db) as conn:
             conn.execute("CREATE TABLE collaboration_runs(id TEXT PRIMARY KEY)")

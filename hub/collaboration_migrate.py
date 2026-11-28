@@ -157,6 +157,15 @@ def _validate_v1(conn):
         except (RuntimeError, sqlite3.Error) as exc:
             raise MigrationError("incompatible binding extension") from exc
         collab_tables.remove("collaboration_connection_bindings")
+    if ("collaboration_compact_handoffs" in collab_tables
+            or "pack_collaboration_handoff_migrations" in tables):
+        from collaboration_handoff_migration import validate_handoff_extension
+        try:
+            if not validate_handoff_extension(conn):
+                raise RuntimeError("missing handoff extension")
+        except (RuntimeError, sqlite3.Error) as exc:
+            raise MigrationError("incompatible handoff extension") from exc
+        collab_tables.remove("collaboration_compact_handoffs")
     if collab_tables != set(TABLE_COLUMNS) or collab_triggers != TRIGGERS:
         raise MigrationError("collaboration schema objects are incomplete or unexpected")
     for table, required in TABLE_COLUMNS.items():
@@ -178,7 +187,8 @@ def _schema_state(conn):
               {name for name in triggers if name.startswith("collaboration_")})
     if not marker:
         if (collab or "pack_registry_binding_migrations" in tables
-                or "pack_registry_agent_controls" in tables):
+                or "pack_registry_agent_controls" in tables
+                or "pack_collaboration_handoff_migrations" in tables):
             raise MigrationError(
                 "unversioned collaboration objects found; refusing automatic adoption")
         return "fresh"
