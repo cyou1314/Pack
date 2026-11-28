@@ -21,6 +21,10 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Set up Node for cross-runtime recovery
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install CI dependencies
         run: python -m pip install --disable-pip-version-check -r hub/requirements-ci.txt
       - name: Shell syntax
@@ -34,6 +38,7 @@ jobs:
           bash -n tests/hub-staging56/run_tests.sh
           bash -n installer/build-dmg.sh
           bash -n app/make-bundle.sh
+          bash -n app/make-browser-dev-bundle.sh
           bash -n app/test-make-bundle.sh
       - name: Python compile
         run: |
@@ -46,8 +51,35 @@ jobs:
           python hub/test_resolve_mention.py
           python hub/test_db_query_indexes.py
           python hub/test_task_lifecycle_guards.py
+          python hub/test_collaboration_policy.py
+          python hub/test_collaboration_store.py
+          python hub/test_collaboration_dispatch.py
+          python hub/test_collaboration_guard.py
+          python hub/test_collaboration_context.py
+          python hub/test_collaboration_hub.py
+          python hub/test_collaboration_migrate.py
+          python hub/test_collaboration_identity_inventory.py
+          python hub/test_collaboration_connection_binding.py
+          python hub/test_registry_v1_port.py
+          python hub/test_registry_v2_v3_port.py
+          python hub/test_registry_event_v4_v5_port.py
+          python hub/test_agent_event_auth_port.py
+          python hub/test_agent_event_inbox_port.py
+          python hub/test_agent_event_gateway_boundary.py
+          python hub/test_agent_event_consumers_port.py
+          python hub/test_registry_session_v7_port.py
+          python hub/test_agent_sessions_port.py
+          python hub/test_agent_session_projector_port.py
+          python hub/test_event_recovery_e2e.py
+          python hub/test_registry_offline_chain.py
+          python hub/test_agent_registry_shadow_port.py
+          python hub/test_registry_rehearsal.py
+          python hub/test_registry_binding_migration.py
+          python hub/test_agent_execution_control.py
+          python hub/test_registry_task_gate.py
           python installer/test_manager_paths.py
           python installer/test_engine_lock.py
+          python installer/test_browser_payload.py
           python -m py_compile runtime/l2-handoff/prepare-electron.py runtime/l2-handoff/verify-electron.py runtime/l2-handoff/test_prepare_electron.py runtime/l2-handoff/test_verify_electron.py
           python runtime/l2-handoff/test_prepare_electron.py
           python runtime/l2-handoff/test_verify_electron.py
@@ -75,7 +107,7 @@ jobs:
             node --check "$f"
           done
       - name: Runtime unit tests
-        run: node --test runtime/tests/*.test.mjs runtime/muse4ai-bridge/tests/*.test.mjs runtime/l2-handoff/*.test.cjs runtime/browser-driver/sessions.test.mjs
+        run: node --test runtime/tests/*.test.mjs runtime/muse4ai-bridge/tests/*.test.mjs runtime/l2-handoff/*.test.cjs runtime/browser-driver/sessions.test.mjs runtime/browser-driver/native-login.test.mjs
 
   app:
     name: macOS App / build
@@ -91,12 +123,17 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r hub/requirements-ci.txt
       - name: Hub SQLite migration and query-plan smoke
         run: python hub/test_db_query_indexes.py
+      - name: Installer transaction and Hub payload regression
+        run: python installer/test_manager_paths.py
       - name: Engine payload lock regression
         run: python installer/test_engine_lock.py
       - name: App bundle output path safety
         run: bash app/test-make-bundle.sh
-      - name: Swift unit tests
-        run: swift test --package-path app
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Swift unit tests and private Node pipe integration
+        run: PACK_TEST_NODE="$(command -v node)" swift test --package-path app
       - name: Swift app bundle build
         run: |
           STAGE="$(mktemp -d "${TMPDIR:-/tmp}/pack-app-ci.XXXXXX")"
@@ -116,9 +153,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install pinned Playwright Core
-        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
-      - name: Install matching Chromium
-        run: node node_modules/playwright-core/cli.js install chromium
+      - name: Validate checked-in dependency lock
+        run: node verify-candidate-lock.mjs
+      - name: Install exact checked-in lock
+        run: npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+      - name: Set up manifest Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install matching Chromium into dedicated CI cache
+        run: PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/pack-browser-cache" node node_modules/playwright-core/cli.js install chromium
       - name: Local browser isolation smoke
-        run: node --test chromium.smoke.mjs
+        run: PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/pack-browser-cache" node --test chromium.smoke.mjs chatgpt-page-driver.smoke.mjs
+      - name: Build and verify relocated browser candidate
+        run: |
+          PAYLOAD="$RUNNER_TEMP/pack-browser-payload"
+          LOCK="$RUNNER_TEMP/browser-payload.candidate.json"
+          bash ../../installer/stage-browser-candidate.sh "$PAYLOAD" "$RUNNER_TEMP/pack-browser-cache" "$(command -v node)"
+          python ../../installer/browser-payload.py create --payload "$PAYLOAD" --lock "$LOCK" --revision "$(git rev-parse HEAD)" --architecture "$(uname -m)"
+          python ../../installer/browser-payload.py verify --payload "$PAYLOAD" --lock "$LOCK" --revision "$(git rev-parse HEAD)" --architecture "$(uname -m)"
+          SMOKE_HOME="$(mktemp -d)"
+          (
+            cd "$PAYLOAD/runtime/browser-driver"
+            env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin PLAYWRIGHT_BROWSERS_PATH="$PAYLOAD/browsers" "$PAYLOAD/node/bin/node" --input-type=module -e 'import {createBrowserSessions} from "./playwright.mjs"; import {createChatGPTCollaborationHost} from "./chatgpt-collaboration-host.mjs"; if(typeof createChatGPTCollaborationHost!=="function")throw Error("candidate import failed"); import fs from "node:fs/promises"; import path from "node:path"; const root=await fs.mkdtemp(path.join(process.env.HOME,"profile-")); const profile={id:"11111111-1111-4111-8111-111111111111",mode:"nativeAccount"}; const sessions=await createBrowserSessions({root,headless:true}); const context=await sessions.open(profile); try {const page=context.pages()[0]||await context.newPage(); await page.goto("data:text/html,<title>Pack relocation fixture</title>"); if(await page.title()!=="Pack relocation fixture")throw Error("relocation smoke failed");} finally {await sessions.close(profile);}'
+          )
+          python ../../installer/browser-payload.py verify --payload "$PAYLOAD" --lock "$LOCK" --revision "$(git rev-parse HEAD)" --architecture "$(uname -m)"
+      - name: Preserve candidate manifest for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-payload-candidate-manifest
+          path: ${{ runner.temp }}/browser-payload.candidate.json
+          if-no-files-found: error

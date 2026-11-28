@@ -9,7 +9,12 @@ ENGINE_LOCK="${PACK_BUILD_ENGINE_LOCK:-$ROOT/installer/engine.lock.json}"
 [ ! -e "$OUT" ] && [ ! -L "$OUT" ] || { echo 'Output exists; choose a new path.' >&2; exit 1; }
 
 fail() { echo "Pack DMG preflight failed: $*" >&2; exit 1; }
+# Explicit program-only allowlist; parity with manager.py is checked in CI.
+HUB_PROGRAM_FILES=(hub.py room_watch.py backup-db.sh verify-backup.sh collaboration_policy.py collaboration_store.py collaboration_dispatch.py collaboration_guard.py collaboration_context.py collaboration_migrate.py)
 [ -f "$ENGINE_LOCK" ] && [ ! -L "$ENGINE_LOCK" ] || fail "missing approved Engine lock: $ENGINE_LOCK (see installer/BUILDING.md)"
+for f in "${HUB_PROGRAM_FILES[@]}"; do
+  [ -f "$ROOT/hub/$f" ] && [ ! -L "$ROOT/hub/$f" ] || fail "missing or unsafe Hub program file: $f"
+done
 for cmd in rsync ditto codesign hdiutil swift git; do
   command -v "$cmd" >/dev/null 2>&1 || fail "missing macOS build tool: $cmd"
 done
@@ -55,7 +60,7 @@ rsync -a --exclude='site-packages' --exclude='__pycache__' "$PYROOT/lib/python3.
 rsync -a "$PYROOT/bin/python3.12" "$STAGE/python/bin/"
 ln -s python3.12 "$STAGE/python/bin/python3"
 rsync -a --exclude='pip' --exclude='pip-*' --exclude='__pycache__' "$VENV/lib/python3.12/site-packages/" "$STAGE/python/lib/python3.12/site-packages/"
-for f in hub.py room_watch.py backup-db.sh verify-backup.sh; do cp "$ROOT/hub/$f" "$STAGE/hub/$f"; done
+for f in "${HUB_PROGRAM_FILES[@]}"; do cp "$ROOT/hub/$f" "$STAGE/hub/$f"; done
 for f in headless.cjs gateway-page.js package.json; do cp "$ENGINE/app/$f" "$STAGE/engine/app/$f"; done
 ditto "$ENGINE/Electron.app" "$STAGE/engine/Electron.app"
 "$PYROOT/bin/python3" "$ROOT/installer/engine-lock.py" verify --engine "$STAGE/engine" --lock "$STAGE/engine.lock.json" >/dev/null
@@ -72,6 +77,9 @@ ln -s /Applications "$STAGE/Applications"
 # The hub and engine payload must contain no user databases, tokens or sessions.
 if find "$STAGE/hub" "$STAGE/engine" \( -name 'pack.db*' -o -name 'Cookies' -o -name 'vault.json' -o -name '.dispatcher_token' -o -name '*.sqlite*' -o -name 'Partitions' \) -print | grep -q .; then echo 'Unexpected user data in payload.' >&2; exit 1; fi
 env -i HOME="$STAGE" PATH=/nonexistent PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3" -c 'import fastmcp,sqlite3,ssl; assert fastmcp.__version__ == "4.1.8"'
+# Validate imports from the staged payload, not the source checkout. Do not
+# initialize a database, start a service or create bytecode in the bundle.
+env -i HOME="$STAGE" PATH=/nonexistent PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE/hub" "$STAGE/python/bin/python3" -B -c 'import hub, collaboration_policy, collaboration_store, collaboration_dispatch, collaboration_guard, collaboration_context'
 mkdir -p "$(dirname "$OUT")"
 hdiutil create -srcfolder "$STAGE" -volname 'Pack 本地版' -format UDZO "$OUT"
 printf 'Built %s\nStaging directory: %s\n' "$OUT" "$STAGE"

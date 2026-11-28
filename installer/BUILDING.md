@@ -59,3 +59,23 @@ bash installer/build-dmg.sh "/path/to/output/Pack-local-installer.dmg"
 3. 在 macOS CI 中使用该固定 Engine 运行完整 DMG 构建和安装器验收。
 
 在这三项完成前，Hub / Swift App 的 CI 通过不等于完整 DMG 可以从干净克隆复现。
+
+## 群聊协作模块打包
+
+DMG 构建与安装器使用固定 Hub 程序文件白名单，包括五个 collaboration 模块；CI 检查清单一致性。构建预检拒绝缺失/符号链接程序文件，并用打包的 Python 在 staging 中验证模块导入（不初始化数据库或启动服务）。安装器在修改本机安装根目录之前检查程序包，卸载和安全重装检查使用相同白名单。继续采用原有卸载保留数据后重装流程，不提供原地覆盖升级。协作 schema 仍默认不创建；不得将包含已启用协作数据的数据库降级到不支持协作的旧 Hub。
+
+### Experimental browser payload (not included in production DMG)
+
+Browser CI pins the checked-in npm lock and builds an isolated candidate using `stage-browser-candidate.sh NEW_DIRECTORY BROWSER_CACHE NODE_BINARY` with already installed, trusted development dependencies. `browser-payload.py create/verify --payload DIR --lock FILE --revision FULL_COMMIT --architecture arm64` inventories the exact payload and detects changes. Candidate reports explicitly have release_approved:false; do not substitute them for the approved Engine lock or install them on a user's Mac. Independent binary provenance, code-signing, redistribution notices, both target architectures, installer transaction integration and production feature gating remain required.
+
+For opt-in GUI testing only, use `bash app/make-browser-dev-bundle.sh /absolute/new/PackNativeDev.app CANDIDATE_DIRECTORY CANDIDATE_MANIFEST`. It verifies the same revision and local architecture before/after copying and signing, reserves a new destination, and enables the developer-only fixed bundled launch path. No production DMG changes or automatic dependency installation. The bundle shares Pack's existing identity/data; quit normal Pack before opening. The candidate must be explicitly trusted by the developer; ad-hoc signatures are not publisher assurance.
+
+### Explicit collaboration schema migration
+
+The installer deliberately does **not** create the optional collaboration schema. After Pack is installed and the Hub database exists, inspect first with:
+
+```bash
+~/.pack/local-hub/python/bin/python3 ~/.pack/local-hub/collaboration_migrate.py --enable-collaboration --dry-run
+```
+
+Only after reviewing `status: ready`, explicitly apply with the same command without `--dry-run`. The migration takes a SQLite online snapshot into `~/.pack/local-hub/backups/migrations/`, writes a SHA-256 manifest, verifies the backup with `PRAGMA integrity_check`, then uses one `BEGIN IMMEDIATE` transaction to add the collaboration tables, task-guard triggers and `pack_schema_migrations` v1 marker. Existing Hub tasks/messages/members are not rewritten. Repeat runs verify the marker and required objects and do not create another backup. Failure rolls back the schema transaction and retains the pre-migration snapshot; the tool never auto-restores a backup over a live database. Symlinked/unowned DBs, unsafe SQLite sidecars, incompatible Hub schemas, partial or unversioned collaboration objects fail closed. This is an explicit feature opt-in, not part of install/reinstall. Keep backups through acceptance and never downgrade a DB after enabling the collaboration ledger.

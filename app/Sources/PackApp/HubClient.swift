@@ -195,6 +195,42 @@ actor HubClient {
         return [:]
     }
 
+    // Dedicated execution never replays a mutation on session/transport error.
+    // Do not route through the legacy reconnect/retry and logging path.
+    func collaborationCallOnce(name: String, arguments: Data) async throws -> Data {
+        let allowed: Set<String> = ["collaboration_executor_info", "collaboration_executor_identity", "task_claim",
+            "collaboration_context_get", "run_start", "task_complete", "task_block", "task_list", "heartbeat",
+            "collaboration_presence_start", "collaboration_presence_renew", "collaboration_presence_stop"]
+        guard allowed.contains(name),
+              let args = try JSONSerialization.jsonObject(with: arguments) as? [String: Any] else {
+            throw HubError.badResponse("invalid collaboration call")
+        }
+        let result = try await callOnce(name: name, args: args)
+        return try JSONSerialization.data(withJSONObject: result)
+    }
+
+    // Owner workspace uses its own credential, never logs private tool
+    // errors or retries publication automatically. Legacy Hub remains valid.
+    func ownerWorkspaceCall(name: String, args: [String: Any]) async throws -> Data {
+        let allowed: Set<String> = ["collaboration_workspace", "collaboration_result_get",
+                                    "collaboration_usage_get", "collaboration_publish", "collaboration_route_preview",
+                                    "collaboration_create", "collaboration_request_lookup",
+                                    "collaboration_review", "collaboration_review_batch", "collaboration_cancel", "collaboration_status",
+                                    "collaboration_instance_info", "collaboration_executor_status",
+                                    "collaboration_executor_provision", "collaboration_executor_revoke"]
+        guard allowed.contains(name) else { throw HubError.badResponse("invalid workspace call") }
+        do {
+            let result = try await callOnce(name: name, args: args)
+            let data = try JSONSerialization.data(withJSONObject: result)
+            guard data.count <= 1_048_576 else { throw HubError.badResponse("workspace response too large") }
+            return data
+        } catch {
+            // Reset the MCP session for the next explicit user action only.
+            sessionId = nil
+            throw HubError.badResponse("workspace request failed")
+        }
+    }
+
     func call(name: String, args: [String: Any] = [:]) async throws -> [String: Any] {
         do {
             return try await callOnce(name: name, args: args)

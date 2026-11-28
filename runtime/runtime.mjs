@@ -20,7 +20,7 @@ import {parseQuotaSnapshot, quotaDue} from './quota-policy.mjs';
  * Smoke mode: node runtime.mjs --smoke "message"  (runs driver once)
  */
 import { readFileSync, writeFileSync, renameSync, mkdirSync, chmodSync } from "node:fs";
-import { runBoundedProcess } from "./process-supervisor.mjs";
+import { createMuseLegacyAdapter } from "./muse-legacy-adapter.mjs";
 import path from "node:path";
 import { format } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -158,32 +158,12 @@ async function mcpInit() {
   }).catch(() => {});
 }
 
-async function runDriver(message, signal, chat = null) {
-  // ego-browser reads composed source from stdin. Bound execution time and
-  // combined output so a stuck page or runaway log cannot hold the task slot
-  // or grow the Runtime process without limit.
-  const primitives = readFileSync(path.join(DIR, "driver-primitives.js"), "utf8");
-  const core = readFileSync(path.join(DIR, chat?.action === "quota" ? "quota-driver.js" : chat ? "chat-driver.js" : "driver-core.js"), "utf8");
-  const task = { profileId: cfg.profileId, spaceName: cfg.spaceName, message, ...(chat || {}) };
-  const newline = String.fromCharCode(10);
-  const source = "globalThis.PACK_TASK = " + JSON.stringify(task) + ";" + newline + primitives + newline + core;
-  const result = await runBoundedProcess(cfg.egoBin || "ego-browser", ["nodejs"], {
-    input: source,
-    signal,
-    cwd: DIR,
-    timeoutMs: DRIVER_TIMEOUT_MS,
-    maxOutputBytes: DRIVER_MAX_OUTPUT_BYTES,
-    maxInputBytes: DRIVER_MAX_INPUT_BYTES,
-  });
-  if (result.code !== 0) throw new Error(`driver_exit_${result.code ?? result.signal ?? "unknown"}`);
-  const line = (result.stdout + newline + result.stderr).split(newline)
-    .filter(value => value.startsWith("DRIVER-RESULT")).pop();
-  if (!line) throw new Error("driver_no_result");
-  try { return JSON.parse(line.slice("DRIVER-RESULT".length).trim()); }
-  catch { throw new Error("driver_result_not_json"); }
-}
-
-
+// The compatibility adapter owns all Muse-specific subprocess composition.
+const provider = createMuseLegacyAdapter({
+  directory: DIR, profileId: cfg.profileId, spaceName: cfg.spaceName,
+  egoBin: cfg.egoBin || "ego-browser", timeoutMs: DRIVER_TIMEOUT_MS,
+  maxOutputBytes: DRIVER_MAX_OUTPUT_BYTES, maxInputBytes: DRIVER_MAX_INPUT_BYTES,
+});
 
 let failStreak = 0;
 // The free tunnel URL rotates; the hub publishes its current URL to the
@@ -205,7 +185,7 @@ let quotaLastSuccess = 0, quotaLastAttempt = 0, quotaRequested = false;
 async function collectQuota() {
   quotaLastAttempt = Date.now();
   try {
-    const result = await runDriver("", null, {action:"quota"});
+    const result = await provider.readQuota();
     const data = result.ok ? parseQuotaSnapshot(result.quota) : {};
     if (data.week_used_pct === undefined) throw Error('quota unavailable');
     await tool('member_quota_report', data);
@@ -229,11 +209,11 @@ async function processChat(message, members) {
     const member = members.find(m => m.name === cfg.memberName);
     if (!quotaAllowsChat(member)) { console.log(`chat ${message.id} skipped: weekly quota >=90% or unavailable`); chatState.last_chat_id = message.id; saveChatState(); return; }
     if (!chatState.chatUrl) {
-      const seed = await runDriver(chatSeed, null, {action:"seed"});
+      const seed = await provider.seedConversation(chatSeed);
       if (!seed.ok || !seed.chatUrl) throw Error(seed.error || "chat_seed_failed");
       chatState.chatUrl = seed.chatUrl; saveChatState();
     }
-    const result = await runDriver(message.body, null, {action:"send", chatUrl:chatState.chatUrl});
+    const result = await provider.sendConversation(message.body, chatState.chatUrl);
     if (!result.ok || !result.reply) throw Error(result.error || "chat_reply_empty");
     await tool("room_post", {room:"pack-main", kind:"chat", body:Array.from(result.reply).slice(0,200).join("")});
     quotaRequested = true;
@@ -515,7 +495,7 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
     } finally { checkingHolder = false; }
   }, 10000);
   try {
-    res = await runDriver(prompt, abort.signal);
+    res = await provider.executeTask(prompt,{signal:abort.signal});
   } catch (e) {
     if (lostHolder) return;
     state.driverError = e.message;
@@ -547,7 +527,7 @@ async function processClaimedTask(task, ctok, transferred, expectedAttempt, stat
 async function main() {
   if (process.argv[2] === "--smoke") {
     const msg = process.argv[3] || "Pack smoke test.";
-    const res = await runDriver(msg);
+    const res = await provider.executeTask(msg);
     console.log("SMOKE-RESULT " + JSON.stringify(res));
     return;
   }

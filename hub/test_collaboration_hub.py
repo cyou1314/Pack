@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""Exercise opt-in collaboration cancellation against the actual Hub schema and MCP."""
+import asyncio
+import os
+import tempfile
+import threading
+import time
+
+from test_task_lifecycle_guards import hub, free_port, wait_port, call
+from collaboration_store import initialize, write_transaction, create_run, snapshot
+from collaboration_dispatch import bind_task, reserve_claim
+from collaboration_guard import install_task_guards
+from collaboration_migrate import migrate
+from collaboration_handoff_migration import apply_handoff_extension, validate_handoff_extension
+from collaboration_context import grant_context, revoke_context, register_executor, revoke_executor
+
+
+def fixture(conn, room, owner, member, source, now, *, deadline, claimed=False, lease=None,
+            create_card=True):
+    with write_transaction(conn):
+        run = create_run(conn, room_id=room, source_message_id=source, deadline=deadline,
+                         now=now, actor_role="owner", mode="focus",
+                         eligible={str(member)}, leader=str(member))
+        if not create_card:
+            return run, None
+        task = conn.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,'open',?,?)",
+            (room, "collaboration fixture", "test input", owner, member, now, now)).lastrowid
+        bind_task(conn, run, "answer", task_id=task, member_id=member, now=now)
+        if claimed:
+            assert reserve_claim(conn, task, member_id=member, eligible_ids={member}, now=now)
+            conn.execute(
+                "UPDATE tasks SET status='claimed',attempts=1,claim_token='fixture',lease_expires=? WHERE id=?",
+                (lease, task))
+            conn.execute(
+                "INSERT INTO runs(task_id,member_id,fence,claim_token,status,started_at)"
+                " VALUES(?,?,1,'fixture','running',?)", (task, member, now))
+        return run, task
+
+
+def assert_closed(conn, run, task, status):
+    assert snapshot(conn, run)["status"] == status
+    if task is not None:
+        row = conn.execute("SELECT status,claim_token,lease_expires FROM tasks WHERE id=?",
+                           (task,)).fetchone()
+        assert tuple(row) == ("cancelled", None, None), tuple(row)
+        assert not conn.execute(
+            "SELECT 1 FROM runs WHERE task_id=? AND status='running'", (task,)).fetchone()
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix="pack-collab-hub-") as temp:
+        hub.BASE = temp
+        hub.DB_PATH = os.path.join(temp, "pack.db")
+        hub.ATTACH_DIR = os.path.join(temp, "attachments")
+        hub.init()
+        with open(os.path.join(temp, ".dispatcher_token"), encoding="utf-8") as f:
+            token = f.read().strip()
+        conn = hub.db()
+        try:
+            assert not hub._collaboration_present(conn), "legacy schema must stay unchanged"
+            migrate(hub.DB_PATH,enabled=True)
+            conn.execute("PRAGMA foreign_keys=ON")
+            assert apply_handoff_extension(conn,now=time.time())
+            assert validate_handoff_extension(conn)
+            conn.execute("PRAGMA foreign_keys=OFF")
+            port = free_port()
+            server = hub.build_server()
+            threading.Thread(target=server.run, kwargs={
+                "transport": "http", "host": "127.0.0.1", "port": port, "path": "/mcp"
+            }, daemon=True).start()
+            assert wait_port(port)
+
+            def dispatch(name, args):
+                return asyncio.run(call(port, token, name, args))
+
+            reg = dispatch("member_register", {"name": "collab-fixture-member", "provider": "fixture-provider"})
+            assert reg.get("token"), reg
+            member = conn.execute("SELECT id FROM members WHERE name='collab-fixture-member'").fetchone()[0]
+            owner = conn.execute("SELECT id FROM members WHERE role='dispatcher'").fetchone()[0]
+            room = conn.execute("SELECT id FROM rooms WHERE name='pack-main'").fetchone()[0]
+            now = time.time()
+            run, task = fixture(conn, room, owner, member, 1, now,
+                                deadline=now+600, claimed=True, lease=now+300)
+            conn.execute("UPDATE desktop_lock SET holder=?,task_id=?,acquired_at=? WHERE id=1",
+                         ("collab-fixture-member", task, now))
+            conn.commit()
+            result = dispatch("task_cancel", {"task_id": task})
+            assert result.get("status") == "cancelled", result
+            assert_closed(conn, run, task, "cancelled")
+            assert not hub._desktop_snapshot(conn)["held"]
+            assert dispatch("task_cancel", {"task_id": task}).get("status") == "cancelled"
+
+            expired, expired_task = fixture(conn, room, owner, member, 2, now-100,
+                                            deadline=now-10)
+            failed, failed_task = fixture(conn, room, owner, member, 3, now-100,
+                                          deadline=now+600, claimed=True, lease=now-10)
+            legacy = dispatch("task_create", {"room": "pack-main", "title": "legacy",
+                              "body": "test", "assignee_name": "collab-fixture-member"})
+            legacy_id = legacy["task_id"]
+            hub.sweep_once()
+            assert_closed(conn, expired, expired_task, "expired")
+            assert_closed(conn, failed, failed_task, "failed")
+            assert conn.execute("SELECT status FROM tasks WHERE id=?", (legacy_id,)).fetchone()[0] == "open"
+
+            # Exercise actual MCP claim, run fence, review and block paths.
+            approved, approved_task = fixture(conn, room, owner, member, 6, now, deadline=now+600)
+            def agent(name, args):
+                return asyncio.run(call(port, reg["token"], name, args))
+            claim = agent("task_claim", {"task_id": approved_task})
+            assert claim.get("claim_token"), claim
+            ct = claim["claim_token"]
+            assert snapshot(conn, approved)["calls_used"] == 1
+            assert "error" in agent("task_claim", {"task_id": approved_task})
+            started = agent("run_start", {"task_id": approved_task, "claim_token": ct})
+            assert started.get("fence") == 1, started
+            assert "error" in agent("run_start", {"task_id": approved_task, "claim_token": ct})
+            finished = agent("run_finish", {"task_id": approved_task, "claim_token": ct})
+            assert finished.get("status") == "closed", finished
+            assert "error" in agent("run_start", {"task_id": approved_task, "claim_token": ct})
+            assert "error" in agent("task_transfer", {"task_id": approved_task,
+                "claim_token": ct, "to_member": "other"})
+            complete = agent("task_complete", {"task_id": approved_task, "claim_token": ct,
+                "result": "fixture result"})
+            assert complete.get("status") == "review", complete
+            assert snapshot(conn, approved)["status"] == "active"
+            review = dispatch("task_review", {"task_id": approved_task, "approve": True})
+            assert review.get("status") == "done", review
+            assert snapshot(conn, approved)["status"] == "succeeded"
+
+            rejected, rejected_task = fixture(conn, room, owner, member, 7, now, deadline=now+600)
+            claim = agent("task_claim", {"task_id": rejected_task})
+            assert claim.get("claim_token"), claim
+            complete = agent("task_complete", {"task_id": rejected_task,
+                "claim_token": claim["claim_token"], "result": "fixture result"})
+            assert complete.get("status") == "review", complete
+            review = dispatch("task_review", {"task_id": rejected_task, "approve": False})
+            assert review.get("status") == "cancelled", review
+            assert_closed(conn, rejected, rejected_task, "failed")
+            assert "error" in dispatch("task_release", {"task_id": rejected_task})
+
+            blocked, blocked_task = fixture(conn, room, owner, member, 8, now, deadline=now+600)
+            claim = agent("task_claim", {"task_id": blocked_task})
+            assert claim.get("claim_token"), claim
+            result = agent("task_block", {"task_id": blocked_task,
+                "claim_token": claim["claim_token"], "reason": "fixture failure",
+                "fail_class": "task"})
+            assert result.get("status") == "cancelled", result
+            assert_closed(conn, blocked, blocked_task, "failed")
+
+            owner_reg = dispatch("member_register", {"name": "owner"})
+            assert owner_reg.get("token"), owner_reg
+            real_owner = conn.execute("SELECT id FROM members WHERE name='owner'").fetchone()[0]
+            with write_transaction(conn):
+                # Other lifecycle fixtures use synthetic source IDs 1..8.
+                # Allocate a real message ID outside that reserved test range.
+                message = conn.execute(
+                    "SELECT MAX(1000,COALESCE(MAX(id),0))+1 FROM messages").fetchone()[0]
+                conn.execute(
+                    "INSERT INTO messages(id,room_id,author_id,kind,body,created_at) VALUES(?,?,?,'chat',?,?)",
+                    (message,room,real_owner,"approved context fixture",now))
+            context_run, context_task = fixture(conn,room,owner,member,message,now,deadline=now+600)
+            with write_transaction(conn):
+                assert grant_context(conn,context_run,"answer",actor_id=real_owner,
+                    member_id=member,refs=[("owner_message",message)],now=now)
+            claim = agent("task_claim",{"task_id":context_task})
+            assert claim.get("claim_token"),claim
+            ct = claim["claim_token"]
+            response = agent("collaboration_context_get",{"task_id":context_task,"claim_token":ct})
+            assert response.get("items",[{}])[0].get("text") == "approved context fixture",response
+            assert "error" in agent("collaboration_context_get",{"task_id":context_task,"claim_token":"wrong"})
+            with write_transaction(conn):
+                conn.execute("UPDATE messages SET body='changed',edited_at=? WHERE id=?",(now+1,message))
+            assert "error" in agent("collaboration_context_get",{"task_id":context_task,"claim_token":ct})
+            with write_transaction(conn):
+                assert revoke_context(conn,context_run,"answer",actor_id=real_owner)
+            assert "error" in agent("collaboration_context_get",{"task_id":context_task,"claim_token":ct})
+            dispatch("task_cancel",{"task_id":context_task})
+
+            # An ordinary Agent must not read linked content through legacy APIs.
+            other = dispatch("member_register", {"name": "collab-other"})
+            assert other.get("token"), other
+            def outsider(name,args):
+                return asyncio.run(call(port,other["token"],name,args))
+            private_run, private_task = fixture(conn,room,owner,member,10000,now,deadline=now+600)
+            claim = agent("task_claim",{"task_id":private_task})
+            assert claim.get("claim_token"),claim
+            ct = claim["claim_token"]
+            update = agent("task_update",{"task_id":private_task,"claim_token":ct,"note":"private-progress-marker"})
+            assert update.get("status") == "working",update
+            rejected_attachment = agent("task_complete",{"task_id":private_task,"claim_token":ct,
+                "result":"private-result-marker","attachment_ids":"[1]"})
+            assert "error" in rejected_attachment,rejected_attachment
+            complete = agent("task_complete",{"task_id":private_task,"claim_token":ct,
+                "result":"private-result-marker"})
+            assert complete.get("status") == "review",complete
+            for caller in (agent,outsider):
+                listing=caller("task_list",{"room":"pack-main"})
+                card=next(x for x in listing["tasks"] if x["id"]==private_task)
+                assert card["collaboration_context_required"] is True,card
+                assert card["result"] is None and card["envelope"] is None,card
+                assert "test input" not in card["body"],card
+                messages=caller("room_read_new",{"room":"pack-main","since_id":0,"limit":200})
+                reports=[x for x in messages["messages"] if x["task_id"]==private_task]
+                assert len(reports)==2,reports
+                assert all(x["body"]=="[Collaboration content restricted]" for x in reports),reports
+                inbox=caller("inbox_pull",{"room":"pack-main","since_id":0})
+                assert "error" not in inbox,inbox
+                assert "private-result-marker" not in str(inbox),inbox
+                assert "private-progress-marker" not in str(inbox),inbox
+            listing=dispatch("task_list",{"room":"pack-main"})
+            card=next(x for x in listing["tasks"] if x["id"]==private_task)
+            assert card["result"]=="private-result-marker",card
+            assert "error" in outsider("egress_check",{"url":"https://example.com","task_id":private_task})
+            assert dispatch("task_review",{"task_id":private_task,"approve":True}).get("status")=="done"
+
+            # Dedicated executor credentials never grant access to general Hub tools.
+            dedicated = dispatch("member_register", {"name":"collab-dedicated","provider":"fixture-api"})
+            assert dedicated.get("token"),dedicated
+            dm = dedicated["member_id"]
+            account = "12345678-1234-4234-8234-123456789abc"
+            def executor(name,args):
+                return asyncio.run(call(port,dedicated["token"],name,args))
+            with write_transaction(conn):
+                assert register_executor(conn,actor_id=real_owner,member_id=dm,
+                    provider="fixture-api",access_kind="api",account_ref=account)
+                assert not register_executor(conn,actor_id=real_owner,member_id=dm,
+                    provider="fixture-api",access_kind="api",account_ref=account)
+            for tool,args in (
+                ("room_read_new",{"room":"pack-main"}),("room_post",{"room":"pack-main","body":"no"}),
+                ("inbox_pull",{"room":"pack-main"}),("memory_read",{"scope":"room-shared"}),
+                ("attachment_list",{"room":"pack-main"}),("egress_check",{"url":"https://example.com"}),
+                ("desktop_acquire",{"task_id":private_task,"claim_token":"no"})):
+                assert "error" in executor(tool,args),(tool,args)
+            assert executor("collaboration_executor_info",{})=={
+                "provider":"fixture-api","access_kind":"api","account_ref":account}
+            assert "error" in outsider("collaboration_executor_info",{})
+            assert executor("heartbeat",{}).get("ok") is True
+            assert executor("task_list",{}).get("tasks")==[]
+            assert "error" in executor("task_claim",{"task_id":legacy_id})
+            with write_transaction(conn):
+                message2=conn.execute("INSERT INTO messages(room_id,author_id,kind,body,created_at)"
+                    " VALUES(?,?,'chat',?,?)",(room,real_owner,"dedicated input",now)).lastrowid
+            dr,dt=fixture(conn,room,owner,dm,message2,now,deadline=now+600)
+            assert "error" in executor("task_claim",{"task_id":dt})
+            assert snapshot(conn,dr)["calls_used"]==0
+            with write_transaction(conn):
+                assert grant_context(conn,dr,"answer",actor_id=real_owner,member_id=dm,
+                    refs=[("owner_message",message2)],now=now)
+            listing=executor("task_list",{})
+            assert [x["id"] for x in listing["tasks"]]==[dt],listing
+            c=executor("task_claim",{"task_id":dt})
+            assert c.get("claim_token"),c
+            token2=c["claim_token"]
+            info=executor("collaboration_context_get",{"task_id":dt,"claim_token":token2})
+            assert info.get("account_ref")==account and info.get("access_kind")=="api",info
+            assert "error" in executor("task_complete",{"task_id":dt,"claim_token":token2,"result":"premature"})
+            assert executor("run_start",{"task_id":dt,"claim_token":token2}).get("fence")==1
+            assert "error" in executor("run_finish",{"task_id":dt,"claim_token":token2})
+            invalid={"task_id":dt,"claim_token":token2,"result":"dedicated result",
+                     "provider_usage":{"input_tokens":-1,"output_tokens":3}}
+            assert "error" in executor("task_complete",invalid)
+            assert conn.execute("SELECT status FROM tasks WHERE id=?",(dt,)).fetchone()[0] in ("claimed","working")
+            assert executor("task_complete",{**invalid,"provider_usage":{"input_tokens":4,"output_tokens":3}}).get("status")=="review"
+            assert tuple(conn.execute("SELECT input_tokens,output_tokens FROM collaboration_usage WHERE task_id=?",(dt,)).fetchone())==(4,3)
+            assert "error" in executor("task_complete",invalid)
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_usage WHERE task_id=?",(dt,)).fetchone()[0]==1
+            assert dispatch("task_review",{"task_id":dt,"approve":True}).get("status")=="done"
+            with write_transaction(conn):
+                assert revoke_executor(conn,actor_id=real_owner,member_id=dm)
+            assert "error" in executor("collaboration_executor_info",{})
+            assert "error" in executor("heartbeat",{})
+            assert "error" in executor("room_read_new",{"room":"pack-main"})
+            assert "error" in executor("task_list",{})
+
+            # Real owner creates a private managed compare run. No raw prompt
+            # in the old room/inbox/task surfaces, no automatic legacy chat.
+            def owner_call(name,args):
+                return asyncio.run(call(port,owner_reg["token"],name,args))
+            members=[]
+            for ix in range(2):
+                registered=dispatch("member_register",{"name":f"managed-executor-{ix}","provider":"openai"})
+                assert registered.get("token"),registered
+                binding={"member_id":registered["member_id"],"provider":"openai","access_kind":"api",
+                         "account_ref":f"12345678-1234-4234-8234-123456789ab{ix}"}
+                assert "error" in outsider("collaboration_executor_bind",binding)
+                assert owner_call("collaboration_executor_bind",binding).get("created") is True
+                members.append(registered)
+            # Routing preview is read-only, quota unknown requires opt-in.
+            for registered in members:
+                assert asyncio.run(call(port,registered["token"],"heartbeat",{})).get("ok") is True
+            preview=owner_call("collaboration_route_preview",{"mode":"compare","max_calls":3})
+            assert preview.get("suggestion") is None,preview
+            preview=owner_call("collaboration_route_preview",{"mode":"compare","max_calls":3,
+                "allow_unknown_quota":True})
+            assert preview.get("suggestion",{}).get("planned_calls")==3,preview
+            assert any(c["member_name"]=="managed-executor-0" for c in preview["candidates"]),preview
+            assert "error" in outsider("collaboration_route_preview",{"mode":"focus"})
+            request={"room":"pack-main","request_key":"f"*32,"body":"managed-private-root-marker",
+                "mode":"compare","leader":members[0]["member_id"],"workers":[members[1]["member_id"]],
+                "deadline":time.time()+600,"max_calls":3}
+            assert "error" in outsider("collaboration_create",request)
+            lookup={"room":"pack-main","request_key":request["request_key"]}
+            assert owner_call("collaboration_request_lookup",lookup)["run_id"] is None
+            assert "error" in outsider("collaboration_request_lookup",lookup)
+            created=owner_call("collaboration_create",request)
+            assert owner_call("collaboration_request_lookup",lookup)["run_id"]==created["run_id"]
+            assert owner_call("collaboration_request_lookup",{**lookup,"room":"wrong-room"})["run_id"] is None
+            assert created.get("status")=="active",created
+            managed=created["run_id"]
+            assert owner_call("collaboration_create",request)==created
+            workspace=owner_call("collaboration_workspace",{"room":"pack-main"})
+            card=next(x for x in workspace["runs"] if x["run_id"]==managed)
+            assert card["mode"]=="compare" and not card["final_result_available"],card
+            projected=next(x for x in card["context_budgets"] if x["step_key"]=="final")
+            assert projected["missing_results"]==2 and not projected["over_budget"],projected
+            assert projected["max_bytes"]==16384 and projected["suggested_encoded_text_bytes"]>0
+            assert "managed-private-root-marker" not in str(workspace)
+            assert "error" in outsider("collaboration_workspace",{"room":"pack-main"})
+            assert "error" in owner_call("collaboration_result_get",{"run_id":managed})
+            assert "error" in owner_call("collaboration_publish",{"run_id":managed,"expected_sha256":"a"*64})
+            assert "error" in owner_call("collaboration_create",{**request,"body":"different"})
+            assert "error" in outsider("collaboration_status",{"run_id":managed})
+            assert "managed-private-root-marker" not in str(outsider("room_read_new",{"room":"pack-main","limit":200}))
+            assert "managed-private-root-marker" not in str(outsider("task_list",{}))
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_task_links WHERE run_id=?",(managed,)).fetchone()[0]==2
+            steps={x["key"]:x for x in created["steps"]}
+            assert steps["final"]["task_id"] is None
+            busy_preview=owner_call("collaboration_route_preview",{"mode":"focus","allow_unknown_quota":True})
+            assert busy_preview.get("suggestion") is None,busy_preview
+            def finish_managed(step,registered,result,*,batch=False):
+                def execute(name,args):
+                    return asyncio.run(call(port,registered["token"],name,args))
+                tid=step["task_id"]
+                claim=execute("task_claim",{"task_id":tid})
+                assert claim.get("claim_token"),claim
+                args={"task_id":tid,"claim_token":claim["claim_token"]}
+                context=execute("collaboration_context_get",args)
+                assert context.get("items",[{}])[0].get("text")==request["body"],context
+                assert execute("run_start",args).get("fence")==1
+                for _ in range(3):
+                    assert execute("task_update",{**args,"note":"private repeated progress"}).get("status")=="working"
+                delivery={**args,"result":result}
+                if step["key"]=="analysis-0":
+                    delivery["provider_usage"]={"input_tokens":7,"output_tokens":2}
+                assert execute("task_complete",delivery).get("status")=="review"
+                inspected=owner_call("collaboration_result_get",{"run_id":managed,"step_key":step["key"]})
+                assert inspected["result"]==result and inspected["approved"] is False,inspected
+                if step["key"].startswith("analysis-"):
+                    projection=next(x for x in inspected["context_budgets"] if x["step_key"]=="final")
+                    assert projection["unapproved_results"]>=1 and not projection["over_budget"],projection
+                review_args={"run_id":managed,"step_key":step["key"],
+                             "expected_version":inspected["review_version"],"approve":True}
+                assert "error" in outsider("collaboration_review",review_args)
+                assert "error" in owner_call("collaboration_review",{**review_args,"expected_version":"0"*64})
+                if batch:
+                    return inspected
+                assert owner_call("collaboration_review",review_args).get("status")=="done"
+                assert "error" in owner_call("collaboration_review",review_args)
+                return context
+            first=finish_managed(steps["analysis-0"],members[0],"first result",batch=True)
+            assert owner_call("collaboration_status",{"run_id":managed})["steps"][-1]["task_id"] is None
+            second=finish_managed(steps["analysis-1"],members[1],"second result",batch=True)
+            versions={"analysis-0":first["review_version"],"analysis-1":second["review_version"]}
+            batch_args={"run_id":managed,"versions":versions}
+            assert "error" in outsider("collaboration_review_batch",batch_args)
+            assert "error" in owner_call("collaboration_review_batch",{"run_id":managed,"versions":{"analysis-0":versions["analysis-0"]}})
+            assert "error" in owner_call("collaboration_review_batch",{**batch_args,"versions":{**versions,"analysis-1":"0"*64}})
+            assert all(conn.execute("SELECT status FROM tasks WHERE id=?",(steps[k]["task_id"],)).fetchone()[0]=="review" for k in versions)
+            # Force the final grant over its exact serialized context budget.
+            # All approved rows and downstream inserts must roll back.
+            tid=steps["analysis-1"]["task_id"]
+            with write_transaction(conn):
+                conn.execute("UPDATE tasks SET result=? WHERE id=?",("中"*5400,tid))
+            large=owner_call("collaboration_result_get",{"run_id":managed,"step_key":"analysis-1"})
+            assert "error" in owner_call("collaboration_review_batch",{**batch_args,"versions":{**versions,"analysis-1":large["review_version"]}})
+            assert all(conn.execute("SELECT status FROM tasks WHERE id=?",(steps[k]["task_id"],)).fetchone()[0]=="review" for k in versions)
+            assert owner_call("collaboration_status",{"run_id":managed})["steps"][-1]["task_id"] is None
+            compact_args={**batch_args,"versions":{**versions,"analysis-1":large["review_version"]},
+                          "handoffs":{"analysis-1":"second result"}}
+            assert large["handoff_available"] is True
+            assert "error" in outsider("collaboration_review_batch",compact_args)
+            assert "error" in owner_call("collaboration_review_batch",{**compact_args,
+                "handoffs":{"analysis-1":"中"*5400}})
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_compact_handoffs").fetchone()[0]==0
+            assert all(conn.execute("SELECT status FROM tasks WHERE id=?",(steps[k]["task_id"],)).fetchone()[0]=="review" for k in versions)
+            batch=owner_call("collaboration_review_batch",compact_args)
+            preserved=owner_call("collaboration_result_get",{"run_id":managed,"step_key":"analysis-1"})
+            assert preserved["result"]=="中"*5400 and preserved["approved"] is True,preserved
+            assert preserved["compact_handoff"]["text"]=="second result"
+            assert preserved["compact_handoff"]["wire_text"].endswith("\nsecond result")
+            assert batch=={"run_id":managed,"approved_steps":["analysis-0","analysis-1"],"run_status":"active"},batch
+            assert "error" in owner_call("collaboration_review_batch",batch_args)
+            status=owner_call("collaboration_status",{"run_id":managed})
+            final=next(s for s in status["steps"] if s["key"]=="final")
+            assert final["task_id"],status
+            context=finish_managed(final,members[0],"final result")
+            assert context["role"]=="synthesis" and context["max_output_tokens"]==4096,context
+            assert {i["text"] for i in context["items"] if i["kind"]=="dependency_result"}=={"first result",preserved["compact_handoff"]["wire_text"]}
+            assert owner_call("collaboration_status",{"run_id":managed})["status"]=="succeeded"
+            assert conn.execute("""SELECT COUNT(*) FROM messages m
+                JOIN collaboration_task_links l ON l.task_id=m.task_id WHERE l.run_id=?""",(managed,)).fetchone()[0]==0
+            workspace=owner_call("collaboration_workspace",{"room":"pack-main"})
+            card=next(x for x in workspace["runs"] if x["run_id"]==managed)
+            assert card["final_result_available"] and card["publication"] is None,card
+            final_result=owner_call("collaboration_result_get",{"run_id":managed})
+            assert final_result["result"]=="final result" and final_result["approved"],final_result
+            assert "error" in outsider("collaboration_result_get",{"run_id":managed})
+            assert "error" in owner_call("collaboration_publish",{"run_id":managed,"expected_sha256":"0"*64})
+            publish_args={"run_id":managed,"expected_sha256":final_result["sha256"]}
+            assert "error" in outsider("collaboration_publish",publish_args)
+            published=owner_call("collaboration_publish",publish_args)
+            assert published.get("published") is True,published
+            assert owner_call("collaboration_publish",publish_args)==published
+            row=conn.execute("SELECT kind,body,task_id FROM messages WHERE id=?",(published["message_id"],)).fetchone()
+            assert tuple(row)==("collaboration_result","final result",None),tuple(row)
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_publications WHERE run_id=?",(managed,)).fetchone()[0]==1
+            assert "first result" not in str(outsider("room_read_new",{"room":"pack-main","limit":200}))
+            assert "final result" in str(outsider("room_read_new",{"room":"pack-main","limit":200}))
+            ledger=owner_call("collaboration_usage_get",{"run_id":managed})
+            assert ledger["registered_attempts"]==3 and ledger["reported_submissions"]==3,ledger
+            assert ledger["metered_attempts"]==1 and ledger["unmetered_registered_attempts"]==2,ledger
+            assert ledger["reported_input_tokens"]==7 and ledger["reported_output_tokens"]==2,ledger
+            assert ledger["cost"] is None and "managed-private-root-marker" not in str(ledger),ledger
+            assert "error" in outsider("collaboration_usage_get",{"run_id":managed})
+            assert owner_call("collaboration_create",request)["status"]=="succeeded"
+            invalid={**request,"request_key":"e"*32,"max_calls":2}
+            assert "error" in owner_call("collaboration_create",invalid)
+            assert conn.execute("SELECT COUNT(*) FROM collaboration_requests WHERE request_key=?",("e"*32,)).fetchone()[0]==0
+            focus={**request,"request_key":"d"*32,"mode":"focus","workers":[],"max_calls":1}
+            pending=owner_call("collaboration_create",focus)
+            assert pending.get("status")=="active",pending
+            assert owner_call("collaboration_cancel",{"run_id":pending["run_id"]})["status"]=="cancelled"
+            assert owner_call("collaboration_cancel",{"run_id":pending["run_id"]})["status"]=="cancelled"
+            assert "error" in outsider("collaboration_cancel",{"run_id":managed})
+            assert owner_call("collaboration_cancel",{"run_id":managed})["status"]=="succeeded"
+            rejected=owner_call("collaboration_create",{**focus,"request_key":"c"*32})
+            rtid=rejected["steps"][0]["task_id"]
+            def execute_rejected(name,args):
+                return asyncio.run(call(port,members[0]["token"],name,args))
+            claimed=execute_rejected("task_claim",{"task_id":rtid})
+            rargs={"task_id":rtid,"claim_token":claimed["claim_token"]}
+            assert execute_rejected("run_start",rargs).get("fence")==1
+            assert execute_rejected("task_complete",{**rargs,"result":"reject this result"}).get("status")=="review"
+            rkey={"run_id":rejected["run_id"],"step_key":"answer"}
+            inspected=owner_call("collaboration_result_get",rkey)
+            denied=owner_call("collaboration_review",{**rkey,"expected_version":inspected["review_version"],"approve":False})
+            assert denied["status"]=="cancelled" and denied["run_status"]=="failed",denied
+            assert "error" in execute_rejected("task_claim",{"task_id":rtid})
+
+            # Atomically provision an account from a client-held secret hash.
+            import secrets
+            provision_token="pk-mem-"+secrets.token_urlsafe(32)
+            instance=owner_call("collaboration_instance_info",{})["instance_id"]
+            assert len(instance)==32
+            assert "error" in outsider("collaboration_instance_info",{})
+            provision_args={"provider":"gemini-api","access_kind":"api","instance_id":instance,
+                "account_ref":"87654321-1234-4234-8234-123456789abc",
+                "token_sha256":hub.hash_token(provision_token)}
+            assert "error" in outsider("collaboration_executor_provision",provision_args)
+            assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"access_kind":"native"})
+            assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"instance_id":"0"*32})
+            status_args={"instance_id":instance,"account_ref":provision_args["account_ref"]}
+            assert owner_call("collaboration_executor_status",status_args)["state"]=="unbound"
+            assert "error" in outsider("collaboration_executor_status",status_args)
+            provision=owner_call("collaboration_executor_provision",provision_args)
+            assert provision.get("created") is True and "token" not in provision,provision
+            pmid=provision["member_id"]
+            assert owner_call("collaboration_executor_provision",provision_args)=={**provision,"created":False}
+            assert "error" in owner_call("collaboration_executor_provision",{**provision_args,"token_sha256":"a"*64})
+            assert "error" in owner_call("collaboration_executor_provision",{**provision_args,
+                "account_ref":"87654321-1234-4234-8234-123456789abd"})
+            def provisioned(name,args):
+                return asyncio.run(call(port,provision_token,name,args))
+            assert provisioned("collaboration_instance_info",{})=={"instance_id":instance}
+            assert provisioned("collaboration_executor_identity",{})=={
+                **status_args,"member_id":pmid,"provider":"gemini-api","access_kind":"api"}
+            assert "error" in outsider("collaboration_executor_identity",{})
+            bound=owner_call("collaboration_executor_status",status_args)
+            assert bound["state"]=="bound" and bound["member_id"]==pmid,bound
+            assert "token" not in str(bound)
+            assert provisioned("collaboration_executor_info",{})=={
+                "provider":"gemini-api","access_kind":"api","account_ref":provision_args["account_ref"]}
+            assert "error" in provisioned("room_read_new",{"room":"pack-main"})
+            pname=conn.execute("SELECT name FROM members WHERE id=?",(pmid,)).fetchone()[0]
+            assert "error" in dispatch("task_create",{"room":"pack-main","title":"legacy",
+                "body":"legacy","assignee_name":pname})
+            pplan_args={**focus,"request_key":"b"*32,"leader":pmid}
+            assert "error" in owner_call("collaboration_create",pplan_args)
+            presence={"instance_id":instance,"session_id":"1"*32}
+            assert "error" in outsider("collaboration_presence_start",presence)
+            assert provisioned("collaboration_presence_start",presence)["accepting"] is True
+            assert "error" in provisioned("collaboration_presence_start",{**presence,"session_id":"2"*32})
+            assert provisioned("collaboration_presence_renew",presence)["accepting"] is True
+            assert provisioned("collaboration_presence_stop",presence)["accepting"] is False
+            assert "error" in provisioned("collaboration_presence_renew",presence)
+            assert "error" in provisioned("collaboration_presence_start",presence)
+            assert "error" in owner_call("collaboration_create",pplan_args)
+            next_presence={**presence,"session_id":"2"*32}
+            assert provisioned("collaboration_presence_start",next_presence)["accepting"] is True
+            assert "error" in provisioned("collaboration_presence_stop",presence)
+            pplan=owner_call("collaboration_create",pplan_args)
+            assert pplan.get("status")=="active",pplan
+            revoke_args={**status_args,"member_id":pmid}
+            assert "error" in outsider("collaboration_executor_revoke",revoke_args)
+            assert "error" in owner_call("collaboration_executor_revoke",{**revoke_args,"instance_id":"0"*32})
+            assert "error" in owner_call("collaboration_executor_revoke",{**revoke_args,"account_ref":"wrong"})
+            revoked=owner_call("collaboration_executor_revoke",revoke_args)
+            assert revoked=={**revoke_args,"revoked":True},revoked
+            assert owner_call("collaboration_executor_revoke",revoke_args)==revoked
+            assert owner_call("collaboration_executor_status",status_args)["state"]=="revoked"
+            assert owner_call("collaboration_status",{"run_id":pplan["run_id"]})["status"]=="failed"
+            assert "error" in provisioned("collaboration_executor_info",{})
+            assert "error" in owner_call("collaboration_executor_provision",provision_args)
+
+            removed, removed_task = fixture(conn, room, owner, member, 4, now, deadline=now+600)
+            unbound, _ = fixture(conn, room, owner, member, 5, now, deadline=now+600, create_card=False)
+            result = dispatch("member_remove", {"name": "collab-fixture-member"})
+            assert result.get("removed") == "collab-fixture-member", result
+            assert_closed(conn, removed, removed_task, "failed")
+            assert_closed(conn, unbound, None, "failed")
+            assert tuple(conn.execute("SELECT status,assignee FROM tasks WHERE id=?",
+                                      (legacy_id,)).fetchone()) == ("open", None)
+            print("PASS real Hub collaboration cancellation, expiry, member removal and legacy compatibility")
+        finally:
+            conn.close()
+
+
+if __name__ == "__main__":
+    main()

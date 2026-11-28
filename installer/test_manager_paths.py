@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Verify installer test mode never points at the user's real LaunchAgents."""
+import ast
 import json
 import os
 import pathlib
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -36,9 +39,31 @@ def inspect(env):
     return json.loads(result.stdout)
 
 
+def check_hub_program_manifest():
+    source = ast.parse((HERE / "manager.py").read_text(encoding="utf-8"))
+    matches = [node for node in source.body if isinstance(node, ast.Assign)
+               and any(isinstance(x, ast.Name) and x.id == "HUB_PROGRAM_FILES"
+                       for x in node.targets)]
+    assert len(matches) == 1
+    names = ast.literal_eval(matches[0].value)
+    expected = {"hub.py", "room_watch.py", "backup-db.sh", "verify-backup.sh",
+                "collaboration_policy.py", "collaboration_store.py",
+                "collaboration_dispatch.py", "collaboration_guard.py", "collaboration_context.py",
+                "collaboration_migrate.py"}
+    assert set(names) == expected and len(names) == len(expected), names
+    shell = (HERE / "build-dmg.sh").read_text(encoding="utf-8")
+    match = re.search(r"^HUB_PROGRAM_FILES=\(([^\n]*)\)$", shell, re.MULTILINE)
+    assert match and tuple(shlex.split(match.group(1))) == names, match
+    for name in names:
+        path = HERE.parent / "hub" / name
+        assert path.is_file() and not path.is_symlink(), path
+    return names
+
+
 def main():
+    hub_program_files = check_hub_program_manifest()
     with tempfile.TemporaryDirectory(prefix="pack-installer-path-test-") as tmp:
-        home = pathlib.Path(tmp)
+        home = pathlib.Path(tmp).resolve()
         test_root = home / "commander-work" / "isolated-installer-check"
         env = os.environ.copy()
         env["HOME"] = str(home)
@@ -150,17 +175,37 @@ def main():
         (bundle / "python" / "bin").mkdir(parents=True)
         (bundle / "python" / "bin" / "python3").write_text("#!/bin/sh\n")
         (bundle / "hub").mkdir()
-        for name in ("hub.py", "room_watch.py", "backup-db.sh", "verify-backup.sh"):
+        for name in hub_program_files:
             (bundle / "hub" / name).write_text("# fixture\n")
         (bundle / "engine" / "app").mkdir(parents=True)
         (bundle / "engine" / "app" / "headless.cjs").write_text("// fixture\n")
         (bundle / "engine" / "Electron.app" / "Contents" / "MacOS").mkdir(parents=True)
         (bundle / "engine" / "Electron.app" / "Contents" / "MacOS" / "Electron").write_text("fixture\n")
         transaction_env = env.copy()
+        # Keep transaction assertions independent of the path/ownership fixtures
+        # above, which deliberately created directories under test_root.
+        transaction_env["PACK_INSTALL_TEST_ROOT"] = str(
+            home / "commander-work" / "isolated-installer-transaction")
         transaction_env["PACK_TEST_BUNDLE"] = str(bundle)
         transaction_script = r"""
 import asyncio, json, os, pathlib, shutil, types, manager
 manager.BUNDLE = pathlib.Path(os.environ["PACK_TEST_BUNDLE"])
+# Incomplete or symlinked payloads must fail before touching the install root.
+missing = manager.BUNDLE / "hub" / "collaboration_guard.py"
+original = missing.read_text()
+missing.unlink()
+for symlink in (False, True):
+    if symlink:
+        missing.symlink_to(manager.BUNDLE / "hub" / "hub.py")
+    try:
+        manager.install()
+    except SystemExit as exc:
+        assert "Missing or unsafe Hub program file" in str(exc), exc
+    else:
+        raise AssertionError("unsafe Hub payload accepted")
+    assert not manager.base.exists()
+missing.unlink()
+missing.write_text(original)
 manager.available = lambda port: True
 loaded = set()
 def fake_ctl(*args, check=True):
@@ -213,6 +258,8 @@ assert not (manager.agents / (manager.labels["hub"] + ".plist")).exists()
 assert not (manager.agents / (manager.labels["watch"] + ".plist")).exists()
 assert (manager.hub / ".owner_token").read_text() == "owner-token"
 assert manager.config.is_file()
+assert all((manager.hub / name).is_file() for name in manager.HUB_PROGRAM_FILES)
+(manager.hub / "attachments" / "preserved.txt").write_text("attachment-fixture")
 # Simulate SIGKILL: the durable journal remains in the installing phase.
 state["phase"] = "installing"
 manager.save_install_state(state)
@@ -226,7 +273,7 @@ manager.uninstall()
 state = manager.load_install_state()
 assert state["phase"] == "uninstalled", state
 assert not (manager.hub / "python").exists()
-assert not (manager.hub / "hub.py").exists()
+assert all(not (manager.hub / name).exists() for name in manager.HUB_PROGRAM_FILES)
 assert not (manager.engine / "app").exists()
 assert not (manager.engine / "Electron.app").exists()
 assert (manager.hub / "attachments").is_dir()
@@ -286,6 +333,17 @@ attachments_path.unlink()
 saved_attachments.rename(attachments_path)
 assert list(external_attachments.iterdir()) == []
 
+# A partially removed collaboration module must block an unsafe reinstall.
+leftover = manager.hub / "collaboration_store.py"
+leftover.write_text("old-program")
+try:
+    manager.validate_reinstall_data()
+except SystemExit as exc:
+    assert "program files still exist" in str(exc), exc
+else:
+    raise AssertionError("stale collaboration module accepted")
+leftover.unlink()
+
 manager.install()
 assert manager.base.stat().st_mode & 0o777 == 0o700
 state = manager.load_install_state()
@@ -298,6 +356,8 @@ assert (manager.hub / "python").is_dir()
 assert (manager.engine / "app").is_dir()
 assert manager.socket_dir.is_dir()
 assert len(loaded) == 4, loaded
+assert all((manager.hub / name).is_file() for name in manager.HUB_PROGRAM_FILES)
+assert (manager.hub / "attachments" / "preserved.txt").read_text() == "attachment-fixture"
 manager.uninstall()
 state = manager.load_install_state()
 assert state["phase"] == "uninstalled", state
@@ -305,6 +365,8 @@ assert not (manager.hub / "python").exists()
 assert not (manager.engine / "app").exists()
 assert (manager.hub / "pack.db").read_text() == "database-fixture"
 assert manager.config.read_text() == saved_config
+assert all(not (manager.hub / name).exists() for name in manager.HUB_PROGRAM_FILES)
+assert (manager.hub / "attachments" / "preserved.txt").read_text() == "attachment-fixture"
 assert not loaded, loaded
 """
         transaction = subprocess.run(

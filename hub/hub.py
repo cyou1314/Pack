@@ -93,6 +93,8 @@ BACKOFF_BASE_SECONDS = {"quota": 1800, "transient": 60, "task": 300, "unknown": 
 # 隔离测试可注入时钟偏移（秒），把本进程的「现在」整体平移以验退避到期，
 # 免真睡；线上不设此变量、恒为 0。只影响本增量的时间源 _now()。
 TIME_OFFSET = float(os.environ.get("PACK_HUB_TIME_OFFSET", "0"))
+# Explicit process-local opt-in; never inferred from schema presence.
+REGISTRY_EXECUTION_ENABLED = os.environ.get("PACK_REGISTRY_EXECUTION", "") == "1"
 
 
 def _now():
@@ -1212,6 +1214,8 @@ def _auto_relay(conn, t, from_name, reason_label):
     转交。多名合格时取周已用最低者。staging51：候选排除 kind=external
     （外部成员不参与自动接力，件二）；钉死判定改走公用 helper
     _is_executor_pinned（标题开头或正文包含，四处统一口径）。"""
+    if _collaboration_link(conn, t["id"]) is not None:
+        return None
     if _is_executor_pinned(t["title"], t["body"]):
         return None
     chain = conn.execute("SELECT COUNT(*) AS n FROM task_transfers WHERE task_id=?",
@@ -1224,14 +1228,15 @@ def _auto_relay(conn, t, from_name, reason_label):
     if pend:
         return None
     now = _now()
-    cand = conn.execute(
+    candidates = conn.execute(
         """SELECT * FROM members WHERE role='member' AND removed_at IS NULL AND (kind IS NULL OR kind<>'external') AND name<>? AND name<>'owner'
              AND last_heartbeat IS NOT NULL AND last_heartbeat>=?
              AND quota_updated_at IS NOT NULL AND quota_updated_at>=?
              AND quota_week_used_pct IS NOT NULL AND quota_week_used_pct<?
-           ORDER BY quota_week_used_pct ASC LIMIT 1""",
+           ORDER BY quota_week_used_pct ASC""",
         (from_name, now - RELAY_HEARTBEAT_FRESH, now - RELAY_QUOTA_FRESH,
-         RELAY_QUOTA_HEADROOM)).fetchone()
+         RELAY_QUOTA_HEADROOM)).fetchall()
+    cand = next((c for c in candidates if _collaboration_executor_binding(conn,c["id"]) is None),None)
     if not cand:
         return None
     conn.execute("SAVEPOINT pack_auto_relay")
@@ -1310,10 +1315,426 @@ def _week_start_cst(now=None):
     return monday.timestamp()
 
 
+# ---------------- Opt-in collaboration lifecycle ----------------
+# No schema is installed by Hub init yet. Legacy installations and standalone
+# hub.py staging fixtures therefore do not import the collaboration modules.
+def _collaboration_present(conn):
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_task_links'"
+    ).fetchone() is not None
+
+
+def _collaboration_link(conn, task_id):
+    if not _collaboration_present(conn):
+        return None
+    row = conn.execute(
+        "SELECT run_id FROM collaboration_task_links WHERE task_id=?", (task_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _collaboration_privileged(me):
+    """Trusted local owner/dispatcher can inspect results; Agent tokens cannot."""
+    return (not _is_external(me)
+            and (me["role"] == "dispatcher" or me["name"] == "owner"))
+
+
+COLLABORATION_EXECUTOR_TOOLS = frozenset({
+    "heartbeat", "task_list", "task_claim", "collaboration_context_get", "collaboration_executor_info",
+    "collaboration_instance_info", "collaboration_executor_identity",
+    "collaboration_presence_start", "collaboration_presence_renew", "collaboration_presence_stop",
+    "run_start", "task_update", "task_complete", "task_block",
+})
+
+
+def _collaboration_executor_binding(conn, member_id):
+    if not _collaboration_present(conn):
+        return None
+    # Older opt-in development ledgers may not have this table yet.
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_executors'").fetchone():
+        return None
+    from collaboration_context import executor_binding
+    return executor_binding(conn,member_id)
+
+
+def _registry_execution_db():
+    conn = db()
+    # Set before any transaction. Legacy-only databases retain their prior
+    # connection behavior. Schema migrations must occur with services stopped.
+    if REGISTRY_EXECUTION_ENABLED or conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name IN "
+            "('collaboration_connection_bindings','pack_registry_binding_migrations',"
+            "'pack_registry_agent_controls') LIMIT 1").fetchone():
+        conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def _registry_claim_generation(claim_token):
+    """Parse only after the existing holder check validates the full secret."""
+    match = re.fullmatch(r"rg([1-9][0-9]{0,18})\.[A-Za-z0-9_-]+", claim_token)
+    if not match:
+        raise PermissionError("agent_execution_unfenced_claim")
+    return int(match[1])
+
+
+def _registry_execution_gate(conn, member_id, binding, *, claim_token=None):
+    """Fence new work for explicitly Registry-bound collaboration identities.
+
+    Legacy unbound executors remain on their old path with the opt-in off.
+    With opt-in on, dedicated executors must have a versioned active binding.
+    Ordinary legacy members are not migrated implicitly.
+    """
+    if binding is None:
+        return None
+    from registry_binding_migration import validate_binding_extension
+    if not validate_binding_extension(conn):
+        if REGISTRY_EXECUTION_ENABLED:
+            raise PermissionError("agent_registry_binding_required")
+        return None
+    row = conn.execute(
+        "SELECT 1 FROM collaboration_connection_bindings WHERE member_id=?",
+        (member_id,)).fetchone()
+    if not row:
+        if REGISTRY_EXECUTION_ENABLED:
+            raise PermissionError("agent_registry_binding_required")
+        return None
+    from agent_execution_control import require_execution
+    generation = None
+    if claim_token is not None:
+        # Server-issued opaque token carries its claim generation; the holder
+        # check has already verified the entire secret against the task row.
+        generation = _registry_claim_generation(claim_token)
+    result = require_execution(conn,member_id=member_id,account_ref=binding[3],
+                               expected_generation=generation,
+                               feature_enabled=REGISTRY_EXECUTION_ENABLED)
+    return result["generation"]
+
+
+COLLABORATION_PRESENCE_TTL = 90
+
+
+def _collaboration_accepting(conn, member_id, now):
+    """New provisioned accounts use explicit presence; legacy fixtures/bindings
+    keep the previous heartbeat contract until migrated."""
+    member = conn.execute("SELECT name,last_heartbeat FROM members WHERE id=?",(member_id,)).fetchone()
+    if not member:
+        return False
+    presence = conn.execute("SELECT expires_at,stopped FROM collaboration_presence WHERE member_id=?",
+                            (member_id,)).fetchone()
+    if presence or member[0].startswith("pack-agent-"):
+        return bool(presence and not presence[1] and now < presence[0] <= now+COLLABORATION_PRESENCE_TTL)
+    return member[1] is not None and 0 <= now-member[1] <= RELAY_HEARTBEAT_FRESH
+
+
+def _collaboration_executor_gate(me, tool_name):
+    if _collaboration_privileged(me):
+        return
+    conn = db()
+    try:
+        binding = _collaboration_executor_binding(conn,me["id"])
+        if binding is None:
+            return
+        from collaboration_context import require_executor
+        try:
+            require_executor(conn,me["id"])
+            if tool_name not in COLLABORATION_EXECUTOR_TOOLS:
+                raise ValueError("tool not in executor allowlist")
+        except ValueError:
+            audit(conn,me["name"],"collaboration_executor_denied",f"tool={tool_name}")
+            conn.commit()
+            raise ValueError(f"forbidden: collaboration executor cannot use {tool_name}") from None
+    finally:
+        conn.close()
+
+
+def _collaboration_protected_tasks(conn, task_ids, me):
+    if _collaboration_privileged(me) or not _collaboration_present(conn):
+        return set()
+    ids = sorted({i for i in task_ids if i is not None})
+    protected = set()
+    # Keep the query below SQLite parameter limits for large pages.
+    for start in range(0, len(ids), 200):
+        chunk = ids[start:start+200]
+        protected.update(row[0] for row in conn.execute(
+            "SELECT task_id FROM collaboration_task_links WHERE task_id IN (%s)"
+            % ",".join("?" * len(chunk)), chunk))
+    return protected
+
+
+def _collaboration_hide_message(item):
+    # Preserve IDs/order so legacy cursors continue to advance.
+    item.update(body="[Collaboration content restricted]", payload=None,
+                attachments=[], reply_to_id=None)
+    if "task_title" in item:
+        item.update(task_title="Collaboration task", mentions_me=False)
+
+
+def _collaboration_managed_request(conn, run_id):
+    return conn.execute(
+        "SELECT owner_id,source_message_id,body FROM collaboration_requests WHERE run_id=?",
+        (run_id,)).fetchone()
+
+
+def _collaboration_record_usage(conn, task_id, me, claim_token, outcome, usage, now):
+    """Record executor-reported metering, never a verified Provider bill."""
+    binding = _collaboration_executor_binding(conn,me["id"])
+    if binding is None:
+        if usage is not None:
+            raise ValueError("collaboration usage requires dedicated executor")
+        return
+    if usage is not None:
+        if (binding[2] != "api" or type(usage) is not dict
+                or set(usage) != {"input_tokens","output_tokens"}
+                or any(type(v) is not int or not 0 <= v <= 1000000000 for v in usage.values())):
+            raise ValueError("invalid collaboration usage")
+    run = conn.execute(
+        "SELECT id FROM runs WHERE task_id=? AND member_id=? AND claim_token=? "
+        "AND status='running' AND fence=1",(task_id,me["id"],claim_token)).fetchone()
+    if not run:
+        if usage is not None or outcome == "submitted":
+            raise ValueError("collaboration: live execution registration required")
+        return
+    conn.execute(
+        "INSERT INTO collaboration_usage(task_id,execution_id,outcome,input_tokens,output_tokens,reported_at)"
+        " VALUES(?,?,?,?,?,?)",(task_id,run[0],outcome,
+            None if usage is None else usage["input_tokens"],
+            None if usage is None else usage["output_tokens"],now))
+
+
+def _collaboration_usage_snapshot(conn, run_id):
+    """Bounded per-DAG ledger; no prices or raw content."""
+    rows = conn.execute("""
+        SELECT s.step_key,s.role,s.status,s.member,l.task_id,e.provider,e.access_kind,
+               r.id,r.status,r.outcome,r.started_at,r.ended_at,
+               u.outcome,u.input_tokens,u.output_tokens,u.reported_at
+        FROM collaboration_steps s
+        LEFT JOIN collaboration_task_links l ON l.run_id=s.run_id AND l.step_key=s.step_key
+        LEFT JOIN collaboration_executors e ON e.member_id=CAST(s.member AS INTEGER)
+        LEFT JOIN runs r ON r.task_id=l.task_id AND r.fence=1
+        LEFT JOIN collaboration_usage u ON u.execution_id=r.id
+        WHERE s.run_id=? ORDER BY s.step_key
+        """,(run_id,)).fetchall()
+    items = []
+    for x in rows:
+        known = x[13] is not None and x[14] is not None
+        items.append(dict(step_key=x[0],role=x[1],step_status=x[2],member_id=int(x[3]),
+            task_id=x[4],provider=x[5],access_kind=x[6],execution_id=x[7],
+            execution_status=x[8],execution_outcome=x[9],
+            execution_seconds=max(0,x[11]-x[10]) if x[10] is not None and x[11] is not None else None,
+            report_state=x[12] if x[12] is not None else ("unreported" if x[7] is not None else "not_registered"),
+            usage_source="executor_reported" if known else "unknown",
+            input_tokens=x[13],output_tokens=x[14],reported_at=x[15]))
+    measured = [i for i in items if i["usage_source"] == "executor_reported"]
+    registered = sum(i["execution_id"] is not None for i in items)
+    return {"run_id":run_id,"registered_attempts":registered,
+            "reported_submissions":sum(i["report_state"]=="submitted" for i in items),
+            "reported_stops":sum(i["report_state"]=="stopped" for i in items),
+            "metered_attempts":len(measured),"unmetered_registered_attempts":registered-len(measured),
+            "reported_input_tokens":sum(i["input_tokens"] for i in measured) if measured else None,
+            "reported_output_tokens":sum(i["output_tokens"] for i in measured) if measured else None,
+            "cost":None,"cost_state":"not_calculated","items":items}
+
+
+def _collaboration_public_snapshot(conn, run_id):
+    from collaboration_store import snapshot
+    out = snapshot(conn,run_id)
+    if out is None:
+        raise ValueError("collaboration run unavailable")
+    out["run_id"] = run_id
+    links = dict(conn.execute(
+        "SELECT step_key,task_id FROM collaboration_task_links WHERE run_id=?", (run_id,)))
+    for step in out["steps"]:
+        step["task_id"] = links.get(step["key"])
+    return out
+
+
+def _collaboration_workspace_snapshot(conn, run_id):
+    """Owner-only projection; no prompt/result bodies in room metadata."""
+    out = _collaboration_public_snapshot(conn,run_id)
+    request = conn.execute(
+        "SELECT q.source_message_id,r.room_id,r.plan FROM collaboration_requests q "
+        "JOIN collaboration_runs r ON r.id=q.run_id WHERE q.run_id=?",(run_id,)).fetchone()
+    if not request:
+        raise ValueError("collaboration run unavailable")
+    out.update(source_message_id=request[0],room_id=request[1],mode=json.loads(request[2])["mode"])
+    tasks = {r[0]:r for r in conn.execute("""
+        SELECT t.id,t.status,t.updated_at,t.result FROM tasks t
+        JOIN collaboration_task_links l ON l.task_id=t.id WHERE l.run_id=?
+        """,(run_id,))}
+    for step in out["steps"]:
+        t = tasks.get(step["task_id"])
+        step.update(task_status=t[1] if t else None,updated_at=t[2] if t else None,
+                    has_result=bool(t and t[1] in ("review","done") and t[3]))
+    final = next((s for s in out["steps"] if s["key"] in ("answer","final")),None)
+    publication = conn.execute(
+        "SELECT message_id,published_at FROM collaboration_publications WHERE run_id=?",
+        (run_id,)).fetchone()
+    out["publication"] = dict(message_id=publication[0],published_at=publication[1]) if publication else None
+    out["final_result_available"] = bool(out["status"]=="succeeded" and final and
+        final["status"]=="succeeded" and final["task_status"]=="done" and final["has_result"])
+    from collaboration_context import project_fan_in
+    out["context_budgets"] = project_fan_in(conn,run_id)
+    return out
+
+
+def _collaboration_result_budgets(conn,run_id,step_key):
+    """Read-only direct downstream projections for the inspected result."""
+    from collaboration_context import project_fan_in
+    downstream = {r[0] for r in conn.execute(
+        "SELECT step_key FROM collaboration_dependencies WHERE run_id=? AND prerequisite=?",
+        (run_id,step_key))}
+    return [p for p in project_fan_in(conn,run_id) if p["step_key"] in downstream]
+
+
+def _collaboration_review_version(row):
+    """Opaque version for the exact text, envelope and task revision inspected."""
+    import hashlib
+    data = json.dumps([row["id"],row["result"],row["envelope"],row["updated_at"]],
+                      ensure_ascii=False,separators=(",",":")).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _collaboration_final_result(conn, run_id):
+    """Only return the approved terminal result, never intermediate output."""
+    row = conn.execute("""
+        SELECT t.result,r.room_id FROM collaboration_runs r
+        JOIN collaboration_steps s ON s.run_id=r.id AND s.step_key IN ('answer','final')
+        JOIN collaboration_task_links l ON l.run_id=s.run_id AND l.step_key=s.step_key
+        JOIN tasks t ON t.id=l.task_id
+        WHERE r.id=? AND r.status='succeeded' AND s.status='succeeded' AND t.status='done'
+        """,(run_id,)).fetchone()
+    if not row or not isinstance(row[0],str) or not row[0].strip() or len(row[0].encode("utf-8"))>16*1024:
+        raise ValueError("approved final collaboration result unavailable")
+    return row
+
+
+def _collaboration_dispatch_ready(conn, run_id, now):
+    """Managed run only. Caller holds a write transaction; no model calls."""
+    from collaboration_context import _owner, require_executor, grant_context, _required_results
+    from collaboration_dispatch import ready_steps, bind_task
+    request = _collaboration_managed_request(conn,run_id)
+    if not request:
+        return 0
+    owner_id, source, _ = request
+    _owner(conn,owner_id)
+    room = conn.execute(
+        "SELECT r.room_id FROM collaboration_runs r JOIN rooms rm ON rm.id=r.room_id "
+        "WHERE r.id=? AND rm.archived_at IS NULL AND r.status='active' AND r.deadline>?",
+        (run_id,now)).fetchone()
+    if not room:
+        return 0
+    count = 0
+    for key, member, role in ready_steps(conn,run_id,now=now):
+        member_id = int(member)
+        binding = require_executor(conn,member_id)
+        if binding[0] != owner_id:
+            raise ValueError("collaboration executor owner mismatch")
+        refs = [("owner_message",source)] + [
+            ("dependency_result",tid) for tid in sorted(_required_results(conn,run_id,key))]
+        grant_context(conn,run_id,key,actor_id=owner_id,member_id=member_id,refs=refs,now=now)
+        task_id = conn.execute(
+            "INSERT INTO tasks(room_id,title,body,created_by,assignee,status,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,'open',?,?)",
+            (room[0],"Collaboration "+role,"[Authorized context required]",owner_id,member_id,now,now)).lastrowid
+        bind_task(conn,run_id,key,task_id=task_id,member_id=member_id,now=now)
+        # Managed runs retain one room marker; task rows + audit are the
+        # source of truth for the separate workspace projection.
+        audit(conn,"owner","collaboration_dispatch",f"task {task_id} run={run_id} step={key}")
+        count += 1
+    return count
+
+
+def _collaboration_active_task(conn, task_id, now):
+    """Require a live linked run; ordinary tasks retain their existing semantics."""
+    run_id = _collaboration_link(conn, task_id)
+    if run_id is None:
+        return None
+    row = conn.execute(
+        "SELECT r.status,r.deadline,s.status FROM collaboration_runs r "
+        "JOIN collaboration_task_links l ON l.run_id=r.id "
+        "JOIN collaboration_steps s ON s.run_id=l.run_id AND s.step_key=l.step_key "
+        "WHERE l.task_id=?", (task_id,)).fetchone()
+    if not row or row[0] != "active" or row[1] <= now or row[2] != "running":
+        raise ValueError("collaboration: task is no longer active")
+    return run_id
+
+
+def _collaboration_stop(conn, run_id, status, actor, reason, now):
+    """Stop the ledger and cancel its existing Hub tasks in one write transaction."""
+    from collaboration_store import _stop
+    from collaboration_guard import close_linked_tasks
+
+    if not conn.in_transaction:
+        raise RuntimeError("collaboration cleanup requires a write transaction")
+    row = conn.execute("SELECT status FROM collaboration_runs WHERE id=?", (run_id,)).fetchone()
+    if not row:
+        raise RuntimeError("missing collaboration run")
+    changed = _stop(conn, run_id, status)
+    if not changed and row[0] == "succeeded":
+        return False
+
+    def cancel_task(connection, task_id):
+        cur = connection.execute(
+            "UPDATE tasks SET status='cancelled', claim_token=NULL, lease_expires=NULL, "
+            "updated_at=? WHERE id=? AND status IN ('open','claimed','working','review','blocked')",
+            (now, task_id))
+        if cur.rowcount != 1:
+            raise RuntimeError("linked task changed during cancellation")
+        _close_run(connection, task_id, "cancelled", actor)
+        _desktop_release_for_task(connection, task_id, actor, reason)
+        connection.execute(
+            "UPDATE task_transfers SET status='expired' WHERE task_id=? AND status='pending'",
+            (task_id,))
+        audit(connection, actor, "task_cancel", f"task {task_id} collaboration={run_id} reason={reason}")
+
+    close_linked_tasks(conn, run_id, cancel_task=cancel_task)
+    if changed:
+        audit(conn, actor, "collaboration_stop", f"run {run_id} status={status} reason={reason}")
+    return changed
+
+
+def _collaboration_sweep(conn, now):
+    """Close due runs before the legacy requeue pass, with a fresh locked read."""
+    if not _collaboration_present(conn):
+        return 0
+    from collaboration_store import write_transaction
+    count = 0
+    with write_transaction(conn):
+        rows = conn.execute("""
+            SELECT DISTINCT r.id,r.deadline FROM collaboration_runs r
+            WHERE r.status='active' AND (
+                r.deadline<=? OR EXISTS (
+                    SELECT 1 FROM collaboration_task_links l JOIN tasks t ON t.id=l.task_id
+                    WHERE l.run_id=r.id AND t.status IN ('claimed','working')
+                      AND t.lease_expires IS NOT NULL AND t.lease_expires<?
+                )
+            ) ORDER BY r.id
+            """, (now, now)).fetchall()
+        for run_id, deadline in rows:
+            status = "expired" if deadline <= now else "failed"
+            reason = "deadline" if status == "expired" else "lease_expired"
+            count += int(_collaboration_stop(conn, run_id, status, "sweeper", reason, now))
+    return count
+
+
+def _collaboration_remove_member(conn, member_id, actor, now):
+    """Stop runs involving a removed member, including steps not yet bound."""
+    if not _collaboration_present(conn):
+        return
+    rows = conn.execute("""
+        SELECT DISTINCT r.id FROM collaboration_runs r
+        JOIN collaboration_steps s ON s.run_id=r.id
+        WHERE r.status='active' AND s.member=?
+        """, (str(member_id),)).fetchall()
+    for row in rows:
+        _collaboration_stop(conn, row[0], "failed", actor, "member_removed", now)
+
+
 def sweep_once():
     conn = db()
     try:
         now = _now()
+        _collaboration_sweep(conn, now)
         # 待接受转交过期回收（与租约回收同节律、同在 sweep_once 内，不另起定时器）：
         # pending 转交超过 expires_at 仍未被接收方 task_accept_transfer 接受 →
         # 转交行标 expired；任务若仍挂在接收方名下（claimed/working 且令牌为空，
@@ -1334,7 +1755,8 @@ def sweep_once():
                 continue
             t = conn.execute("SELECT * FROM tasks WHERE id=?", (x["task_id"],)).fetchone()
             requeued = False
-            if t and t["status"] in ("claimed", "working") and t["claim_token"] is None:
+            if (t and _collaboration_link(conn, t["id"]) is None
+                    and t["status"] in ("claimed", "working") and t["claim_token"] is None):
                 recv = conn.execute("SELECT id FROM members WHERE name=?",
                                     (x["to_member"],)).fetchone()
                 if recv and t["assignee"] == recv["id"]:
@@ -1352,6 +1774,8 @@ def sweep_once():
             "SELECT * FROM tasks WHERE status IN ('claimed','working') AND lease_expires IS NOT NULL AND lease_expires<?",
             (now,)).fetchall()
         for t in rows:
+            if _collaboration_link(conn, t["id"]) is not None:
+                continue  # only the collaboration sweeper may close linked tasks
             # 守卫：回收 UPDATE 复检租约仍过期——SELECT 之后持有人可能已
             # task_update/heartbeat 续租，无守卫会按旧快照误回收活跃任务
             # （staging14 复检 SW2）。rowcount=0 说明任务已变，整行跳过
@@ -1405,6 +1829,8 @@ def sweep_once():
                   AND (t.next_claim_at IS NULL OR t.next_claim_at<=?)""",
             (now,)).fetchall()
         for t in unclaimed:
+            if _collaboration_link(conn, t["id"]) is not None:
+                continue
             if _is_executor_pinned(t["title"], t["body"]):
                 continue
             eligible_at = max(t["updated_at"] or 0, t["next_claim_at"] or 0,
@@ -1891,6 +2317,7 @@ def _inbox_items(conn, rows, me, all_names):
              % ",".join("?" * len(tids)))
         for t in conn.execute(q, tids).fetchall():
             tmap[t["id"]] = t
+    protected = _collaboration_protected_tasks(conn, (x["task_id"] for x in rows), me)
     out = []
     for x in rows:
         deleted = bool(x["deleted_at"])
@@ -1913,6 +2340,8 @@ def _inbox_items(conn, rows, me, all_names):
             "deleted": deleted, "edited": bool(x["edited_at"]),
             "attachments": amap.get(x["id"], []),
         })
+        if x["task_id"] in protected:
+            _collaboration_hide_message(out[-1])
     return out
 
 
@@ -1953,6 +2382,7 @@ def build_server():
                 # staging56：访问模式闸（_ext_check 之后；external 成员
                 # 先过白名单审计、再过模式审计，两闸不双写同一拒绝）。
                 _mode_check(_me, fn.__name__)
+                _collaboration_executor_gate(_me,fn.__name__)
             return fn(*args, **kwargs)
         wrapper.__signature__ = inspect.signature(fn)
         return _register_tool(wrapper)
@@ -2051,6 +2481,8 @@ def build_server():
         with _lock:
             conn = db()
             try:
+                if _collaboration_present(conn):
+                    conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute("SELECT * FROM members WHERE name=?",
                                    (name,)).fetchone()
                 if not row:
@@ -2063,6 +2495,7 @@ def build_server():
                     raise ValueError(f"member already removed: {name}")
                 now = time.time()
                 mid = row["id"]
+                _collaboration_remove_member(conn, mid, me["name"], now)
                 for t in conn.execute(
                         "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','working')",
                         (mid,)).fetchall():
@@ -3066,6 +3499,7 @@ def build_server():
                 amap.setdefault(a["message_id"], []).append(
                     {"id": a["id"], "mime": a["mime"], "size": a["size"],
                      "filename": a["original_name"]})
+        protected = _collaboration_protected_tasks(conn, (x["task_id"] for x in rows), me)
         conn.close()
         out = []
         for x in rows:
@@ -3083,6 +3517,8 @@ def build_server():
                 "reply_to_id": None if deleted else x["reply_to_id"],
                 "attachments": amap.get(x["id"], []),
             })
+            if x["task_id"] in protected:
+                _collaboration_hide_message(out[-1])
         return {"messages": out}
 
     @mcp.tool
@@ -3360,6 +3796,15 @@ def build_server():
                     raise ValueError("forbidden: attachment is outside the bound room")
                 if row["created_at"] < me["created_at"]:
                     raise ValueError("forbidden: attachment predates external member join")
+            if not _collaboration_privileged(me) and _collaboration_present(conn):
+                # Unbound uploads may later be associated with a private report.
+                # Never let another Agent fetch them by guessing IDs.
+                if row["message_id"] is None and row["uploader_id"] != me["id"]:
+                    raise ValueError("forbidden: unbound attachment")
+                linked = conn.execute(
+                    "SELECT task_id FROM messages WHERE id=?", (row["message_id"],)).fetchone()
+                if linked and _collaboration_link(conn, linked[0]) is not None:
+                    raise ValueError("forbidden: collaboration attachment")
             path = _attach_path(row["sha256"], row["mime"])
             parent = os.path.dirname(path)
             if (os.path.islink(ATTACH_DIR) or os.path.islink(parent)
@@ -3406,6 +3851,12 @@ def build_server():
         if message_id:
             q += " AND a.message_id=?"
             args.append(message_id)
+        if not _collaboration_privileged(me) and _collaboration_present(conn):
+            q += (" AND (a.message_id IS NOT NULL OR a.uploader_id=?)"
+                  " AND NOT EXISTS (SELECT 1 FROM messages m "
+                  "JOIN collaboration_task_links l ON l.task_id=m.task_id "
+                  "WHERE m.id=a.message_id)")
+            args.append(me["id"])
         q += " ORDER BY a.id ASC"
         rows = conn.execute(q, args).fetchall()
         conn.close()
@@ -3528,6 +3979,9 @@ def build_server():
                     raise ValueError(
                         f"permanent: executor-pinned tasks cannot be assigned"
                         f" to external member {assignee_name}")
+            if _collaboration_executor_binding(conn,a["id"]) is not None:
+                conn.close()
+                raise ValueError("permanent: dedicated executor requires collaboration task")
             assignee = a["id"]
         now = time.time()
         cur = conn.execute(
@@ -3744,60 +4198,101 @@ def build_server():
         执行体据此跳过该任务。返回 claim_token，后续更新凭它。"""
         me = authenticate()
         require(me)
-        conn = db()
-        tok = secrets.token_urlsafe(24)
-        now = _now()
-        with _lock:
-            if _is_external(me):
-                # 件二：external 只许认领绑定房内、指派给本人、非引擎
-                # 标记的卡（未指派卡不许抢）。staging51 红队修复：
-                # 前置检查在 _lock 内、用同一 conn 重读任务行后紧贴
-                # 原子 UPDATE 执行——原实现锁外预检与锁内 UPDATE
-                # 之间存在 TOCTOU 窗口（预检通过后任务被改派/改
-                # 正文即可绕过三条限制）。拒绝口径与既有 claim
-                # 失败区分开（forbidden 前缀）。
-                t0 = conn.execute(
-                    "SELECT room_id, title, body, assignee FROM tasks WHERE id=?",
-                    (task_id,)).fetchone()
-                if t0:
-                    if t0["room_id"] != me["bound_room_id"]:
-                        conn.close()
-                        raise ValueError("forbidden: task is outside the bound room")
-                    if t0["assignee"] != me["id"]:
-                        conn.close()
-                        raise ValueError(
-                            "forbidden: external members may only claim tasks assigned to themselves")
-                    if _is_executor_pinned(t0["title"], t0["body"]):
-                        conn.close()
-                        raise ValueError("forbidden: executor-pinned task")
-            cur = conn.execute(
-                """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
-                   lease_expires=?, attempts=attempts+1, next_claim_at=NULL, sched_at=NULL, updated_at=?
-                   WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)
-                     AND (next_claim_at IS NULL OR next_claim_at<=?)""",
-                (me["id"], tok, now + LEASE_SECONDS, now, task_id, me["id"], now))
-            won = cur.rowcount == 1
-            if won:
-                audit(conn, me["name"], "task_claim", f"task {task_id}")
-                # 防御：本任务名下若还挂着一把没放干净的旧锁（各出口本应
-                # 已放，此处兜底），新认领开始前清掉，免得新持有人被
-                # 自己任务的残锁挡住。
-                _desktop_release_for_task(conn, task_id, me["name"], "orphan_on_claim")
-            conn.commit()
-        t = conn.execute("SELECT status, assignee, next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
-        conn.close()
-        if not t:
-            raise ValueError(f"no such task: {task_id}")
-        if not won:
-            if t["status"] == "open" and t["next_claim_at"] and t["next_claim_at"] > now:
-                raise ValueError(
-                    f"claim failed: task {task_id} in backoff until {t['next_claim_at']:.0f} "
-                    f"(retry_after={t['next_claim_at'] - now:.0f}s)")
-            raise ValueError(f"claim failed: task {task_id} status={t['status']}")
-        return {"task_id": task_id, "status": "claimed", "claim_token": tok,
-                "lease_expires": now + LEASE_SECONDS}
+        conn = _registry_execution_db()
+        try:
+            tok = secrets.token_urlsafe(24)
+            now = _now()
+            with _lock:
+                if _collaboration_present(conn):
+                    conn.execute("BEGIN IMMEDIATE")
+                now = _now()
+                linked = _collaboration_link(conn, task_id)
+                binding = _collaboration_executor_binding(conn,me["id"])
+                if binding is not None:
+                    from collaboration_context import validate_executor_claim
+                    validate_executor_claim(conn,task_id,member_id=me["id"],now=now)
+                    generation = _registry_execution_gate(conn,me["id"],binding)
+                    if generation is not None:
+                        from registry_claim_capacity import admission_refusal
+                        refusal = admission_refusal(conn,me["id"])
+                        if refusal:
+                            # A definitive pre-claim refusal, before spending
+                            # budget or mutating task state. The transaction
+                            # is closed by finally, with no writes to commit.
+                            return {"task_id":task_id,"status":"unavailable","code":refusal}
+                        tok = f"rg{generation}.{tok}"
+                if _is_external(me):
+                    # 件二：external 只许认领绑定房内、指派给本人、非引擎
+                    # 标记的卡（未指派卡不许抢）。staging51 红队修复：
+                    # 前置检查在 _lock 内、用同一 conn 重读任务行后紧贴
+                    # 原子 UPDATE 执行——原实现锁外预检与锁内 UPDATE
+                    # 之间存在 TOCTOU 窗口（预检通过后任务被改派/改
+                    # 正文即可绕过三条限制）。拒绝口径与既有 claim
+                    # 失败区分开（forbidden 前缀）。
+                    t0 = conn.execute(
+                        "SELECT room_id, title, body, assignee FROM tasks WHERE id=?",
+                        (task_id,)).fetchone()
+                    if t0:
+                        if t0["room_id"] != me["bound_room_id"]:
+                            conn.close()
+                            raise ValueError("forbidden: task is outside the bound room")
+                        if t0["assignee"] != me["id"]:
+                            conn.close()
+                            raise ValueError(
+                                "forbidden: external members may only claim tasks assigned to themselves")
+                        if _is_executor_pinned(t0["title"], t0["body"]):
+                            conn.close()
+                            raise ValueError("forbidden: executor-pinned task")
+                if linked is not None:
+                    from collaboration_dispatch import reserve_claim
+                    if me["role"] != "member" or me["name"] == "owner":
+                        raise ValueError("collaboration: executor identity required")
+                    task = conn.execute("SELECT next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
+                    if task and task[0] is not None and task[0] > now:
+                        raise ValueError("collaboration: task in backoff")
+                    if not reserve_claim(conn, task_id, member_id=me["id"],
+                                         eligible_ids={me["id"]}, now=now):
+                        raise ValueError("collaboration: claim not eligible or already reserved")
+                cur = conn.execute(
+                    """UPDATE tasks SET status='claimed', assignee=?, claim_token=?,
+                       lease_expires=?, attempts=attempts+1, next_claim_at=NULL, sched_at=NULL, updated_at=?
+                       WHERE id=? AND status='open' AND (assignee IS NULL OR assignee=?)
+                         AND (next_claim_at IS NULL OR next_claim_at<=?)""",
+                    (me["id"], tok, now + LEASE_SECONDS, now, task_id, me["id"], now))
+                won = cur.rowcount == 1
+                if linked is not None and not won:
+                    raise ValueError("collaboration: task claim changed; reservation rolled back")
+                if won:
+                    audit(conn, me["name"], "task_claim", f"task {task_id}")
+                    # 防御：本任务名下若还挂着一把没放干净的旧锁（各出口本应
+                    # 已放，此处兜底），新认领开始前清掉，免得新持有人被
+                    # 自己任务的残锁挡住。
+                    _desktop_release_for_task(conn, task_id, me["name"], "orphan_on_claim")
+                conn.commit()
+            t = conn.execute("SELECT status, assignee, next_claim_at FROM tasks WHERE id=?", (task_id,)).fetchone()
+            conn.close()
+            if not t:
+                raise ValueError(f"no such task: {task_id}")
+            if not won:
+                if t["status"] == "open" and t["next_claim_at"] and t["next_claim_at"] > now:
+                    raise ValueError(
+                        f"claim failed: task {task_id} in backoff until {t['next_claim_at']:.0f} "
+                        f"(retry_after={t['next_claim_at'] - now:.0f}s)")
+                raise ValueError(f"claim failed: task {task_id} status={t['status']}")
+            return {"task_id": task_id, "status": "claimed", "claim_token": tok,
+                    "lease_expires": now + LEASE_SECONDS}
+        finally:
+            conn.close()
 
     def _holder(conn, me, task_id, claim_token):
+        linked = _collaboration_link(conn, task_id)
+        if linked is not None and not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        if _collaboration_executor_binding(conn,me["id"]) is not None:
+            from collaboration_context import require_executor
+            require_executor(conn,me["id"])
+            if linked is None:
+                raise ValueError("collaboration executor may only hold linked tasks")
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
             raise ValueError(f"no such task: {task_id}")
@@ -3805,6 +4300,10 @@ def build_server():
             raise ValueError(f"task is not actively held (status={t['status']})")
         if t["assignee"] != me["id"] or not t["claim_token"] or not hmac.compare_digest(t["claim_token"], claim_token or ""):
             raise ValueError("not the current holder (claim_token mismatch)")
+        if linked is not None:
+            _collaboration_active_task(conn, task_id, _now())
+            if t["lease_expires"] is None or t["lease_expires"] <= _now():
+                raise ValueError("collaboration: task lease expired")
         return t
 
     def _task_update_impl(me, task_id: int, claim_token: str, note: str = "") -> dict:
@@ -3841,6 +4340,13 @@ def build_server():
             if cur.rowcount != 1:
                 conn.close()
                 raise ValueError("not the current holder (claim_token mismatch)")
+            linked = _collaboration_link(conn,task_id)
+            if linked is not None and _collaboration_managed_request(conn,linked):
+                # Lease renewal remains effective; repeated notes do not create
+                # chat messages or persist arbitrary model text.
+                note = ""
+            elif note and linked is not None:
+                note = "[Collaboration progress updated]"
             if note:
                 t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
                 conn.execute(
@@ -3851,6 +4357,690 @@ def build_server():
             return {"task_id": task_id, "status": "working", "lease_expires": now + LEASE_SECONDS}
         finally:
             conn.close()
+
+    # Register only when the opt-in context schema already exists. Ordinary
+    # installations keep the legacy tool surface and never import this module.
+    with db() as context_conn:
+        context_enabled = context_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='collaboration_context_grants'"
+        ).fetchone() is not None
+    context_conn.close()
+    if context_enabled:
+        @mcp.tool
+        def collaboration_instance_info() -> dict:
+            """Stable opt-in database identity; owner or authenticated dedicated executor."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, require_executor
+            conn = db()
+            try:
+                if _collaboration_executor_binding(conn,me["id"]) is None:
+                    _owner(conn,me["id"])
+                else:
+                    require_executor(conn,me["id"])
+                row = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                if not row:
+                    raise ValueError("collaboration instance unavailable")
+                return {"instance_id":row[0]}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_executor_provision(provider: str, access_kind: str, account_ref: str,
+                                             token_sha256: str, instance_id: str) -> dict:
+            """Atomically create a restricted executor; the client retains the random secret."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, register_executor, require_executor
+            from collaboration_store import write_transaction
+            import uuid
+            providers = {"openai":"api","gemini-api":"api","volcengine":"api",
+                         "chatgpt":"native","gemini":"native","doubao":"native"}
+            if providers.get(provider) != access_kind or not re.fullmatch(r"[a-f0-9]{64}",token_sha256):
+                raise ValueError("invalid executor provision parameters")
+            try:
+                if str(uuid.UUID(account_ref)) != account_ref:
+                    raise ValueError("invalid account reference")
+            except (TypeError,ValueError,AttributeError):
+                raise ValueError("invalid account reference") from None
+            name = "pack-agent-" + account_ref.replace("-","")
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    _owner(conn,me["id"])
+                    identity = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                    if not identity or identity[0]!=instance_id:
+                        raise ValueError("collaboration instance mismatch")
+                    rows = conn.execute("""
+                        SELECT e.member_id,e.owner_id,e.provider,e.access_kind,e.revoked,
+                               m.name,m.token_hash,m.removed_at
+                        FROM collaboration_executors e JOIN members m ON m.id=e.member_id
+                        WHERE e.account_ref=?
+                        """,(account_ref,)).fetchall()
+                    if rows:
+                        row = rows[0]
+                        if (len(rows)!=1 or tuple(row[1:5])!=(me["id"],provider,access_kind,0)
+                                or row[5]!=name or row[6]!=token_sha256 or row[7] is not None):
+                            raise ValueError("executor provision conflict")
+                        require_executor(conn,row[0])
+                        return {"member_id":row[0],"provider":provider,"access_kind":access_kind,
+                                "account_ref":account_ref,"instance_id":instance_id,"created":False}
+                    if conn.execute("SELECT 1 FROM members WHERE token_hash=? OR name=?",
+                                    (token_sha256,name)).fetchone():
+                        raise ValueError("executor provision conflict")
+                    av = avatar_for(name)
+                    av.update(_avatar_combo(name,_used_combos(conn)))
+                    mid = conn.execute(
+                        "INSERT INTO members(name,role,token_hash,created_at,avatar,provider,login_state)"
+                        " VALUES(?,'member',?,?,?,?,?)",
+                        (name,token_sha256,_now(),json.dumps(av),provider,"pending")).lastrowid
+                    register_executor(conn,actor_id=me["id"],member_id=mid,provider=provider,
+                                      access_kind=access_kind,account_ref=account_ref)
+                    audit(conn,me["name"],"collaboration_executor_provision",f"member {mid}")
+                    return {"member_id":mid,"provider":provider,"access_kind":access_kind,
+                            "account_ref":account_ref,"instance_id":instance_id,"created":True}
+            finally:
+                conn.close()
+
+        def _presence_change(session_id, instance_id, action):
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import require_executor
+            from collaboration_store import write_transaction
+            if not re.fullmatch(r"[a-f0-9]{32}",session_id):
+                raise ValueError("invalid presence session")
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    require_executor(conn,me["id"])
+                    identity = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                    if not identity or identity[0]!=instance_id:
+                        raise ValueError("collaboration instance mismatch")
+                    now = _now()
+                    row = conn.execute("SELECT session_id,expires_at,stopped FROM collaboration_presence WHERE member_id=?",
+                                       (me["id"],)).fetchone()
+                    if action=="start":
+                        if row and row[0]==session_id:
+                            if row[2] or row[1]<=now:
+                                raise ValueError("presence session closed")
+                            expires = row[1]
+                        else:
+                            if row and not row[2] and row[1]>now:
+                                raise ValueError("another presence session active")
+                            expires = now+COLLABORATION_PRESENCE_TTL
+                            conn.execute("""
+                                INSERT INTO collaboration_presence(member_id,session_id,expires_at,stopped) VALUES(?,?,?,0)
+                                ON CONFLICT(member_id) DO UPDATE SET session_id=excluded.session_id,
+                                    expires_at=excluded.expires_at,stopped=0
+                                """,(me["id"],session_id,expires))
+                    elif action=="renew":
+                        if not row or row[0]!=session_id or row[2] or row[1]<=now:
+                            raise ValueError("presence session closed or replaced")
+                        expires = now+COLLABORATION_PRESENCE_TTL
+                        conn.execute("UPDATE collaboration_presence SET expires_at=? WHERE member_id=?",(expires,me["id"]))
+                    else:
+                        # A delayed stop may not close a replacement session.
+                        if not row or row[0]!=session_id:
+                            raise ValueError("presence session unavailable")
+                        expires = min(row[1],now)
+                        conn.execute("UPDATE collaboration_presence SET stopped=1,expires_at=? WHERE member_id=?",
+                                     (expires,me["id"]))
+                    if action!="stop":
+                        conn.execute("UPDATE members SET last_heartbeat=? WHERE id=?",(now,me["id"]))
+                    return {"instance_id":instance_id,"member_id":me["id"],"session_id":session_id,
+                            "accepting":action!="stop","expires_at":expires}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_presence_start(instance_id: str, session_id: str) -> dict:
+            return _presence_change(session_id,instance_id,"start")
+
+        @mcp.tool
+        def collaboration_presence_renew(instance_id: str, session_id: str) -> dict:
+            return _presence_change(session_id,instance_id,"renew")
+
+        @mcp.tool
+        def collaboration_presence_stop(instance_id: str, session_id: str) -> dict:
+            return _presence_change(session_id,instance_id,"stop")
+
+        @mcp.tool
+        def collaboration_executor_identity() -> dict:
+            """Authenticated dedicated identity, with its database and member ID."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import require_executor
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                binding = require_executor(conn,me["id"])
+                row = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                if not row:
+                    raise ValueError("collaboration instance unavailable")
+                return {"member_id":me["id"],"instance_id":row[0],
+                        "provider":binding[1],"access_kind":binding[2],"account_ref":binding[3]}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_executor_status(instance_id: str, account_ref: str) -> dict:
+            """Owner readback for a specific database/profile; never returns hashes."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, require_executor
+            import uuid
+            try:
+                if str(uuid.UUID(account_ref)) != account_ref:
+                    raise ValueError("invalid account reference")
+            except (ValueError,TypeError,AttributeError):
+                raise ValueError("invalid account reference") from None
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                identity = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                if not identity or identity[0]!=instance_id:
+                    raise ValueError("collaboration instance mismatch")
+                rows = conn.execute("""
+                    SELECT e.member_id,e.provider,e.access_kind,e.revoked,m.removed_at
+                    FROM collaboration_executors e JOIN members m ON m.id=e.member_id
+                    WHERE e.owner_id=? AND e.account_ref=?
+                    """,(me["id"],account_ref)).fetchall()
+                out = {"instance_id":instance_id,"account_ref":account_ref,"state":"unbound",
+                       "member_id":None,"provider":None,"access_kind":None}
+                if len(rows)>1:
+                    raise ValueError("ambiguous executor binding")
+                if rows:
+                    row = rows[0]
+                    state = "revoked" if row[3] or row[4] is not None else "bound"
+                    if state == "bound":
+                        try:
+                            require_executor(conn,row[0])
+                        except ValueError:
+                            state = "unavailable"
+                    out.update(member_id=row[0],provider=row[1],access_kind=row[2],state=state)
+                return out
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_executor_revoke(member_id: int, instance_id: str, account_ref: str) -> dict:
+            """Owner revokes a dedicated identity and stops its active plans."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, executor_binding, revoke_executor
+            from collaboration_store import write_transaction
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    _owner(conn,me["id"])
+                    identity = conn.execute("SELECT instance_id FROM collaboration_instance WHERE singleton=1").fetchone()
+                    binding = executor_binding(conn,member_id)
+                    if not identity or identity[0]!=instance_id or not binding or binding[0]!=me["id"] or binding[3]!=account_ref:
+                        raise ValueError("executor unavailable")
+                    changed = revoke_executor(conn,actor_id=me["id"],member_id=member_id)
+                    _collaboration_remove_member(conn,member_id,me["name"],_now())
+                    if changed:
+                        audit(conn,me["name"],"collaboration_executor_revoke",f"member {member_id}")
+                    return {"member_id":member_id,"instance_id":instance_id,"account_ref":account_ref,"revoked":True}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_executor_bind(member_id: int, provider: str, access_kind: str, account_ref: str) -> dict:
+            """Owner-only binding of a fresh dispatcher-registered dedicated member."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import register_executor
+            from collaboration_store import write_transaction
+            conn = db()
+            try:
+                with write_transaction(conn):
+                    created = register_executor(conn,actor_id=me["id"],member_id=member_id,
+                        provider=provider,access_kind=access_kind,account_ref=account_ref)
+                    if created:
+                        audit(conn,me["name"],"collaboration_executor_bind",f"member {member_id}")
+                return {"member_id":member_id,"created":created}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_route_preview(mode: str, worker_count: int = 1,
+                                        max_calls: int = 5, allow_unknown_quota: bool = False) -> dict:
+            """Owner-only deterministic text routing preview; never creates a run."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, require_executor
+            from collaboration_policy import suggest_roles
+            conn = _registry_execution_db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                now = _now()
+                candidates = []
+                providers = {"openai":"api","gemini-api":"api","volcengine":"api",
+                             "chatgpt":"native","gemini":"native","doubao":"native"}
+                rows = conn.execute("""
+                    SELECT e.member_id,e.provider,e.access_kind,e.account_ref,
+                           m.last_heartbeat,m.quota_week_used_pct,m.quota_updated_at,
+                           (SELECT COUNT(*) FROM tasks t WHERE t.assignee=m.id
+                            AND t.status IN ('open','claimed','working','review')) AS queue,
+                           EXISTS(SELECT 1 FROM collaboration_steps s
+                             JOIN collaboration_runs r ON r.id=s.run_id
+                             WHERE s.member=CAST(e.member_id AS TEXT) AND r.status='active'
+                               AND r.deadline>? AND s.status IN ('pending','running')) AS active_plan,
+                           m.name AS member_name
+                    FROM collaboration_executors e JOIN members m ON m.id=e.member_id
+                    WHERE e.owner_id=? AND e.revoked=0 ORDER BY e.member_id
+                    """,(now,me["id"])).fetchall()
+                for row in rows:
+                    try:
+                        binding = require_executor(conn,row[0])
+                    except ValueError:
+                        continue
+                    if providers.get(row[1]) != row[2]:
+                        continue
+                    execution_allowed = True
+                    try:
+                        _registry_execution_gate(conn,row[0],binding)
+                    except PermissionError:
+                        execution_allowed = False
+                    online = _collaboration_accepting(conn,row[0],now)
+                    fresh = (row[5] is not None and 0 <= row[5] <= 100
+                             and row[6] is not None and 0 <= now-row[6] <= RELAY_QUOTA_FRESH)
+                    state = ("available" if row[5]<RELAY_QUOTA_HEADROOM else "limited") if fresh else "unknown"
+                    candidates.append(dict(member_id=row[0],member_name=row[9],provider=row[1],access_kind=row[2],
+                        account_ref=row[3],online=online,queue=row[7],active_plan=bool(row[8]),
+                        quota_state=state,quota_pct=row[5] if fresh else None,
+                        execution_allowed=execution_allowed))
+                suggestion = suggest_roles(mode=mode,candidates=candidates,worker_count=worker_count,
+                    max_calls=max_calls,allow_unknown_quota=allow_unknown_quota)
+                return {"mode":mode,"suggestion":suggestion,"candidates":[
+                    {k:v for k,v in c.items() if k!="account_ref"} for c in candidates],
+                    "requires_owner_confirmation":True,"capability_scope":"text_candidate_only"}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_create(room: str, request_key: str, body: str, mode: str,
+                                 leader: int, deadline: float, workers: list[int] | None = None,
+                                 reviewer: int | None = None, max_calls: int = 5) -> dict:
+            """Owner creates a private bounded run and authorizes its selected DAG."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner, require_executor, MAX_BYTES
+            from collaboration_store import write_transaction, create_run, _time
+            conn = _registry_execution_db()
+            try:
+                with write_transaction(conn):
+                    _owner(conn,me["id"])
+                    now = _now()
+                    _time(deadline)
+                    if (not re.fullmatch(r"[a-f0-9]{32}",request_key)
+                            or not body.strip() or len(body.encode("utf-8")) > MAX_BYTES
+                            or workers is not None and len(workers)>3):
+                        raise ValueError("invalid collaboration request")
+                    selected = [leader] + (workers or []) + ([] if reviewer is None else [reviewer])
+                    if any(type(m) is not int or m<=0 for m in selected):
+                        raise ValueError("invalid collaboration member")
+                    rm = conn.execute(
+                        "SELECT id FROM rooms WHERE name=? AND archived_at IS NULL",(room,)).fetchone()
+                    if not rm:
+                        raise ValueError("collaboration room unavailable")
+                    rid = rm[0]
+                    existing = conn.execute(
+                        "SELECT source_message_id,run_id,body FROM collaboration_requests "
+                        "WHERE owner_id=? AND request_key=?",(me["id"],request_key)).fetchone()
+                    if existing:
+                        if existing[2] != body:
+                            raise ValueError("collaboration request key conflict")
+                        source = existing[0]
+                    else:
+                        if not now < deadline <= now+86400:
+                            raise ValueError("collaboration deadline must be within 24 hours")
+                        for member_id in selected:
+                            binding = require_executor(conn,member_id)
+                            if binding[0] != me["id"]:
+                                raise ValueError("collaboration executor owner mismatch")
+                            _registry_execution_gate(conn,member_id,binding)
+                            name = conn.execute("SELECT name FROM members WHERE id=?",(member_id,)).fetchone()[0]
+                            if name.startswith("pack-agent-") and not _collaboration_accepting(conn,member_id,now):
+                                raise ValueError("collaboration executor is not accepting new plans")
+                        source = conn.execute(
+                            "INSERT INTO messages(room_id,author_id,kind,body,created_at)"
+                            " VALUES(?,?,'collaboration_request','[Private collaboration request]',?)",
+                            (rid,me["id"],now)).lastrowid
+                    run_id = create_run(conn,room_id=rid,source_message_id=source,deadline=deadline,
+                        now=now,actor_role="owner",mode=mode,eligible={str(m) for m in selected},
+                        leader=str(leader),workers=tuple(str(m) for m in (workers or [])),
+                        reviewer=None if reviewer is None else str(reviewer),max_calls=max_calls)
+                    if existing:
+                        if run_id != existing[1]:
+                            raise ValueError("collaboration request key conflict")
+                    else:
+                        conn.execute(
+                            "INSERT INTO collaboration_requests(owner_id,request_key,source_message_id,run_id,body)"
+                            " VALUES(?,?,?,?,?)",(me["id"],request_key,source,run_id,body))
+                        _collaboration_dispatch_ready(conn,run_id,now)
+                        audit(conn,me["name"],"collaboration_create",f"run {run_id} mode={mode}")
+                    return _collaboration_public_snapshot(conn,run_id)
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_request_lookup(room: str, request_key: str) -> dict:
+            """Owner-only readback after an uncertain create; never creates work."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                if not re.fullmatch(r"[a-f0-9]{32}",request_key):
+                    raise ValueError("invalid collaboration request key")
+                row = conn.execute("""
+                    SELECT q.run_id FROM collaboration_requests q
+                    JOIN collaboration_runs r ON r.id=q.run_id
+                    JOIN rooms rm ON rm.id=r.room_id
+                    WHERE q.owner_id=? AND q.request_key=? AND rm.name=?
+                    """,(me["id"],request_key,room)).fetchone()
+                return {"room":room,"request_key":request_key,"run_id":row[0] if row else None}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_status(run_id: str) -> dict:
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                _owner(conn,me["id"])
+                request = _collaboration_managed_request(conn,run_id)
+                if not request or request[0] != me["id"]:
+                    raise ValueError("collaboration run unavailable")
+                return _collaboration_public_snapshot(conn,run_id)
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_workspace(room: str, before_source_id: int = 0, limit: int = 20) -> dict:
+            """Owner-only room projection, ordered by immutable creation cursor."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                rm = conn.execute("SELECT id FROM rooms WHERE name=?",(room,)).fetchone()
+                if not rm:
+                    raise ValueError("collaboration room unavailable")
+                limit = max(1,min(int(limit),50))
+                rows = conn.execute("""
+                    SELECT q.run_id,q.source_message_id FROM collaboration_requests q
+                    JOIN collaboration_runs r ON r.id=q.run_id
+                    WHERE q.owner_id=? AND r.room_id=? AND (?=0 OR q.source_message_id<?)
+                    ORDER BY q.source_message_id DESC LIMIT ?
+                    """,(me["id"],rm[0],before_source_id,before_source_id,limit+1)).fetchall()
+                page = rows[:limit]
+                return {"room":room,"runs":[_collaboration_workspace_snapshot(conn,r[0]) for r in page],
+                        "next_before_source_id":page[-1][1] if len(rows)>limit else None}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_result_get(run_id: str, step_key: str = "") -> dict:
+            """Owner reads approved final result, or one step for inspection."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                conn.execute("BEGIN")
+                _owner(conn,me["id"])
+                request = _collaboration_managed_request(conn,run_id)
+                if not request or request[0] != me["id"]:
+                    raise ValueError("collaboration run unavailable")
+                if not step_key:
+                    text,_ = _collaboration_final_result(conn,run_id)
+                    import hashlib
+                    return {"run_id":run_id,"result":text,"approved":True,
+                            "sha256":hashlib.sha256(text.encode("utf-8")).hexdigest()}
+                row = conn.execute("""
+                    SELECT t.id,t.status,t.result,s.role,t.envelope,t.updated_at FROM collaboration_task_links l
+                    JOIN tasks t ON t.id=l.task_id
+                    JOIN collaboration_steps s ON s.run_id=l.run_id AND s.step_key=l.step_key
+                    WHERE l.run_id=? AND l.step_key=? AND t.status IN ('review','done')
+                    """,(run_id,step_key)).fetchone()
+                if not row or not isinstance(row[2],str) or len(row[2].encode("utf-8"))>16*1024:
+                    raise ValueError("collaboration step result unavailable")
+                from collaboration_compact_handoff import inspect_handoff
+                from collaboration_handoff_migration import validate_handoff_extension
+                return {"run_id":run_id,"step_key":step_key,"task_id":row[0],
+                        "approved":row[1]=="done","result":row[2],"role":row[3],
+                        "compact_handoff":inspect_handoff(conn,task_id=row[0],owner_id=me["id"]),
+                        "handoff_available":bool(validate_handoff_extension(conn)
+                            and row[1]=="review" and row[4] is None
+                            and row[3] in ("worker","independent-analysis","review")),
+                        "review_version":_collaboration_review_version(row) if row[1]=="review" and row[4] is None else None,
+                        "context_budgets":_collaboration_result_budgets(conn,run_id,step_key)}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_review(run_id: str, step_key: str, expected_version: str, approve: bool,
+                                 handoff_text: str | None = None) -> dict:
+            """Owner-only review of the exact inspected plain-text step revision."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            from collaboration_store import write_transaction
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    _owner(conn,me["id"])
+                    request = _collaboration_managed_request(conn,run_id)
+                    if not request or request[0] != me["id"]:
+                        raise ValueError("collaboration run unavailable")
+                    row = conn.execute("""
+                        SELECT t.* FROM collaboration_task_links l
+                        JOIN tasks t ON t.id=l.task_id
+                        JOIN collaboration_runs r ON r.id=l.run_id
+                        JOIN rooms rm ON rm.id=r.room_id
+                        WHERE l.run_id=? AND l.step_key=? AND r.status='active'
+                          AND rm.archived_at IS NULL AND t.status='review'
+                        """,(run_id,step_key)).fetchone()
+                    if (not row or row["envelope"] is not None
+                            or not isinstance(row["result"],str) or not row["result"].strip()
+                            or len(row["result"].encode("utf-8"))>16*1024
+                            or expected_version != _collaboration_review_version(row)):
+                        raise ValueError("collaboration review version unavailable or changed")
+                    result = _review_task_locked(conn,me,row["id"],approve,"",handoff_text=handoff_text)
+                    result.update(run_id=run_id,step_key=step_key,
+                                  run_status=conn.execute(
+                                      "SELECT status FROM collaboration_runs WHERE id=?",(run_id,)).fetchone()[0])
+                    return result
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_review_batch(run_id: str, versions: dict[str, str],
+                                       handoffs: dict[str, str] | None = None) -> dict:
+            """Owner approves one complete parallel wave of inspected results atomically.
+            No implicit approval of uninspected results, no automatic replay.
+            """
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            from collaboration_store import write_transaction
+            if (not isinstance(versions,dict) or not 2 <= len(versions) <= 3
+                    or any(not isinstance(k,str) or not isinstance(v,str)
+                           or not re.fullmatch(r"[a-f0-9]{64}",v) for k,v in versions.items())):
+                raise ValueError("invalid collaboration batch")
+            if handoffs is None:
+                handoffs = {}
+            if (not isinstance(handoffs,dict) or not set(handoffs)<=set(versions)
+                    or any(not isinstance(v,str) or not v.strip()
+                           or len(v.encode("utf-8"))>16*1024 for v in handoffs.values())):
+                raise ValueError("invalid collaboration batch handoffs")
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    _owner(conn,me["id"])
+                    request = _collaboration_managed_request(conn,run_id)
+                    run = conn.execute("""
+                        SELECT r.deadline,r.status FROM collaboration_runs r
+                        JOIN rooms rm ON rm.id=r.room_id
+                        WHERE r.id=? AND rm.archived_at IS NULL
+                        """,(run_id,)).fetchone()
+                    if (not request or request[0]!=me["id"] or not run
+                            or run[1]!="active" or run[0]<=_now()):
+                        raise ValueError("collaboration run unavailable")
+                    wave = conn.execute("""
+                        SELECT s.step_key,s.role,s.status,l.task_id,t.status
+                        FROM collaboration_steps s
+                        LEFT JOIN collaboration_task_links l ON l.run_id=s.run_id AND l.step_key=s.step_key
+                        LEFT JOIN tasks t ON t.id=l.task_id
+                        WHERE s.run_id=? AND s.role IN ('worker','independent-analysis')
+                        ORDER BY s.step_key
+                        """,(run_id,)).fetchall()
+                    pending = [r for r in wave if r[2]!="succeeded"]
+                    if (not pending or len({r[1] for r in wave})!=1
+                            or {r[0] for r in pending}!=set(versions)
+                            or any(r[2]!="running" or r[3] is None or r[4]!="review" for r in pending)
+                            or any(r[2]=="succeeded" and r[4]!="done" for r in wave)):
+                        raise ValueError("collaboration parallel wave incomplete or changed")
+                    # Validate every inspected version before any transition.
+                    for key,_,_,task_id,_ in pending:
+                        row = conn.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
+                        if (not row or row["envelope"] is not None
+                                or not isinstance(row["result"],str) or not row["result"].strip()
+                                or len(row["result"].encode("utf-8"))>16*1024
+                                or versions[key]!=_collaboration_review_version(row)):
+                            raise ValueError("collaboration batch version unavailable or changed")
+                    for key,_,_,task_id,_ in pending:
+                        result = _review_task_locked(conn,me,task_id,True,"",strict_dispatch=True,
+                                                     handoff_text=handoffs.get(key))
+                        if result["status"]!="done":
+                            raise RuntimeError("collaboration batch transition failed")
+                    status = conn.execute("SELECT status FROM collaboration_runs WHERE id=?",(run_id,)).fetchone()[0]
+                    if status!="active":
+                        raise ValueError("collaboration batch did not advance")
+                    audit(conn,me["name"],"collaboration_review_batch",f"run {run_id} count={len(pending)}")
+                    return {"run_id":run_id,"approved_steps":[r[0] for r in pending],"run_status":status}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_publish(run_id: str, expected_sha256: str) -> dict:
+            """Explicit owner release of the exact approved final text to its room."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            from collaboration_store import write_transaction
+            import hashlib
+            conn = db()
+            try:
+                with write_transaction(conn):
+                    _owner(conn,me["id"])
+                    request = _collaboration_managed_request(conn,run_id)
+                    if not request or request[0] != me["id"]:
+                        raise ValueError("collaboration run unavailable")
+                    text,room_id = _collaboration_final_result(conn,run_id)
+                    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    if expected_sha256 != digest:
+                        raise ValueError("collaboration result digest mismatch")
+                    existing = conn.execute(
+                        "SELECT message_id,result_sha256 FROM collaboration_publications WHERE run_id=?",
+                        (run_id,)).fetchone()
+                    if existing:
+                        if existing[1]!=digest:
+                            raise ValueError("collaboration publication conflict")
+                        return {"run_id":run_id,"message_id":existing[0],"published":True}
+                    if not conn.execute("SELECT 1 FROM rooms WHERE id=? AND archived_at IS NULL",
+                                        (room_id,)).fetchone():
+                        raise ValueError("collaboration room unavailable")
+                    now = _now()
+                    mid = conn.execute(
+                        "INSERT INTO messages(room_id,author_id,kind,body,created_at) "
+                        "VALUES(?,?,'collaboration_result',?,?)",(room_id,me["id"],text,now)).lastrowid
+                    conn.execute(
+                        "INSERT INTO collaboration_publications(run_id,message_id,result_sha256,published_at)"
+                        " VALUES(?,?,?,?)",(run_id,mid,digest,now))
+                    audit(conn,me["name"],"collaboration_publish",f"run {run_id} message={mid}")
+                    return {"run_id":run_id,"message_id":mid,"published":True}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_usage_get(run_id: str) -> dict:
+            """Owner-only per-run metering, with explicit unknown coverage."""
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            conn = db()
+            try:
+                _owner(conn,me["id"])
+                request = _collaboration_managed_request(conn,run_id)
+                if not request or request[0] != me["id"]:
+                    raise ValueError("collaboration run unavailable")
+                return _collaboration_usage_snapshot(conn,run_id)
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_cancel(run_id: str) -> dict:
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            from collaboration_store import write_transaction
+            conn = db()
+            try:
+                with write_transaction(conn):
+                    _owner(conn,me["id"])
+                    request = _collaboration_managed_request(conn,run_id)
+                    if not request or request[0] != me["id"]:
+                        raise ValueError("collaboration run unavailable")
+                    _collaboration_stop(conn,run_id,"cancelled",me["name"],"owner_cancel",_now())
+                    return _collaboration_public_snapshot(conn,run_id)
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_executor_info() -> dict:
+            """Return the authenticated dedicated executor's opaque local binding."""
+            me = authenticate()
+            require(me, "member")
+            from collaboration_context import require_executor
+            conn = db()
+            try:
+                if _collaboration_executor_binding(conn,me["id"]) is None:
+                    raise ValueError("collaboration executor identity required")
+                binding = require_executor(conn,me["id"])
+                return {"provider":binding[1],"access_kind":binding[2],"account_ref":binding[3]}
+            finally:
+                conn.close()
+
+        @mcp.tool
+        def collaboration_context_get(task_id: int, claim_token: str) -> dict:
+            """Read explicitly granted context for the current linked task holder."""
+            me = authenticate()
+            require(me, "member")
+            from collaboration_context import read_context
+            conn = _registry_execution_db()
+            try:
+                _holder(conn, me, task_id, claim_token)
+                _registry_execution_gate(conn,me['id'],_collaboration_executor_binding(conn,me['id']),
+                                         claim_token=claim_token)
+                result = read_context(conn, task_id, member_id=me["id"], now=_now())
+                audit(conn, me["name"], "collaboration_context_get",
+                      f"task {task_id} items={len(result['items'])}")
+                conn.commit()
+                return result
+            finally:
+                conn.close()
 
     @mcp.tool
     def task_update(task_id: int, claim_token: str, note: str = "") -> dict:
@@ -3865,7 +5055,8 @@ def build_server():
 
     @mcp.tool
     def task_complete(task_id: int, claim_token: str, result: str,
-                      envelope: dict | None = None, attachment_ids: str = "") -> dict:
+                      envelope: dict | None = None, attachment_ids: str = "",
+                      provider_usage: dict | None = None) -> dict:
         """持有人交活：状态转 review，等调度员验收关单。
         可选 envelope（结构化交活信封，合成清单第 2 项）：
           {verdict: "done"|"partial"|"failed"（必填）, summary: 一句话（必填，
@@ -3885,6 +5076,20 @@ def build_server():
             t0 = _holder(conn, me, task_id, claim_token)
             if _is_external(me) and t0["room_id"] != me["bound_room_id"]:
                 raise ValueError("forbidden: task is outside the bound room")
+            linked = _collaboration_link(conn, task_id)
+            if _collaboration_executor_binding(conn,me["id"]) is not None:
+                from collaboration_context import read_context
+                read_context(conn,task_id,member_id=me["id"],now=_now())
+                if not conn.execute("SELECT 1 FROM runs WHERE task_id=? AND member_id=? AND claim_token=? "
+                                    "AND status='running' AND fence=1",
+                                    (task_id,me["id"],claim_token)).fetchone():
+                    raise ValueError("collaboration: execution not registered")
+                if len(result.encode("utf-8")) > 16*1024:
+                    raise ValueError("collaboration: result byte budget exceeded")
+                if envelope is not None and len(json.dumps(envelope,ensure_ascii=False).encode("utf-8")) > 16*1024:
+                    raise ValueError("collaboration: envelope byte budget exceeded")
+            if linked is not None and attachment_ids:
+                raise ValueError("collaboration: attachment delivery requires a dedicated grant")
             env = None
             stored = result
             if envelope is not None:
@@ -3903,13 +5108,19 @@ def build_server():
             if cur.rowcount != 1:
                 conn.close()
                 raise ValueError("not the current holder (claim_token mismatch)")
+            if linked is not None or provider_usage is not None:
+                _collaboration_record_usage(conn,task_id,me,claim_token,"submitted",provider_usage,now)
             _close_run(conn, task_id, "completed", me["name"])
             _desktop_release_for_task(conn, task_id, me["name"], "complete")
             t = conn.execute("SELECT room_id FROM tasks WHERE id=?", (task_id,)).fetchone()
-            cur = conn.execute(
-                "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
-                (t["room_id"], me["id"], f"交活 任务#{task_id}: {stored}", task_id, now))
-            mid = cur.lastrowid
+            mid = None
+            if linked is None or not _collaboration_managed_request(conn,linked):
+                cur = conn.execute(
+                    "INSERT INTO messages(room_id,author_id,kind,body,task_id,created_at) VALUES(?,?,'report',?,?,?)",
+                    (t["room_id"], me["id"],
+                     f"任务#{task_id}: [Collaboration result submitted]" if linked is not None
+                     else f"交活 任务#{task_id}: {stored}", task_id, now))
+                mid = cur.lastrowid
             n_att = 0
             if attachment_ids:
                 # 交活绑附件（staging46）：与 room_post 同口径、同事务；
@@ -3951,7 +5162,8 @@ def build_server():
             conn.close()
 
     @mcp.tool
-    def task_block(task_id: int, claim_token: str, reason: str, fail_class: str = "") -> dict:
+    def task_block(task_id: int, claim_token: str, reason: str, fail_class: str = "",
+                   provider_usage: dict | None = None) -> dict:
         """持有人报卡住：状态转 blocked 并说明原因，等调度员处理。
         可选 fail_class 自报失败类别（合成清单第 3 项）：quota=额度/限流、
         transient=网络/上游抖动、task=任务本身问题（如输入缺失）；
@@ -3969,6 +5181,26 @@ def build_server():
             if _is_external(me) and t["room_id"] != me["bound_room_id"]:
                 raise ValueError("forbidden: task is outside the bound room")
             now = _now()
+            linked = _collaboration_link(conn, task_id)
+            if provider_usage is not None and linked is None:
+                raise ValueError("collaboration usage requires a linked task")
+            if linked is not None:
+                _collaboration_record_usage(conn,task_id,me,claim_token,"stopped",provider_usage,now)
+                if _collaboration_executor_binding(conn,me["id"]) is not None and fc == "quota":
+                    fc = "task"
+                _collaboration_stop(conn, linked, "failed", me["name"], "task_block", now)
+                conn.execute("UPDATE tasks SET result=?,fail_class=? WHERE id=?", (reason, fc, task_id))
+                if fc == "quota":
+                    conn.execute(
+                        "UPDATE members SET quota_week_used_pct=100, quota_updated_at=?, "
+                        "quota_source='fact' WHERE id=?", (now, me["id"]))
+                    audit(conn, me["name"], "member_quota_exhausted",
+                          f"task {task_id} via task_block quota source=fact")
+                audit(conn, me["name"], "task_block", f"task {task_id} fail_class={fc}")
+                conn.commit()
+                return {"task_id": task_id, "status": "cancelled", "fail_class": fc,
+                        "next_claim_at": None, "relayed_to": None,
+                        "quota_marked_exhausted": fc == "quota"}
             nca = now + _backoff_seconds(fc, t["attempts"])
             cur = conn.execute(
                 "UPDATE tasks SET status='blocked', result=?, claim_token=NULL, lease_expires=NULL, fail_class=?, next_claim_at=?, updated_at=? WHERE id=? AND assignee=? AND claim_token=? AND status IN ('claimed','working')",
@@ -4011,6 +5243,80 @@ def build_server():
         finally:
             conn.close()
 
+    def _review_task_locked(conn, me, task_id, approve, note, *, strict_dispatch=False, handoff_text=None):
+        """Shared dispatcher/owner transition, caller owns the transaction."""
+        t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not t:
+            raise ValueError(f"no such task: {task_id}")
+        if t["status"] != "review":
+            raise ValueError(f"task {task_id} not in review (status={t['status']})")
+        now = _now()
+        linked = _collaboration_active_task(conn, task_id, now)
+        if handoff_text is not None and (not approve or linked is None):
+            raise ValueError("compact handoff requires collaboration approval")
+        if linked is not None and not approve:
+            _collaboration_stop(conn, linked, "failed", me["name"],
+                                "review_rejected", now)
+            conn.execute("UPDATE tasks SET review_note=? WHERE id=?", (note, task_id))
+            audit(conn, me["name"], "task_review", f"task {task_id} approve=False")
+            return {"task_id": task_id, "status": "cancelled"}
+        if linked is not None and t["envelope"]:
+            if json.loads(t["envelope"]).get("verdict") != "done":
+                raise ValueError("collaboration: partial or failed envelope cannot be approved")
+        if approve:
+            cur = conn.execute(
+                "UPDATE tasks SET status='done', review_note=?, fail_class=NULL, "
+                "next_claim_at=NULL, updated_at=? WHERE id=? AND status='review'",
+                (note, now, task_id))
+        else:
+            fc = t["fail_class"] or "unknown"
+            nca = now + _backoff_seconds(fc, t["attempts"])
+            cur = conn.execute(
+                "UPDATE tasks SET status='open', "
+                "assignee=CASE WHEN EXISTS(SELECT 1 FROM members "
+                "WHERE id=tasks.assignee AND removed_at IS NULL) "
+                "THEN assignee ELSE NULL END, review_note=?, next_claim_at=?, "
+                "updated_at=? WHERE id=? AND status='review'",
+                (note, nca, now, task_id))
+        if cur.rowcount != 1:
+            raise ValueError(f"task {task_id} changed during review; reload and retry")
+        if not approve:
+            audit(conn, me["name"], "task_review_backoff",
+                  f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
+        if linked is not None:
+            from collaboration_dispatch import reconcile_terminal
+            if not reconcile_terminal(conn, task_id, now=now):
+                raise RuntimeError("collaboration: review reconciliation failed")
+            state = conn.execute(
+                "SELECT s.status FROM collaboration_steps s JOIN collaboration_task_links l "
+                "ON l.run_id=s.run_id AND l.step_key=s.step_key WHERE l.task_id=?",
+                (task_id,)).fetchone()
+            if not state or state[0] != "succeeded":
+                raise RuntimeError("collaboration: review did not succeed")
+            if handoff_text is not None:
+                from collaboration_compact_handoff import record_approved_handoff
+                record_approved_handoff(conn,run_id=linked,task_id=task_id,
+                                        actor_id=me["id"],text=handoff_text,now=now)
+                audit(conn,me["name"],"collaboration_handoff_approve",f"task {task_id}")
+            # Managed runs advance only after approved prerequisites.
+            # Roll back *all* new grants/cards if any dispatch is
+            # invalid; retain the approved work and stop the run.
+            if _collaboration_managed_request(conn,linked):
+                conn.execute("SAVEPOINT collaboration_advance")
+                try:
+                    _collaboration_dispatch_ready(conn,linked,now)
+                except ValueError:
+                    conn.execute("ROLLBACK TO collaboration_advance")
+                    conn.execute("RELEASE collaboration_advance")
+                    if strict_dispatch or handoff_text is not None:
+                        raise ValueError("collaboration next-step dispatch unavailable") from None
+                    _collaboration_stop(conn,linked,"failed",me["name"],
+                                        "next_step_unavailable",now)
+                else:
+                    conn.execute("RELEASE collaboration_advance")
+        audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
+        return {"task_id": task_id, "status": "done" if approve else "open"}
+
     @mcp.tool
     def task_review(task_id: int, approve: bool, note: str = "") -> dict:
         """Dispatcher review uses a guarded review-state transition; only one reviewer wins."""
@@ -4019,35 +5325,11 @@ def build_server():
         conn = db()
         try:
             with _lock:
-                t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-                if not t:
-                    raise ValueError(f"no such task: {task_id}")
-                if t["status"] != "review":
-                    raise ValueError(f"task {task_id} not in review (status={t['status']})")
-                now = _now()
-                if approve:
-                    cur = conn.execute(
-                        "UPDATE tasks SET status='done', review_note=?, fail_class=NULL, "
-                        "next_claim_at=NULL, updated_at=? WHERE id=? AND status='review'",
-                        (note, now, task_id))
-                else:
-                    fc = t["fail_class"] or "unknown"
-                    nca = now + _backoff_seconds(fc, t["attempts"])
-                    cur = conn.execute(
-                        "UPDATE tasks SET status='open', "
-                        "assignee=CASE WHEN EXISTS(SELECT 1 FROM members "
-                        "WHERE id=tasks.assignee AND removed_at IS NULL) "
-                        "THEN assignee ELSE NULL END, review_note=?, next_claim_at=?, "
-                        "updated_at=? WHERE id=? AND status='review'",
-                        (note, nca, now, task_id))
-                if cur.rowcount != 1:
-                    raise ValueError(f"task {task_id} changed during review; reload and retry")
-                if not approve:
-                    audit(conn, me["name"], "task_review_backoff",
-                          f"task {task_id} fail_class={fc} next_claim_at={nca:.0f}")
-                audit(conn, me["name"], "task_review", f"task {task_id} approve={approve}")
+                if _collaboration_present(conn):
+                    conn.execute("BEGIN IMMEDIATE")
+                result = _review_task_locked(conn,me,task_id,approve,note)
                 conn.commit()
-                return {"task_id": task_id, "status": "done" if approve else "open"}
+                return result
         finally:
             conn.close()
     @mcp.tool
@@ -4058,6 +5340,8 @@ def build_server():
         conn = db()
         try:
             with _lock:
+                if _collaboration_present(conn):
+                    conn.execute("BEGIN IMMEDIATE")
                 t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if not t:
                     raise ValueError(f"no such task: {task_id}")
@@ -4066,6 +5350,12 @@ def build_server():
                           f"task {task_id} already {t['status']}")
                     conn.commit()
                     return {"task_id": task_id, "status": t["status"]}
+                collaboration_id = _collaboration_link(conn, task_id)
+                if collaboration_id is not None:
+                    _collaboration_stop(conn, collaboration_id, "cancelled", me["name"],
+                                        "task_cancel", _now())
+                    conn.commit()
+                    return {"task_id": task_id, "status": "cancelled"}
                 cur = conn.execute(
                     "UPDATE tasks SET status='cancelled', claim_token=NULL, "
                     "lease_expires=NULL, updated_at=? "
@@ -4175,6 +5465,24 @@ def build_server():
                LEFT JOIN members cr ON cr.id=t.created_by
                JOIN rooms rm ON rm.id=t.room_id WHERE 1=1"""
         args = []
+        dedicated = _collaboration_executor_binding(conn,me["id"]) is not None
+        if dedicated:
+            from collaboration_context import require_executor
+            try:
+                require_executor(conn,me["id"])
+            except ValueError:
+                conn.close()
+                raise
+            # Scope before pagination. No ordinary tasks, other Agent tasks,
+            # revoked grants or closed/expired runs are returned.
+            q += (" AND t.assignee=? AND EXISTS ("
+                  " SELECT 1 FROM collaboration_task_links l"
+                  " JOIN collaboration_runs r ON r.id=l.run_id"
+                  " JOIN collaboration_context_grants g ON g.run_id=l.run_id AND g.step_key=l.step_key"
+                  " WHERE l.task_id=t.id AND l.member_id=? AND g.member_id=?"
+                  " AND g.revoked=0 AND g.provider=? AND r.status='active' AND r.deadline>?)"
+                  " AND t.status IN ('open','claimed','working')")
+            args.extend([me["id"],me["id"],me["id"],me["provider"],_now()])
         if status:
             # staging50：status 可传逗号分隔多状态（Gemini 审计建议），一次
             # 取全活跃态供运行时/桥接免翻页；单状态与旧行为逐字一致。
@@ -4210,6 +5518,7 @@ def build_server():
             g = a["assignee"]
             ahead[a["id"]] = seen.get(g, 0)
             seen[g] = seen.get(g, 0) + 1
+        protected = _collaboration_protected_tasks(conn, (x["id"] for x in rows), me)
         conn.close()
         out = []
         for x in rows:
@@ -4228,6 +5537,10 @@ def build_server():
                 d["envelope"] = None
             nca = d.get("next_claim_at")
             d["backoff_remaining_sec"] = int(nca - _now()) if nca and nca > _now() else 0
+            if d["id"] in protected:
+                d.update(title="Collaboration task", body="[Use collaboration_context_get after claim]",
+                         result=None, envelope=None, review_note=None)
+                d["collaboration_context_required"] = True
             out.append(d)
         return {"tasks": out}
 
@@ -4270,6 +5583,9 @@ def build_server():
         me = authenticate()
         require(me, "dispatcher")
         conn = db()
+        if _collaboration_link(conn, task_id) is not None:
+            conn.close()
+            raise ValueError("collaboration: retry is prohibited")
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
             conn.close()
@@ -4328,6 +5644,8 @@ def build_server():
         conn = db()
         try:
             with _lock:
+                if _collaboration_link(conn, task_id) is not None:
+                    raise ValueError("collaboration: transfer is prohibited")
                 t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if not t:
                     raise ValueError(f"no such task: {task_id}")
@@ -4453,6 +5771,8 @@ def build_server():
         conn = db()
         try:
             with _lock:
+                if _collaboration_link(conn, task_id) is not None:
+                    raise ValueError("collaboration: transfer is prohibited")
                 t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if not t:
                     raise ValueError(f"no such task: {task_id}")
@@ -4570,15 +5890,23 @@ def build_server():
         与认领/租约互补：认领防抢单，本登记防同一认领被双进程重复执行。"""
         me = authenticate()
         require(me)
-        conn = db()
+        conn = _registry_execution_db()
         try:
             with _lock:
                 t = _holder(conn, me, task_id, claim_token)
+                _registry_execution_gate(conn,me['id'],_collaboration_executor_binding(conn,me['id']),
+                                         claim_token=claim_token)
                 if _is_external(me) and t["room_id"] != me["bound_room_id"]:
                     raise ValueError("forbidden: task is outside the bound room")
                 if t["status"] not in ("claimed", "working"):
                     raise ValueError(
                         f"task {task_id} not in claimed/working (status={t['status']})")
+                if _collaboration_link(conn, task_id) is not None and conn.execute(
+                        "SELECT 1 FROM runs WHERE task_id=? LIMIT 1", (task_id,)).fetchone():
+                    raise ValueError("collaboration: execution already registered")
+                if _collaboration_executor_binding(conn,me["id"]) is not None:
+                    from collaboration_context import read_context
+                    read_context(conn,task_id,member_id=me["id"],now=_now())
                 open_run = conn.execute(
                     "SELECT * FROM runs WHERE task_id=? AND status='running'",
                     (task_id,)).fetchone()
@@ -4779,6 +6107,9 @@ def build_server():
                           f"count={n} window=60s")
                     conn.commit()
                     raise _ext_rate_error(60)
+            if task_id and not _collaboration_privileged(me) and _collaboration_link(conn, task_id) is not None:
+                # A linked task's text is not a general-purpose egress grant.
+                raise ValueError("collaboration: dedicated provider egress authorization required")
             # 审计只记去查询串/片段的 URL：查询串常带签名 token，成员提交的
             # URL 是不可信输入，不许把其查询串原样落进审计（staging14 复检 C8）。
             safe_url = (url or "").split("?")[0].split("#")[0][:200]
