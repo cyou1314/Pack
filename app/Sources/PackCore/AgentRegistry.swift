@@ -199,6 +199,25 @@ public actor AgentRegistryStore {
         }
     }
 
+    /// Replaces an existing API credential for a registered profile.
+    /// Does not create a missing secret or change profile identity.
+    /// Once the backend succeeds, cancellation cannot undo the replacement.
+    public func rotateAPICredential(id: UUID, apiKey: String,
+                                    vault: AgentCredentialVault) async throws {
+        try ensureIdle()
+        guard let profile = registry.profiles.first(where: { $0.id == id }) else {
+            throw AgentRegistryError.unknownProfile
+        }
+        guard profile.mode == .officialAPI else {
+            throw AgentRegistryError.unsupportedMode
+        }
+        provisioning = true
+        defer { provisioning = false }
+
+        try Task.checkCancellation()
+        try await vault.replace(apiKey, for: profile)
+    }
+
     private func ensureIdle() throws {
         guard !provisioning else { throw AgentProvisioningError.operationInProgress }
     }
