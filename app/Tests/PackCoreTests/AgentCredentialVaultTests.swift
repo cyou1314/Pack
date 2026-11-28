@@ -86,4 +86,73 @@ final class AgentCredentialVaultTests: XCTestCase {
             XCTFail("invalid key must fail")
         } catch { XCTAssertEqual(error as? AgentVaultError, .invalidSecret) }
     }
+
+    private func privateDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        return url
+    }
+
+    func testProvisionPersistsProfileAndCredentialWithoutSecretInMetadata() async throws {
+        let directory = try privateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try AgentRegistryStore(directory: directory)
+        let vault = AgentCredentialVault(backend: MemorySecretBackend())
+        let api = profile()
+        try await store.provisionAPIProfile(api, apiKey: "fixture-provision", vault: vault)
+        let reopened = try AgentRegistryStore(directory: directory)
+        let profiles = await reopened.list()
+        let key = try await vault.read(for: api)
+        XCTAssertEqual(profiles, [api])
+        XCTAssertEqual(key, "fixture-provision")
+        let metadata = try String(contentsOf: directory.appendingPathComponent("agent-registry.json"),
+                                  encoding: .utf8)
+        XCTAssertFalse(metadata.contains("fixture-provision"))
+        do {
+            try await store.provisionAPIProfile(api, apiKey: "fixture-overwrite", vault: vault)
+            XCTFail("duplicate profile must fail")
+        } catch { XCTAssertEqual(error as? AgentRegistryError, .duplicateProfile) }
+        let unchanged = try await vault.read(for: api)
+        XCTAssertEqual(unchanged, "fixture-provision")
+    }
+
+    func testProvisionRollsBackCredentialOnMetadataFailure() async throws {
+        let directory = try privateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try AgentRegistryStore(directory: directory)
+        let vault = AgentCredentialVault(backend: MemorySecretBackend())
+        let api = profile()
+        // A directory at the registry file path makes persistence fail safely.
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("agent-registry.json"),
+            withIntermediateDirectories: false)
+        do {
+            try await store.provisionAPIProfile(api, apiKey: "fixture-rollback", vault: vault)
+            XCTFail("metadata write must fail")
+        } catch { XCTAssertEqual(error as? AgentRegistryError, .unsafeStorage) }
+        let profiles = await store.list()
+        XCTAssertTrue(profiles.isEmpty)
+        do {
+            _ = try await vault.read(for: api)
+            XCTFail("new credential must be rolled back")
+        } catch { XCTAssertEqual(error as? AgentVaultError, .missing) }
+    }
+
+    func testProvisionDoesNotRemovePreexistingCredential() async throws {
+        let directory = try privateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try AgentRegistryStore(directory: directory)
+        let vault = AgentCredentialVault(backend: MemorySecretBackend())
+        let api = profile()
+        try await vault.insert("fixture-existing", for: api)
+        do {
+            try await store.provisionAPIProfile(api, apiKey: "fixture-new", vault: vault)
+            XCTFail("existing credential must not be overwritten")
+        } catch { XCTAssertEqual(error as? AgentVaultError, .duplicate) }
+        let key = try await vault.read(for: api)
+        let profiles = await store.list()
+        XCTAssertEqual(key, "fixture-existing")
+        XCTAssertTrue(profiles.isEmpty)
+    }
 }
