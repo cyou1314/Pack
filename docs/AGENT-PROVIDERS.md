@@ -19,4 +19,10 @@ Google 文档：[Gemini Apps](https://support.google.com/gemini/answer/13275745)
 
 新 API Profile 使用单一 AgentRegistryStore 实例的 provisionAPIProfile：先验证 Registry，再插入 Keychain，最后原子持久化 Registry。写入失败或提交前检测到取消时，只回滚本次成功插入的凭证；重复凭证不会被删除。跨 await 期间阻止同一 Store 的其他元数据写操作。回滚失败返回 credentialCleanupRequired(profileID:)；调用方应保留该身份并显式处理，不得盲目重试或覆盖已有凭证。
 
-该流程不是跨 Keychain 与文件系统的原子事务，进程被终止、多个 Store 实例或外部凭证写入不在保证范围内。后续 UI 必须统一写入入口；完整崩溃恢复、凭证孤儿排查、轮换/删除策略以及签名 App 实机验收仍待完成。现有 metadata-only insert 保留用于兼容导入，不用于新的 API Profile 创建。
+该流程不是跨 Keychain 与文件系统的原子事务，进程被终止、多个 Store 实例或外部凭证写入不在保证范围内。后续 UI 必须统一写入入口；完整崩溃恢复、凭证孤儿排查、凭证删除及恢复策略以及签名 App 实机验收仍待完成。现有 metadata-only insert 保留用于兼容导入，不用于新的 API Profile 创建。
+
+## 已注册 API Profile 的凭证轮换
+
+通过同一 Store 的 rotateAPICredential(id:apiKey:vault:) 操作：仅允许已登记的 officialAPI Profile，使用登记时的不可变身份及凭证引用；不覆盖其他 Profile，不创建缺失凭证，不改变 Registry 内容。与创建及元数据写操作共用互斥门。轮换前检查取消；Keychain 成功替换后不以取消为由回滚旧密钥。此操作仅替换本地保存的凭证，不代表服务商已撤销旧 Key，也不验证新 Key 在线有效性。
+
+所有生命周期写操作应由同一 Store 所有者统一调用；直接调用 Vault 写接口或不同 Store 实例不受该门保护。删除、缺失凭证修复、崩溃后的孤立凭证恢复仍未接入。测试使用内存 backend 注入重入及清理失败，不接触真实 Keychain。
