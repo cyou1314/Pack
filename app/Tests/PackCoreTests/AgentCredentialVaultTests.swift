@@ -4,9 +4,17 @@ import XCTest
 
 private actor MemorySecretBackend: AgentSecretBackend {
     private var values: [String: Data] = [:]
+    private let afterInsert: (@Sendable () async -> Void)?
+    private let failRemoval: Bool
+
+    init(afterInsert: (@Sendable () async -> Void)? = nil, failRemoval: Bool = false) {
+        self.afterInsert = afterInsert
+        self.failRemoval = failRemoval
+    }
     func insert(account: String, secret: Data) async throws {
         guard values[account] == nil else { throw AgentVaultError.duplicate }
         values[account] = secret
+        await afterInsert?()
     }
     func read(account: String) async throws -> Data {
         guard let value = values[account] else { throw AgentVaultError.missing }
@@ -17,6 +25,7 @@ private actor MemorySecretBackend: AgentSecretBackend {
         values[account] = secret
     }
     func remove(account: String) async throws {
+        if failRemoval { throw AgentVaultError.keychainFailure(-1) }
         guard values.removeValue(forKey: account) != nil else { throw AgentVaultError.missing }
     }
 }
@@ -154,5 +163,86 @@ final class AgentCredentialVaultTests: XCTestCase {
         let profiles = await store.list()
         XCTAssertEqual(key, "fixture-existing")
         XCTAssertTrue(profiles.isEmpty)
+    }
+
+    func testRotationRequiresRegisteredAPIProfileAndExistingCredential() async throws {
+        let directory = try privateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try AgentRegistryStore(directory: directory)
+        let vault = AgentCredentialVault(backend: MemorySecretBackend())
+        let api = profile(), native = profile("gemini", mode: .nativeAccount)
+        let missing = profile("openai")
+        try await store.provisionAPIProfile(api, apiKey: "fixture-original", vault: vault)
+        try await store.insert(native)
+        try await store.insert(missing)
+        let before = await store.list()
+
+        try await store.rotateAPICredential(id: api.id, apiKey: "fixture-rotated", vault: vault)
+        let rotated = try await vault.read(for: api)
+        XCTAssertEqual(rotated, "fixture-rotated")
+        do {
+            try await store.rotateAPICredential(id: UUID(), apiKey: "fixture", vault: vault)
+            XCTFail("unknown profile must fail")
+        } catch { XCTAssertEqual(error as? AgentRegistryError, .unknownProfile) }
+        do {
+            try await store.rotateAPICredential(id: native.id, apiKey: "fixture", vault: vault)
+            XCTFail("native profile must fail")
+        } catch { XCTAssertEqual(error as? AgentRegistryError, .unsupportedMode) }
+        do {
+            try await store.rotateAPICredential(id: missing.id, apiKey: "fixture", vault: vault)
+            XCTFail("rotation must not insert a missing credential")
+        } catch { XCTAssertEqual(error as? AgentVaultError, .missing) }
+        do {
+            try await store.rotateAPICredential(id: api.id, apiKey: "invalid key", vault: vault)
+            XCTFail("invalid rotation must fail")
+        } catch { XCTAssertEqual(error as? AgentVaultError, .invalidSecret) }
+        let unchanged = try await vault.read(for: api)
+        let after = await store.list()
+        XCTAssertEqual(unchanged, "fixture-rotated")
+        XCTAssertEqual(before, after)
+    }
+
+    func testProvisionRejectsReentrantMetadataMutation() async throws {
+        let directory = try privateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try AgentRegistryStore(directory: directory)
+        let api = profile(), other = profile("gemini", mode: .nativeAccount)
+        let backend = MemorySecretBackend(afterInsert: {
+            do {
+                try await store.insert(other)
+                XCTFail("concurrent metadata insertion must fail")
+            } catch { XCTAssertEqual(error as? AgentProvisioningError, .operationInProgress) }
+        })
+        let vault = AgentCredentialVault(backend: backend)
+        try await store.provisionAPIProfile(api, apiKey: "fixture", vault: vault)
+        let during = await store.list()
+        XCTAssertEqual(during, [api])
+        // The operation gate must release on success.
+        try await store.insert(other)
+        let after = await store.list()
+        XCTAssertEqual(Set(after.map { $0.id }), Set([api.id, other.id]))
+    }
+
+    func testProvisionReportsFailedRollbackWithoutPublishingMetadata() async throws {
+        let directory = try privateDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try AgentRegistryStore(directory: directory)
+        let vault = AgentCredentialVault(backend: MemorySecretBackend(failRemoval: true))
+        let api = profile()
+        let path = directory.appendingPathComponent("agent-registry.json")
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false)
+        do {
+            try await store.provisionAPIProfile(api, apiKey: "fixture-orphan", vault: vault)
+            XCTFail("failed rollback must be reported")
+        } catch {
+            XCTAssertEqual(error as? AgentProvisioningError, .credentialCleanupRequired(profileID: api.id))
+        }
+        let profiles = await store.list()
+        let retained = try await vault.read(for: api)
+        XCTAssertTrue(profiles.isEmpty)
+        XCTAssertEqual(retained, "fixture-orphan")
+        // Failed rollback must not permanently lock unrelated metadata operations.
+        try FileManager.default.removeItem(at: path)
+        try await store.insert(profile("gemini", mode: .nativeAccount))
     }
 }
