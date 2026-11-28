@@ -133,3 +133,33 @@ public struct CollaborationControlStatus: Decodable, Sendable {
     public let status: String
     enum CodingKeys: String, CodingKey { case runId = "run_id", status }
 }
+
+public extension CollaborationWorkspaceRun {
+    /// Only an entire outstanding parallel wave, never final/review roles.
+    var batchReviewKeys: [String] {
+        guard status == "active" else { return [] }
+        let role = mode == "compare" ? "independent-analysis" : mode == "team" ? "worker" : ""
+        guard !role.isEmpty else { return [] }
+        let wave = steps.filter { $0.role == role }
+        let pending = wave.filter { $0.status != "succeeded" }
+        guard (2...3).contains(pending.count),
+              Set(pending.map(\.key)).count == pending.count,
+              wave.allSatisfy({ $0.status != "succeeded" || $0.taskStatus == "done" }),
+              pending.allSatisfy({ $0.status == "running" && $0.taskStatus == "review" && $0.hasResult })
+        else { return [] }
+        return pending.map(\.key).sorted()
+    }
+}
+
+public struct CollaborationBatchReviewReceipt: Decodable, Sendable {
+    public let runId: String
+    public let approvedSteps: [String]
+    public let runStatus: String
+    enum CodingKeys: String, CodingKey {
+        case runId = "run_id", approvedSteps = "approved_steps", runStatus = "run_status"
+    }
+    public func matches(run: String, keys: [String]) -> Bool {
+        runId == run && runStatus == "active" &&
+        approvedSteps.count == keys.count && Set(approvedSteps) == Set(keys)
+    }
+}

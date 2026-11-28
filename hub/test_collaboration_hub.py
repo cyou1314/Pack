@@ -324,7 +324,7 @@ def main():
             assert steps["final"]["task_id"] is None
             busy_preview=owner_call("collaboration_route_preview",{"mode":"focus","allow_unknown_quota":True})
             assert busy_preview.get("suggestion") is None,busy_preview
-            def finish_managed(step,registered,result):
+            def finish_managed(step,registered,result,*,batch=False):
                 def execute(name,args):
                     return asyncio.run(call(port,registered["token"],name,args))
                 tid=step["task_id"]
@@ -344,17 +344,39 @@ def main():
                 assert inspected["result"]==result and inspected["approved"] is False,inspected
                 if step["key"].startswith("analysis-"):
                     projection=next(x for x in inspected["context_budgets"] if x["step_key"]=="final")
-                    assert projection["unapproved_results"]==1 and not projection["over_budget"],projection
+                    assert projection["unapproved_results"]>=1 and not projection["over_budget"],projection
                 review_args={"run_id":managed,"step_key":step["key"],
                              "expected_version":inspected["review_version"],"approve":True}
                 assert "error" in outsider("collaboration_review",review_args)
                 assert "error" in owner_call("collaboration_review",{**review_args,"expected_version":"0"*64})
+                if batch:
+                    return inspected
                 assert owner_call("collaboration_review",review_args).get("status")=="done"
                 assert "error" in owner_call("collaboration_review",review_args)
                 return context
-            finish_managed(steps["analysis-0"],members[0],"first result")
+            first=finish_managed(steps["analysis-0"],members[0],"first result",batch=True)
             assert owner_call("collaboration_status",{"run_id":managed})["steps"][-1]["task_id"] is None
-            finish_managed(steps["analysis-1"],members[1],"second result")
+            second=finish_managed(steps["analysis-1"],members[1],"second result",batch=True)
+            versions={"analysis-0":first["review_version"],"analysis-1":second["review_version"]}
+            batch_args={"run_id":managed,"versions":versions}
+            assert "error" in outsider("collaboration_review_batch",batch_args)
+            assert "error" in owner_call("collaboration_review_batch",{"run_id":managed,"versions":{"analysis-0":versions["analysis-0"]}})
+            assert "error" in owner_call("collaboration_review_batch",{**batch_args,"versions":{**versions,"analysis-1":"0"*64}})
+            assert all(conn.execute("SELECT status FROM tasks WHERE id=?",(steps[k]["task_id"],)).fetchone()[0]=="review" for k in versions)
+            # Force the final grant over its exact serialized context budget.
+            # All approved rows and downstream inserts must roll back.
+            tid=steps["analysis-1"]["task_id"]
+            with write_transaction(conn):
+                conn.execute("UPDATE tasks SET result=? WHERE id=?",("中"*5400,tid))
+            large=owner_call("collaboration_result_get",{"run_id":managed,"step_key":"analysis-1"})
+            assert "error" in owner_call("collaboration_review_batch",{**batch_args,"versions":{**versions,"analysis-1":large["review_version"]}})
+            assert all(conn.execute("SELECT status FROM tasks WHERE id=?",(steps[k]["task_id"],)).fetchone()[0]=="review" for k in versions)
+            assert owner_call("collaboration_status",{"run_id":managed})["steps"][-1]["task_id"] is None
+            with write_transaction(conn):
+                conn.execute("UPDATE tasks SET result=? WHERE id=?",("second result",tid))
+            batch=owner_call("collaboration_review_batch",batch_args)
+            assert batch=={"run_id":managed,"approved_steps":["analysis-0","analysis-1"],"run_status":"active"},batch
+            assert "error" in owner_call("collaboration_review_batch",batch_args)
             status=owner_call("collaboration_status",{"run_id":managed})
             final=next(s for s in status["steps"] if s["key"]=="final")
             assert final["task_id"],status

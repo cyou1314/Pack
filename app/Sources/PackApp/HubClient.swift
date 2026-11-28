@@ -215,7 +215,7 @@ actor HubClient {
         let allowed: Set<String> = ["collaboration_workspace", "collaboration_result_get",
                                     "collaboration_usage_get", "collaboration_publish", "collaboration_route_preview",
                                     "collaboration_create", "collaboration_request_lookup",
-                                    "collaboration_review", "collaboration_cancel", "collaboration_status",
+                                    "collaboration_review", "collaboration_review_batch", "collaboration_cancel", "collaboration_status",
                                     "collaboration_instance_info", "collaboration_executor_status",
                                     "collaboration_executor_provision", "collaboration_executor_revoke"]
         guard allowed.contains(name) else { throw HubError.badResponse("invalid workspace call") }

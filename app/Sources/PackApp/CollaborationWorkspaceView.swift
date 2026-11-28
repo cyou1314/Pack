@@ -15,6 +15,9 @@ struct CollaborationWorkspaceView: View {
     @State private var confirmPublish = false
     @State private var loaded = false
     @State private var showCreate = false
+    @State private var batchResults: [CollaborationWorkspaceResult] = []
+    @State private var batchConsent = false
+    @State private var batchScope: String?
     private enum Control {
         case review(run: String, step: String, version: String, approve: Bool)
         case cancel(run: String)
@@ -67,6 +70,7 @@ struct CollaborationWorkspaceView: View {
                         }
                         if let usage { usageCard(usage) }
                         if let result { resultCard(result) }
+                        if !batchResults.isEmpty { batchCard }
                     }
                 }
             }
@@ -82,6 +86,7 @@ struct CollaborationWorkspaceView: View {
             clear()
             if available { Task { await load() } }
         }
+        .onChange(of: state.collaborationScope) { _, _ in clear(); Task { await load() } }
         .onDisappear { clear() }
         .alert("确认协作操作", isPresented: $confirmControl, presenting: control) { action in
             Button(action.destructive ? "确认停止" : "确认通过", role: action.destructive ? .destructive : nil) {
@@ -127,6 +132,10 @@ struct CollaborationWorkspaceView: View {
             Divider()
             HStack {
                 Button("用量") { Task { await readUsage(run.id) } }.disabled(busy)
+                if !run.batchReviewKeys.isEmpty {
+                    Button("批量审核…") { Task { await readBatch(run) } }
+                        .disabled(busy || uncertainRun != nil)
+                }
                 if run.status == "active" {
                     Button("取消协作…") { control = .cancel(run: run.id); confirmControl = true }
                         .disabled(busy || uncertainRun != nil)
@@ -208,16 +217,103 @@ struct CollaborationWorkspaceView: View {
         }.padding(DesignTokens.detailPadding)
         .background(DesignTokens.shellSurface, in: RoundedRectangle(cornerRadius: DesignTokens.radiusCard))
     }
+    private var batchCard: some View {
+        VStack(alignment:.leading,spacing:DesignTokens.detailSpacing) {
+            HStack {
+                Text("整批成果审核 · \(batchResults.count) 份").font(DesignTokens.fontTitle)
+                Spacer()
+                Button("关闭") { clearBatch() }.disabled(busy)
+            }
+            ForEach(Array(batchResults.enumerated()),id:\.offset) { _,value in
+                Text(verbatim:value.stepKey ?? "").font(DesignTokens.fontSmall)
+                Text(verbatim:value.result).textSelection(.enabled)
+                    .frame(maxWidth:.infinity,alignment:.leading)
+                Divider()
+            }
+            if let budgets = batchResults.first?.contextBudgets {
+                ForEach(budgets) { budget in budgetRow(budget) }
+            }
+            Text("全部通过后派发下一阶段；版本变化或派发失败时整批回滚。不会压缩或覆盖原文。")
+                .font(DesignTokens.fontSmall).foregroundStyle(DesignTokens.subText)
+            Toggle("已查看以上全部成果，同意按当前版本通过",isOn:$batchConsent)
+                .disabled(busy)
+            Button("确认整批通过") { Task { await approveBatch() } }
+                .buttonStyle(.borderedProminent)
+                .disabled(busy || !batchConsent || uncertainRun != nil ||
+                          batchScope != state.collaborationScope ||
+                          batchResults.contains(where:{ $0.contextBudgets?.contains(where:{ $0.overBudget }) == true }))
+        }.padding(DesignTokens.detailPadding)
+        .background(DesignTokens.shellSurface,in:RoundedRectangle(cornerRadius:DesignTokens.radiusCard))
+    }
+    private func clearBatch() { batchResults = []; batchConsent = false; batchScope = nil }
+
+    @MainActor private func readBatch(_ run: CollaborationWorkspaceRun) async {
+        let keys = run.batchReviewKeys
+        guard !busy,uncertainRun == nil,state.collaborationOwnerAvailable,!keys.isEmpty else { return }
+        let generation = requestGeneration,scope = state.collaborationScope
+        busy = true; note = ""; result = nil; clearBatch()
+        defer { if generation == requestGeneration { busy = false } }
+        do {
+            var values: [CollaborationWorkspaceResult] = []
+            for key in keys {
+                let value = try await state.collaborationOwnerRequest("collaboration_result_get",
+                    args:["run_id":run.id,"step_key":key],scope:scope,as:CollaborationWorkspaceResult.self)
+                guard generation == requestGeneration,scope == state.collaborationScope,!Task.isCancelled,
+                      value.runId == run.id,value.stepKey == key,value.canReview else {
+                    throw HubError.badResponse("batch review version mismatch")
+                }
+                values.append(value)
+            }
+            batchResults = values; batchScope = scope
+        } catch {
+            if generation == requestGeneration { clearBatch(); note = "无法完整读取待审核成果，请刷新。" }
+        }
+    }
+
+    @MainActor private func approveBatch() async {
+        guard !busy,batchConsent,uncertainRun == nil,state.collaborationOwnerAvailable,
+              let scope = batchScope,scope == state.collaborationScope,
+              let runId = batchResults.first?.runId,
+              batchResults.allSatisfy({ $0.runId == runId && $0.canReview &&
+                  $0.contextBudgets?.contains(where:{ $0.overBudget }) != true }),
+              let run = runs.first(where:{ $0.id == runId }) else { return }
+        let pairs = batchResults.compactMap { value -> (String,String)? in
+            guard let key = value.stepKey,let version = value.reviewVersion else { return nil }
+            return (key,version)
+        }
+        let keys = pairs.map { $0.0 }
+        guard keys.count == batchResults.count,Set(keys).count == keys.count,
+              keys.sorted() == run.batchReviewKeys,!keys.isEmpty else { return }
+        let versions = Dictionary(uniqueKeysWithValues:pairs)
+        let generation = requestGeneration
+        busy = true; note = ""; batchConsent = false
+        defer { if generation == requestGeneration { busy = false } }
+        do {
+            let receipt = try await state.collaborationOwnerRequest("collaboration_review_batch",
+                args:["run_id":runId,"versions":versions],scope:scope,as:CollaborationBatchReviewReceipt.self)
+            guard receipt.matches(run:runId,keys:keys) else { throw HubError.badResponse("batch receipt mismatch") }
+            guard generation == requestGeneration,scope == state.collaborationScope,!Task.isCancelled else { return }
+            clearBatch(); busy = false
+            await load()
+            if generation == requestGeneration { note = "整批审核已确认，后续步骤已推进。" }
+        } catch {
+            guard generation == requestGeneration else { return }
+            clearBatch(); uncertainRun = runId
+            note = "整批审核未确认，请核对当前状态。不会自动重试。"
+        }
+    }
+
     private func clear() {
         requestGeneration = UUID()
         runs = []; cursor = nil; result = nil; usage = nil; note = ""; loaded = false
         busy = false; confirmPublish = false; confirmControl = false; control = nil; uncertainRun = nil
+        clearBatch()
     }
     @MainActor private func load(before: Int? = nil) async {
         guard !busy, state.collaborationOwnerAvailable else { return }
         let generation = requestGeneration, scope = state.collaborationScope, room = state.currentRoom
         busy = true; note = ""
-        if before == nil { result = nil; usage = nil }
+        if before == nil { result = nil; usage = nil; clearBatch() }
         defer { if generation == requestGeneration { busy = false } }
         do {
             let page = try await state.collaborationOwnerRequest("collaboration_workspace",
@@ -237,7 +333,7 @@ struct CollaborationWorkspaceView: View {
     @MainActor private func readResult(_ id: String, step: String = "") async {
         guard !busy, state.collaborationOwnerAvailable else { return }
         let generation = requestGeneration, scope = state.collaborationScope
-        busy = true; note = ""; result = nil
+        busy = true; note = ""; result = nil; clearBatch()
         defer { if generation == requestGeneration { busy = false } }
         do {
             let value = try await state.collaborationOwnerRequest("collaboration_result_get",

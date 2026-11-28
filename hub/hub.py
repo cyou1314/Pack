@@ -4859,6 +4859,66 @@ def build_server():
                 conn.close()
 
         @mcp.tool
+        def collaboration_review_batch(run_id: str, versions: dict[str, str]) -> dict:
+            """Owner approves one complete parallel wave of inspected results atomically.
+            No implicit approval of uninspected results, no automatic replay.
+            """
+            me = authenticate()
+            require(me,"member")
+            from collaboration_context import _owner
+            from collaboration_store import write_transaction
+            if (not isinstance(versions,dict) or not 2 <= len(versions) <= 3
+                    or any(not isinstance(k,str) or not isinstance(v,str)
+                           or not re.fullmatch(r"[a-f0-9]{64}",v) for k,v in versions.items())):
+                raise ValueError("invalid collaboration batch")
+            conn = db()
+            try:
+                with _lock, write_transaction(conn):
+                    _owner(conn,me["id"])
+                    request = _collaboration_managed_request(conn,run_id)
+                    run = conn.execute("""
+                        SELECT r.deadline,r.status FROM collaboration_runs r
+                        JOIN rooms rm ON rm.id=r.room_id
+                        WHERE r.id=? AND rm.archived_at IS NULL
+                        """,(run_id,)).fetchone()
+                    if (not request or request[0]!=me["id"] or not run
+                            or run[1]!="active" or run[0]<=_now()):
+                        raise ValueError("collaboration run unavailable")
+                    wave = conn.execute("""
+                        SELECT s.step_key,s.role,s.status,l.task_id,t.status
+                        FROM collaboration_steps s
+                        LEFT JOIN collaboration_task_links l ON l.run_id=s.run_id AND l.step_key=s.step_key
+                        LEFT JOIN tasks t ON t.id=l.task_id
+                        WHERE s.run_id=? AND s.role IN ('worker','independent-analysis')
+                        ORDER BY s.step_key
+                        """,(run_id,)).fetchall()
+                    pending = [r for r in wave if r[2]!="succeeded"]
+                    if (not pending or len({r[1] for r in wave})!=1
+                            or {r[0] for r in pending}!=set(versions)
+                            or any(r[2]!="running" or r[3] is None or r[4]!="review" for r in pending)
+                            or any(r[2]=="succeeded" and r[4]!="done" for r in wave)):
+                        raise ValueError("collaboration parallel wave incomplete or changed")
+                    # Validate every inspected version before any transition.
+                    for key,_,_,task_id,_ in pending:
+                        row = conn.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone()
+                        if (not row or row["envelope"] is not None
+                                or not isinstance(row["result"],str) or not row["result"].strip()
+                                or len(row["result"].encode("utf-8"))>16*1024
+                                or versions[key]!=_collaboration_review_version(row)):
+                            raise ValueError("collaboration batch version unavailable or changed")
+                    for key,_,_,task_id,_ in pending:
+                        result = _review_task_locked(conn,me,task_id,True,"",strict_dispatch=True)
+                        if result["status"]!="done":
+                            raise RuntimeError("collaboration batch transition failed")
+                    status = conn.execute("SELECT status FROM collaboration_runs WHERE id=?",(run_id,)).fetchone()[0]
+                    if status!="active":
+                        raise ValueError("collaboration batch did not advance")
+                    audit(conn,me["name"],"collaboration_review_batch",f"run {run_id} count={len(pending)}")
+                    return {"run_id":run_id,"approved_steps":[r[0] for r in pending],"run_status":status}
+            finally:
+                conn.close()
+
+        @mcp.tool
         def collaboration_publish(run_id: str, expected_sha256: str) -> dict:
             """Explicit owner release of the exact approved final text to its room."""
             me = authenticate()
@@ -5168,7 +5228,7 @@ def build_server():
         finally:
             conn.close()
 
-    def _review_task_locked(conn, me, task_id, approve, note):
+    def _review_task_locked(conn, me, task_id, approve, note, *, strict_dispatch=False):
         """Shared dispatcher/owner transition, caller owns the transaction."""
         t = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         if not t:
@@ -5226,6 +5286,8 @@ def build_server():
                 except ValueError:
                     conn.execute("ROLLBACK TO collaboration_advance")
                     conn.execute("RELEASE collaboration_advance")
+                    if strict_dispatch:
+                        raise ValueError("collaboration batch dispatch unavailable") from None
                     _collaboration_stop(conn,linked,"failed",me["name"],
                                         "next_step_unavailable",now)
                 else:
